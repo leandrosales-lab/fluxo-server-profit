@@ -176,13 +176,13 @@ def status_loop(engine: FlowEngine, interval: int = 30):
     def _loop():
         while True:
             time.sleep(interval)
-            state  = engine.get_state()
-            signal = state["signal"]
+            state = engine.get_state()
+            sig   = state["signal"]
             logger.info(
                 f"[STATUS] {state['asset']} | Ticks: {state['tick_count']} | "
                 f"Fluxo: {state['flow_pct_buy']:.1f}%C {state['flow_pct_sell']:.1f}%V | "
-                f"Sinal: {signal['signal']} ({signal['pattern']}) "
-                f"conf={signal['confidence']:.2f}"
+                f"Sinal: {sig['signal']} ({sig['pattern']}) "
+                f"conf={sig['confidence']:.2f}"
             )
     t = threading.Thread(target=_loop, daemon=True)
     t.start()
