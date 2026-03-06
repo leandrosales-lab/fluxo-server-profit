@@ -20,6 +20,7 @@ injeção manual via API POST /tick e /book.
 Requisito Windows: pip install pywin32
 """
 
+import sys
 import time
 import logging
 import threading
@@ -27,14 +28,26 @@ from typing import Optional, Callable
 
 logger = logging.getLogger("DDEBridge")
 
-# Tentar importar DDE (só Windows)
+# Tentar importar DDE (só Windows via pywin32/pythonwin)
+# O módulo 'dde' está em pythonwin/dde.pyd — precisa ser adicionado ao path.
+# Fórmula DDE do Profit: =Profit|<Topico>!<Ativo>
+#   Servidor (application): "Profit"
+#   Tópico (topic):         "Ultima", "VolNeg", "CodAgente", "TipNeg", "QtdNeg" ...
+#   Item:                   "PETR4"  (código do ativo)
+DDE_OK = False
 try:
-    import win32dde
+    import win32ui   # deve ser importado antes do dde
+    # Adiciona o diretório pythonwin ao path para encontrar dde.pyd
+    import site
+    for sp in site.getsitepackages():
+        _pw = sp + "\\pythonwin"
+        if _pw not in sys.path:
+            sys.path.insert(0, _pw)
+    import dde as _dde_mod
     DDE_OK = True
-except ImportError:
-    DDE_OK = False
-    logger.warning("pywin32 não instalado — DDE desativado. "
-                   "Use: pip install pywin32 (apenas Windows)")
+except Exception as _e:
+    logger.warning(f"DDE não disponível: {_e}. "
+                   "Instale pywin32 e certifique-se de estar no Windows.")
 
 
 class DDEBridge:
@@ -50,25 +63,29 @@ class DDEBridge:
     Verificar na documentação DDE do Profit/Nelogica.
     """
 
-    # ── Itens DDE do Times & Trades
-    TT_ITEMS = [
-        "LastPrice",      # Último preço negociado
-        "LastQty",        # Última quantidade negociada
-        "LastBroker",     # Corretora do último negócio
-        "LastSide",       # Lado do último negócio (C/V)
-        "TradeCount",     # Contador de negócios (detectar novo negócio)
-    ]
+    # ── Tópicos DDE do Profit Pro para T&T
+    # Formato: application="Profit", topic=<campo>, item=<ativo>
+    # Equivalente à fórmula Excel: =Profit|<topic>!<item>
+    TT_TOPICS = {
+        "price":  "Ultima",     # Último preço negociado
+        "qty":    "VolNeg",     # Volume do último negócio
+        "broker": "CodAgente",  # Código da corretora agente
+        "side":   "TipNeg",     # Tipo de negócio: C=compra, V=venda
+        "count":  "QtdNeg",     # Contador total de negócios (detecta novo tick)
+    }
 
-    # ── Itens DDE do Book (5 primeiros níveis)
-    BOOK_ITEMS = []
-    for i in range(1, 6):
-        BOOK_ITEMS += [
-            f"BidPrice{i}",   # Preço de compra nível i
-            f"BidQty{i}",     # Quantidade de compra nível i
-            f"BidBroker{i}",  # Corretora compra nível i
-            f"AskPrice{i}",   # Preço de venda nível i
-            f"AskQty{i}",     # Quantidade de venda nível i
-            f"AskBroker{i}",  # Corretora venda nível i
+    # ── Tópicos DDE do Profit Pro para Book de Ofertas (5 níveis)
+    # Baseado na documentação DDE do Profit/Nelogica.
+    # Verificar nomes exatos na versão instalada do Profit.
+    BOOK_TOPICS: list[dict] = []
+    for _i in range(1, 6):
+        BOOK_TOPICS += [
+            {"side": "C", "field": "price",  "topic": f"OfertaCompraPrc{_i}"},
+            {"side": "C", "field": "qty",    "topic": f"OfertaCompraQtd{_i}"},
+            {"side": "C", "field": "broker", "topic": f"OfertaCompraAgt{_i}"},
+            {"side": "V", "field": "price",  "topic": f"OfertaVendaPrc{_i}"},
+            {"side": "V", "field": "qty",    "topic": f"OfertaVendaQtd{_i}"},
+            {"side": "V", "field": "broker", "topic": f"OfertaVendaAgt{_i}"},
         ]
 
     def __init__(self, asset: str, poll_interval: float = 0.5):
@@ -76,7 +93,7 @@ class DDEBridge:
         self.poll_interval = poll_interval
         self._running      = False
         self._thread: Optional[threading.Thread] = None
-        self._server_name  = "ProfitChart"
+        self._server_name  = "Profit"   # Nome do servidor DDE do Profit Pro
 
         # Callbacks → FlowEngine
         self.on_tick: Optional[Callable] = None
@@ -86,17 +103,26 @@ class DDEBridge:
         self._last_trade_count = -1
         self._last_price       = None
 
-        # Cache de conversas DDE (evita abrir/fechar nova conexão a cada request)
+        # Servidor DDE local (necessário para criar conversas como cliente)
+        self._dde_server = None
+
+        # Cache de conversas DDE: {topic → conversation}
         self._conversations: dict = {}
 
     def start(self) -> bool:
         if not DDE_OK:
             logger.error("DDE não disponível — instale pywin32 no Windows")
             return False
+        try:
+            self._dde_server = _dde_mod.CreateServer()
+            self._dde_server.Create("FluxoServerDDEClient")
+        except Exception as e:
+            logger.error(f"Falha ao criar servidor DDE local: {e}")
+            return False
         self._running = True
         self._thread  = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
-        logger.info(f"DDEBridge iniciado para {self.asset}")
+        logger.info(f"DDEBridge iniciado para {self.asset} | Servidor Profit DDE: '{self._server_name}'")
         return True
 
     def stop(self):
@@ -104,13 +130,25 @@ class DDEBridge:
         if self._thread:
             self._thread.join(timeout=5)
         self._conversations.clear()
+        if self._dde_server:
+            try:
+                self._dde_server.Destroy()
+            except Exception:
+                pass
+            self._dde_server = None
         logger.info("DDEBridge encerrado")
 
     def _dde_request(self, topic: str, item: str) -> Optional[str]:
-        """Solicita um valor via DDE, reutilizando a conversa já aberta para o tópico."""
+        """Solicita um valor via DDE.
+
+        No Profit Pro, o formato é:
+          application = "Profit"
+          topic       = nome do campo (ex: "Ultima", "VolNeg")
+          item        = código do ativo (ex: "PETR4")
+        """
         try:
             if topic not in self._conversations:
-                conv = win32dde.CreateConversation(None)
+                conv = _dde_mod.CreateConversation(self._dde_server)
                 conv.ConnectTo(self._server_name, topic)
                 self._conversations[topic] = conv
             value = self._conversations[topic].Request(item)
@@ -121,21 +159,29 @@ class DDEBridge:
             return None
 
     def _read_tt(self):
-        """Lê o último negócio do T&T via DDE."""
-        topic = f"TimesAndTrades|{self.asset}"
+        """Lê o último negócio do T&T via DDE.
+
+        No Profit Pro cada campo é um tópico separado; o item é o código do ativo.
+        Equivalente às fórmulas Excel:
+          =Profit|QtdNeg!PETR4   (contador de negócios)
+          =Profit|Ultima!PETR4   (último preço)
+          =Profit|VolNeg!PETR4   (volume do negócio)
+          =Profit|CodAgente!PETR4 (corretora)
+          =Profit|TipNeg!PETR4   (C=compra / V=venda)
+        """
         try:
-            trade_count_s = self._dde_request(topic, "TradeCount")
+            trade_count_s = self._dde_request(self.TT_TOPICS["count"], self.asset)
             if not trade_count_s:
                 return
-            trade_count = int(trade_count_s)
+            trade_count = int(trade_count_s.replace(".", "").replace(",", ""))
             if trade_count == self._last_trade_count:
                 return  # Nenhum negócio novo
             self._last_trade_count = trade_count
 
-            price_s  = self._dde_request(topic, "LastPrice")
-            qty_s    = self._dde_request(topic, "LastQty")
-            broker_s = self._dde_request(topic, "LastBroker")
-            side_s   = self._dde_request(topic, "LastSide")
+            price_s  = self._dde_request(self.TT_TOPICS["price"],  self.asset)
+            qty_s    = self._dde_request(self.TT_TOPICS["qty"],    self.asset)
+            broker_s = self._dde_request(self.TT_TOPICS["broker"], self.asset)
+            side_s   = self._dde_request(self.TT_TOPICS["side"],   self.asset)
 
             if not all([price_s, qty_s]):
                 return
@@ -156,34 +202,37 @@ class DDEBridge:
             logger.debug(f"Erro ao ler T&T via DDE: {e}")
 
     def _read_book(self):
-        """Lê os 5 primeiros níveis do Book via DDE."""
-        topic = f"BookOffers|{self.asset}"
-        levels = []
-        try:
-            for i in range(1, 6):
-                # Bid (compra)
-                bid_p = self._dde_request(topic, f"BidPrice{i}")
-                bid_q = self._dde_request(topic, f"BidQty{i}")
-                bid_b = self._dde_request(topic, f"BidBroker{i}")
-                if bid_p and bid_q:
-                    levels.append({
-                        "price":  float(bid_p.replace(",", ".")),
-                        "qty":    int(bid_q.replace(".", "").replace(",", "")),
-                        "broker": (bid_b or "").strip().upper(),
-                        "side":   "C"
-                    })
+        """Lê os 5 primeiros níveis do Book via DDE.
 
-                # Ask (venda)
-                ask_p = self._dde_request(topic, f"AskPrice{i}")
-                ask_q = self._dde_request(topic, f"AskQty{i}")
-                ask_b = self._dde_request(topic, f"AskBroker{i}")
-                if ask_p and ask_q:
-                    levels.append({
-                        "price":  float(ask_p.replace(",", ".")),
-                        "qty":    int(ask_q.replace(".", "").replace(",", "")),
-                        "broker": (ask_b or "").strip().upper(),
-                        "side":   "V"
-                    })
+        Os tópicos para o book variam por versão do Profit.
+        Verificar em: Profit > Ferramentas > DDE > Itens disponíveis.
+        Nomes comuns: OfertaCompraPrc1, OfertaVendaPrc1, etc.
+        """
+        levels = []
+        buy_rows: dict[int, dict] = {}
+        sell_rows: dict[int, dict] = {}
+
+        try:
+            for i, bt in enumerate(self.BOOK_TOPICS):
+                value = self._dde_request(bt["topic"], self.asset)
+                if not value:
+                    continue
+                level_idx = i // 6 + 1
+                row_dict  = buy_rows if bt["side"] == "C" else sell_rows
+                if level_idx not in row_dict:
+                    row_dict[level_idx] = {"side": bt["side"], "price": None, "qty": None, "broker": ""}
+
+                if bt["field"] == "price":
+                    row_dict[level_idx]["price"] = float(value.replace(",", "."))
+                elif bt["field"] == "qty":
+                    row_dict[level_idx]["qty"] = int(value.replace(".", "").replace(",", ""))
+                elif bt["field"] == "broker":
+                    row_dict[level_idx]["broker"] = value.strip().upper()
+
+            for row_dict in (buy_rows, sell_rows):
+                for row in row_dict.values():
+                    if row["price"] and row["qty"]:
+                        levels.append(row)
 
             if levels and self.on_book:
                 self.on_book(levels)
