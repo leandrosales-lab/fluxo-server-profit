@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Como Rodar — Modo Simulação</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=DM+Sans:wght@400;500;600;700;800&display=swap');
+
+  :root {
+    --bg: #0d0f14;
+    --surface: #13161e;
+    --surface2: #1a1e2a;
+    --border: #222638;
+    --green: #3dffa0;
+    --blue: #5b9cf6;
+    --yellow: #fbbf24;
+    --red: #f87171;
+    --purple: #a78bfa;
+    --text: #dde4f5;
+    --dim: #7a849e;
+    --mono: 'JetBrains Mono', monospace;
+    --sans: 'DM Sans', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.6;
+  }
+
+  /* HERO */
+  .hero {
+    padding: 56px 56px 40px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(135deg, rgba(61,255,160,0.04) 0%, transparent 60%);
+  }
+  .hero-tag {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: rgba(61,255,160,0.1);
+    border: 1px solid rgba(61,255,160,0.25);
+    color: var(--green);
+    padding: 4px 14px; border-radius: 20px;
+    font-size: 11px; font-weight: 700; letter-spacing: 2px;
+    text-transform: uppercase; margin-bottom: 20px;
+  }
+  .hero h1 { font-size: 36px; font-weight: 800; letter-spacing: -1px; margin-bottom: 10px; }
+  .hero h1 span { color: var(--green); }
+  .hero p { color: var(--dim); font-size: 15px; max-width: 600px; }
+
+  /* MODO SELECTOR */
+  .modo-bar {
+    display: flex; gap: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    margin: 36px 56px;
+    width: fit-content;
+  }
+  .modo-btn {
+    padding: 12px 28px;
+    font-family: var(--sans);
+    font-size: 13px; font-weight: 700;
+    cursor: pointer;
+    background: transparent;
+    color: var(--dim);
+    border: none;
+    border-right: 1px solid var(--border);
+    transition: all 0.2s;
+  }
+  .modo-btn:last-child { border-right: none; }
+  .modo-btn.active {
+    background: rgba(61,255,160,0.12);
+    color: var(--green);
+  }
+  .modo-btn:hover:not(.active) { color: var(--text); background: rgba(255,255,255,0.04); }
+
+  /* LAYOUT */
+  .content { padding: 0 56px 56px; }
+
+  /* STEP */
+  .step {
+    display: grid;
+    grid-template-columns: 56px 1fr;
+    gap: 0 24px;
+    margin-bottom: 8px;
+  }
+  .step-left {
+    display: flex; flex-direction: column; align-items: center;
+  }
+  .step-circle {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 15px; font-weight: 800;
+    flex-shrink: 0;
+    position: relative; z-index: 1;
+  }
+  .step-circle.green  { background: rgba(61,255,160,0.15); color: var(--green); border: 2px solid rgba(61,255,160,0.4); }
+  .step-circle.blue   { background: rgba(91,156,246,0.15); color: var(--blue);  border: 2px solid rgba(91,156,246,0.4); }
+  .step-circle.yellow { background: rgba(251,191,36,0.15); color: var(--yellow);border: 2px solid rgba(251,191,36,0.4); }
+  .step-circle.purple { background: rgba(167,139,250,0.15);color: var(--purple);border: 2px solid rgba(167,139,250,0.4); }
+  .step-circle.red    { background: rgba(248,113,113,0.15);color: var(--red);   border: 2px solid rgba(248,113,113,0.4); }
+  .step-line {
+    width: 2px; flex: 1; min-height: 20px;
+    background: var(--border);
+    margin: 4px 0;
+  }
+  .step-body { padding-bottom: 32px; }
+  .step-title {
+    font-size: 17px; font-weight: 700; margin-bottom: 8px;
+    padding-top: 8px;
+  }
+  .step-desc { font-size: 13px; color: var(--dim); margin-bottom: 14px; line-height: 1.7; }
+
+  /* CODE BLOCK */
+  .code-block {
+    background: #080b10;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 12px;
+  }
+  .code-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 16px;
+    background: rgba(255,255,255,0.03);
+    border-bottom: 1px solid var(--border);
+  }
+  .code-lang {
+    font-size: 10px; font-weight: 700; letter-spacing: 2px;
+    text-transform: uppercase; color: var(--dim);
+    font-family: var(--mono);
+  }
+  .copy-btn {
+    font-size: 10px; font-weight: 700; letter-spacing: 1px;
+    color: var(--dim); background: none; border: none;
+    cursor: pointer; font-family: var(--mono); padding: 2px 8px;
+    border-radius: 4px; transition: all 0.15s;
+  }
+  .copy-btn:hover { color: var(--green); background: rgba(61,255,160,0.08); }
+  pre {
+    padding: 16px 20px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.8;
+    overflow-x: auto;
+    color: var(--text);
+    white-space: pre;
+  }
+  .kw  { color: var(--blue); }
+  .str { color: var(--green); }
+  .cmt { color: var(--dim); font-style: italic; }
+  .num { color: var(--yellow); }
+  .fn  { color: var(--purple); }
+
+  /* CALLOUT */
+  .callout {
+    border-radius: 10px; padding: 14px 18px;
+    margin-bottom: 12px; font-size: 13px;
+    display: flex; gap: 12px; align-items: flex-start;
+  }
+  .callout.info  { background: rgba(91,156,246,0.08); border: 1px solid rgba(91,156,246,0.2); }
+  .callout.warn  { background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.2); }
+  .callout.ok    { background: rgba(61,255,160,0.08); border: 1px solid rgba(61,255,160,0.2); }
+  .callout.danger{ background: rgba(248,113,113,0.08);border: 1px solid rgba(248,113,113,0.2);}
+  .callout-icon { font-size: 18px; flex-shrink: 0; line-height: 1; }
+  .callout-text { line-height: 1.7; }
+  .callout-text b { color: var(--text); }
+  .callout.info  .callout-text { color: #93b4f5; }
+  .callout.warn  .callout-text { color: #fbbf24; }
+  .callout.ok    .callout-text { color: #6ee7b7; }
+  .callout.danger .callout-text { color: #fca5a5; }
+
+  /* ENDPOINT */
+  .endpoint {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 18px;
+    margin-bottom: 10px;
+    display: flex; align-items: center; gap: 14px;
+    font-family: var(--mono); font-size: 12px;
+  }
+  .method {
+    padding: 3px 8px; border-radius: 5px;
+    font-size: 10px; font-weight: 700; letter-spacing: 1px;
+    flex-shrink: 0;
+  }
+  .method.get  { background: rgba(61,255,160,0.15); color: var(--green); }
+  .method.post { background: rgba(91,156,246,0.15); color: var(--blue); }
+  .ep-path { color: var(--text); }
+  .ep-desc { color: var(--dim); font-size: 11px; margin-left: auto; font-family: var(--sans); }
+
+  /* SIGNAL CARD */
+  .signal-card {
+    background: var(--surface2);
+    border: 1px solid rgba(61,255,160,0.3);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 12px;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .signal-card .sig-label { font-size: 9px; letter-spacing: 2px; text-transform: uppercase; color: var(--dim); margin-bottom: 8px; font-family: var(--sans); }
+  .sig-val { font-size: 22px; font-weight: 700; color: var(--green); margin-bottom: 10px; }
+  .sig-row { display: flex; justify-content: space-between; color: var(--dim); padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,0.04); }
+  .sig-row span:last-child { color: var(--text); }
+
+  /* SECTION DIVIDER */
+  .section-head {
+    font-size: 10px; font-weight: 700; letter-spacing: 3px;
+    text-transform: uppercase; color: var(--green);
+    padding: 32px 0 16px;
+    display: flex; align-items: center; gap: 14px;
+  }
+  .section-head::after { content:''; flex:1; height:1px; background:var(--border); }
+
+  /* MODE PANEL */
+  .mode-panel { display: none; }
+  .mode-panel.active { display: block; }
+
+  /* CHECKLIST */
+  .checklist { list-style: none; margin-bottom: 16px; }
+  .checklist li {
+    display: flex; align-items: flex-start; gap: 10px;
+    font-size: 13px; padding: 6px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    color: var(--dim);
+  }
+  .checklist li::before { content: '○'; color: var(--border); flex-shrink: 0; margin-top: 2px; }
+  .checklist li.done { color: var(--text); }
+  .checklist li.done::before { content: '✓'; color: var(--green); }
+
+  /* FOOTER */
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 20px 56px;
+    color: var(--dim); font-size: 11px;
+    display: flex; justify-content: space-between;
+  }
+  kbd {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text);
+  }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <div class="hero-tag">📋 Guia de Setup</div>
+  <h1>Rodando o Robô em <span>Modo Simulação</span></h1>
+  <p>Passo a passo completo: do zero ao primeiro sinal no Profit Pro, sem arriscar dinheiro real.</p>
+</div>
+
+<!-- SELETOR DE MODO -->
+<div class="modo-bar">
+  <button class="modo-btn active" onclick="setModo('manual')">🖱️ Modo Manual (mais fácil)</button>
+  <button class="modo-btn" onclick="setModo('ocr')">📷 Modo OCR (automático)</button>
+  <button class="modo-btn" onclick="setModo('dde')">🔗 Modo DDE (avançado)</button>
+</div>
+
+<div class="content">
+
+<!-- ═══════════════════════════════ MODO MANUAL ═══════════════════════════════ -->
+<div class="mode-panel active" id="panel-manual">
+
+  <div class="callout ok">
+    <div class="callout-icon">✅</div>
+    <div class="callout-text"><b>Recomendado para começar.</b> Neste modo, o servidor Python fica rodando e você alimenta os dados do T&T e Book manualmente via chamadas HTTP (ou pelo dashboard web). Perfeito para entender como o sistema funciona antes de conectar ao Profit de verdade.</div>
+  </div>
+
+  <!-- PASSO 1 -->
+  <div class="step">
+    <div class="step-left">
+      <div class="step-circle green">1</div>
+      <div class="step-line"></div>
+    </div>
+    <div class="step-body">
+      <div class="step-title">Extraia e abra a pasta do projeto</div>
+      <div class="step-desc">Descompacte o <code style="color:var(--green);font-family:var(--mono)">fluxo_server_v2.zip</code> numa pasta de fácil acesso, por exemplo:</div>
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">Windows Explorer</span></div>
+        <pre><span class="cmt"># Sugestão de pasta</span>
+C:\FluxoServer\</pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- PASSO 2 -->
+  <div class="step">
+    <div class="step-left">
+      <div class="step-circle green">2</div>
+      <div class="step-line"></div>
+    </div>
+    <div class="step-body">
+      <div class="step-title">Abra o PowerShell na pasta do projeto</div>
+      <div class="step-desc">No Windows Explorer, segure <kbd>Shift</kbd> + clique direito dentro da pasta → "Abrir janela do PowerShell aqui"</div>
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">PowerShell</span><button class="copy-btn" onclick="copiar(this,'cd C:\\FluxoServer\\fluxo_server')">COPIAR</button></div>
+        <pre>cd C:\FluxoServer\fluxo_server</pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- PASSO 3 -->
+  <div class="step">
+    <div class="step-left">
+      <div class="step-circle green">3</div>
+      <div class="step-line"></div>
+    </div>
+    <div class="step-body">
+      <div class="step-title">Instale as dependências (apenas na primeira vez)</div>
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">PowerShell</span><button class="copy-btn" onclick="copiar(this,'python -m pip install -r requirements.txt')">COPIAR</button></div>
+        <pre>python -m pip install -r requirements.txt</pre>
+      </div>
+      <div class="callout warn">
+        <div class="callout-icon">⚠️</div>
+        <div class="callout-text">Se der erro de "python não encontrado", baixe o Python 3.10+ em <b>python.org</b> e marque a opção "Add to PATH" na instalação.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PASSO 4 -->
+  <div class="step">
+    <div class="step-left">
+      <div class="step-circle green">4</div>
+      <div class="step-line"></div>
+    </div>
+    <div class="step-body">
+      <div class="step-title">Inicie o servidor em modo manual (simulação)</div>
+      <div class="step-desc">Escolha o ativo que quer simular. O servidor fica ouvindo na porta 5000:</div>
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">PowerShell — PETR4</span><button class="copy-btn" onclick="copiar(this,'python main.py --asset PETR4 --modo manual')">COPIAR</button></div>
+        <pre>python main.py <span class="kw">--asset</span> <span class="str">PETR4</span> <span class="kw">--modo</span> <span class="str">manual</span></pre>
+      </div>
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">PowerShell — VALE3</span><button class="copy-btn" onclick="copiar(this,'python main.py --asset VALE3 --modo manual --min-confidence 0.65')">COPIAR</button></div>
+        <pre>python main.py <span class="kw">--asset</span> <span class="str">VALE3</span> <span class="kw">--modo</span> <span class="str">manual</span> <span class="kw">--min-confidence</span> <span class="num">0.65</span></pre>
+      </div>
+
+      <div class="callout ok">
+        <div class="callout-icon">🟢</div>
+        <div class="callout-text">Se tudo certo, você verá no terminal:<br><code style="font-family:var(--mono);font-size:11px;">[INFO] FlowServer iniciado em http://127.0.0.1:5000</code></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PASSO 5 -->
+  <div class="step">
+    <div class="step-left">
+      <div class="step-circle blue">5</div>
+      <div class="step-line"></div>
+    </div>
+    <div class="step-body">
+      <div class="step-title">Abra o Dashboard no navegador</div>
+      <div class="step-desc">Com o servidor rodando, abra o Chrome/Edge e acesse:</div>
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">Navegador</span><button class="copy-btn" onclick="copiar(this,'http://127.0.0.1:5000/dashboard')">COPIAR</button></div>
+        <pre>http://127.0.0.1:5000/dashboard</pre>
+      </div>
+      <div class="step-desc">Você verá o painel de monitoramento em tempo real: sinal atual, fluxo, icebergs detectados, estado do motor.</div>
+
+      <div class="section-head">Endpoints disponíveis</div>
+
+      <div class="endpoint">
+        <div class="method get">GET</div>
+        <div class="ep-path">/signal</div>
+        <div class="ep-desc">Sinal atual: BUY / SELL / WAIT</div>
+      </div>
+      <div class="endpoint">
+        <div class="method get">GET</div>
+        <div class="ep-path">/state</div>
+        <div class="ep-desc">Estado completo do motor</div>
+      </div>
+      <div class="endpoint">
+        <div class="method post">POST</div>
+        <div class="ep-path">/tick</div>
+        <div class="ep-desc">Injetar negociação do T&T manualmente</div>
+      </div>
+      <div class="endpoint">
+        <div class="method post">POST</div>
+        <div class="ep-path">/book</div>
+        <div class="ep-desc">Injetar snapshot do Book manualmente</div>
+      </div>
+      <div class="endpoint">
+        <div class="method post">POST</div>
+        <div class="ep-path">/reset</div>
+        <div class="ep-desc">Resetar motor (início de pregão)</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PASSO 6 -->
+  <div class="step">
+    <div class="step-left">
+      <div class="step-circle blue">6</div>
+      <div class="step-line"></div>
+    </div>
+    <div class="step-body">
+      <div class="step-title">Simule negociações enviando ticks via POST</div>
+      <div class="step-desc">Abra outro PowerShell e envie ticks como se fossem do T&T do Profit. Simule um iceberg da Goldman vendendo em PETR4:</div>
+
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">PowerShell — Simular Iceberg Vendedor</span><button class="copy-btn" onclick="copiar(this,ticks_venda)">COPIAR</button></div>
+        <pre id="code-ticks-venda"><span class="cmt"># Simula vários players COMPRANDO do iceberg vendedor (Goldman)</span>
+<span class="cmt"># Cada bloco = uma negociação no T&T</span>
+
+<span class="cmt"># Bradesco comprando 2.100 papéis a R$38,40</span>
+<span class="fn">Invoke-WebRequest</span> -Uri <span class="str">http://127.0.0.1:5000/tick</span> -Method POST `
+  -ContentType <span class="str">"application/json"</span> `
+  -Body <span class="str">'{"price":38.40,"qty":2100,"broker":"BRADESCO","side":"C"}'</span>
+
+<span class="cmt"># Goldman comprando 3.000 — o mesmo iceberg vendedor girou</span>
+<span class="fn">Invoke-WebRequest</span> -Uri <span class="str">http://127.0.0.1:5000/tick</span> -Method POST `
+  -ContentType <span class="str">"application/json"</span> `
+  -Body <span class="str">'{"price":38.40,"qty":3000,"broker":"GOLDMAN SACHS","side":"C"}'</span>
+
+<span class="cmt"># UBS comprando 4.800</span>
+<span class="fn">Invoke-WebRequest</span> -Uri <span class="str">http://127.0.0.1:5000/tick</span> -Method POST `
+  -ContentType <span class="str">"application/json"</span> `
+  -Body <span class="str">'{"price":38.40,"qty":4800,"broker":"UBS","side":"C"}'</span>
+
+<span class="cmt"># JP Morgan comprando 5.200</span>
+<span class="fn">Invoke-WebRequest</span> -Uri <span class="str">http://127.0.0.1:5000/tick</span> -Method POST `
+  -ContentType <span class="str">"application/json"</span> `
+  -Body <span class="str">'{"price":38.40,"qty":5200,"broker":"JP MORGAN","side":"C"}'</span>
+
+<span class="cmt"># Agora consulta o sinal gerado pelo robô</span>
+<span class="fn">Invoke-WebRequest</span> -Uri <span class="str">http://127.0.0.1:5000/signal</span> | <span class="fn">ConvertFrom-Json</span></pre>
+      </div>
+
+      <div class="callout info">
+        <div class="callout-icon">💡</div>
+        <div class="callout-text">O campo <b>side</b> aceita: <code style="font-family:var(--mono)">"C"</code> = compra, <code style="font-family:var(--mono)">"V"</code> = venda. O broker deve ser exatamente como está na lista de corretoras relevantes.</div>
+      </div>
+
+      <div class="step-desc" style="margin-top:8px;">Resposta esperada do <code style="color:var(--green);font-family:var(--mono)">/signal</code> após vários ticks:</div>
+      <div class="signal-card">
+        <div class="sig-label">Resposta JSON — GET /signal</div>
+        <div class="sig-val">▲ BUY</div>
+        <div class="sig-row"><span>asset</span><span>"PETR4"</span></div>
+        <div class="sig-row"><span>signal</span><span style="color:var(--green)">"BUY"</span></div>
+        <div class="sig-row"><span>price</span><span>38.40</span></div>
+        <div class="sig-row"><span>stop</span><span>38.37</span></div>
+        <div class="sig-row"><span>confidence</span><span style="color:var(--green)">0.78</span></div>
+        <div class="sig-row"><span>iceberg_renewals</span><span>4</span></div>
+        <div class="sig-row"><span>dominant_broker</span><span>"GOLDMAN SACHS"</span></div>
+        <div class="sig-row"><span>situation</span><span>"S1_acumulo_RT_venda_romper"</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PASSO 7 -->
+  <div class="step">
+    <div class="step-left">
+      <div class="step-circle yellow">7</div>
+      <div class="step-line"></div>
+    </div>
+    <div class="step-body">
+      <div class="step-title">Configure o robô NTSL no Profit em modo simulação</div>
+      <div class="step-desc">No Profit Pro, abra o gráfico do ativo e carregue o robô. <b>Antes de ativar, configure:</b></div>
+
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">Parâmetros do Robô NTSL — Simulação</span></div>
+        <pre><span class="cmt">// Parâmetros que aparecem na tela de configuração do robô:</span>
+
+iQtdePorTrade     = <span class="num">100</span>       <span class="cmt">// quantidade de papéis por trade</span>
+iHorarioInicio    = <span class="num">1000</span>      <span class="cmt">// início às 10h00</span>
+iHorarioFimEntrada= <span class="num">1630</span>      <span class="cmt">// sem novas entradas após 16h30</span>
+fMetaDiaria       = <span class="num">500.00</span>    <span class="cmt">// meta de lucro do dia (R$)</span>
+fLimitePerdaDiaria= <span class="num">300.00</span>    <span class="cmt">// limite de perda do dia (R$)</span>
+fConfMinima       = <span class="num">0.70</span>      <span class="cmt">// só entra com 70%+ de confiança</span>
+iSinalExterno     = <span class="num">0</span>         <span class="cmt">// 0=aguarda sinal (alimentado via célula)</span></pre>
+      </div>
+
+      <div class="callout warn">
+        <div class="callout-icon">🔶</div>
+        <div class="callout-text"><b>Modo Simulação no Profit:</b> Na barra de ferramentas do robô, certifique-se de que o botão está em <b>"Simulação"</b> (não "Real"). O Profit mostrará as ordens virtualmente sem enviar para a B3.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PASSO 8 -->
+  <div class="step">
+    <div class="step-left">
+      <div class="step-circle yellow">8</div>
+      <div class="step-line"></div>
+    </div>
+    <div class="step-body">
+      <div class="step-title">Integre o sinal do servidor com o robô NTSL</div>
+      <div class="step-desc">O robô NTSL precisa receber o sinal do servidor Python. A forma mais simples é via <b>arquivo de texto</b> que o servidor grava a cada tick:</div>
+
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">Arquivo gravado automaticamente: sinal_atual.txt</span></div>
+        <pre><span class="cmt"># Formato do arquivo (atualizado a cada sinal novo):</span>
+BUY;38.40;38.37;GOLDMAN SACHS;0.78
+<span class="cmt"># SINAL ; PRECO ; STOP ; CORRETORA ; CONFIANCA</span></pre>
+      </div>
+
+      <div class="callout info">
+        <div class="callout-icon">📌</div>
+        <div class="callout-text">Por enquanto, a integração mais prática para simulação é: <b>você mesmo lê o dashboard</b> e executa as ordens no Profit manualmente em modo simulação. Isso valida a lógica antes de automatizar tudo.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PASSO 9 -->
+  <div class="step">
+    <div class="step-left">
+      <div class="step-circle purple">9</div>
+      <div class="step-line"></div>
+    </div>
+    <div class="step-body">
+      <div class="step-title">Workflow de simulação completo (dia de pregão)</div>
+      <div class="step-desc">Rotina diária de teste enquanto ainda em simulação:</div>
+
+      <ul class="checklist">
+        <li class="done">Antes do pregão: <code style="font-family:var(--mono);font-size:11px;">python main.py --asset PETR4 --modo manual</code></li>
+        <li class="done">Abrir dashboard: <code style="font-family:var(--mono);font-size:11px;">http://127.0.0.1:5000/dashboard</code></li>
+        <li class="done">Abrir Profit Pro → ativar robô em <b>modo Simulação</b></li>
+        <li>Observar o T&T e Book do Profit</li>
+        <li>Quando ver um iceberg, enviar os ticks via PowerShell (ou scripts)</li>
+        <li>Checar o sinal em <code style="font-family:var(--mono);font-size:11px;">/signal</code></li>
+        <li>Executar manualmente no Profit em simulação</li>
+        <li>Ao final do dia: <code style="font-family:var(--mono);font-size:11px;">POST /reset</code> para limpar o estado</li>
+        <li>Anotar os resultados e comparar com os sinais gerados</li>
+      </ul>
+    </div>
+  </div>
+
+</div><!-- /panel-manual -->
+
+<!-- ═══════════════════════════════ MODO OCR ═══════════════════════════════ -->
+<div class="mode-panel" id="panel-ocr">
+
+  <div class="callout info">
+    <div class="callout-icon">📷</div>
+    <div class="callout-text"><b>Modo automático.</b> O servidor captura a tela do Profit Pro com OCR e alimenta o motor sozinho. Você não precisa enviar ticks manualmente. Requer calibração da região da tela onde fica o T&T e o Book.</div>
+  </div>
+
+  <div class="step">
+    <div class="step-left"><div class="step-circle green">1</div><div class="step-line"></div></div>
+    <div class="step-body">
+      <div class="step-title">Instale o Tesseract OCR</div>
+      <div class="step-desc">Baixe em: <b>github.com/UB-Mannheim/tesseract/wiki</b> → versão Windows 64-bit</div>
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">Instalação padrão — deixar em:</span></div>
+        <pre>C:\Program Files\Tesseract-OCR\tesseract.exe</pre>
+      </div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-left"><div class="step-circle green">2</div><div class="step-line"></div></div>
+    <div class="step-body">
+      <div class="step-title">Instale dependências OCR</div>
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">PowerShell</span><button class="copy-btn" onclick="copiar(this,'python -m pip install mss pillow pytesseract opencv-python')">COPIAR</button></div>
+        <pre>python -m pip install mss pillow pytesseract opencv-python</pre>
+      </div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-left"><div class="step-circle blue">3</div><div class="step-line"></div></div>
+    <div class="step-body">
+      <div class="step-title">Rode o modo calibração para mapear a tela</div>
+      <div class="step-desc">Deixe o Profit aberto com o T&T e Book visíveis, depois rode:</div>
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">PowerShell</span><button class="copy-btn" onclick="copiar(this,'python main.py --asset PETR4 --modo ocr --calibrate')">COPIAR</button></div>
+        <pre>python main.py <span class="kw">--asset</span> <span class="str">PETR4</span> <span class="kw">--modo</span> <span class="str">ocr</span> <span class="kw">--calibrate</span></pre>
+      </div>
+      <div class="step-desc">Isso salva screenshots da tela atual para você identificar as coordenadas do T&T e Book.</div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-left"><div class="step-circle blue">4</div><div class="step-line"></div></div>
+    <div class="step-body">
+      <div class="step-title">Rode com as regiões mapeadas</div>
+      <div class="step-desc">Use as coordenadas descobertas na calibração. Exemplo para monitor Full HD (1920×1080):</div>
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">PowerShell — com regiões</span><button class="copy-btn" onclick="copiar(this,'python main.py --asset PETR4 --modo ocr --tt-region 1300,200,580,400 --book-region 0,200,400,500')">COPIAR</button></div>
+        <pre>python main.py <span class="kw">--asset</span> <span class="str">PETR4</span> <span class="kw">--modo</span> <span class="str">ocr</span> `
+  <span class="kw">--tt-region</span>   <span class="num">1300,200,580,400</span> `
+  <span class="kw">--book-region</span> <span class="num">0,200,400,500</span>
+<span class="cmt"># formato: left,top,width,height em pixels</span></pre>
+      </div>
+      <div class="callout warn">
+        <div class="callout-icon">⚠️</div>
+        <div class="callout-text">As coordenadas variam conforme seu monitor e layout do Profit. Ajuste após a calibração.</div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /panel-ocr -->
+
+<!-- ═══════════════════════════════ MODO DDE ═══════════════════════════════ -->
+<div class="mode-panel" id="panel-dde">
+
+  <div class="callout warn">
+    <div class="callout-icon">🔗</div>
+    <div class="callout-text"><b>Modo avançado.</b> O Profit Pro expõe dados via DDE (Dynamic Data Exchange). O servidor Python lê esses dados diretamente. Mais estável que OCR mas requer configuração do DDE no Windows.</div>
+  </div>
+
+  <div class="step">
+    <div class="step-left"><div class="step-circle green">1</div><div class="step-line"></div></div>
+    <div class="step-body">
+      <div class="step-title">Instale pywin32</div>
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">PowerShell</span><button class="copy-btn" onclick="copiar(this,'python -m pip install pywin32')">COPIAR</button></div>
+        <pre>python -m pip install pywin32</pre>
+      </div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-left"><div class="step-circle green">2</div><div class="step-line"></div></div>
+    <div class="step-body">
+      <div class="step-title">No Profit Pro — ative o DDE</div>
+      <div class="step-desc">Menu <b>Ferramentas → Configurações → DDE</b>. Marque "Habilitar servidor DDE". O servidor DDE do Profit usa o tópico <code style="font-family:var(--mono);color:var(--green)">ADVFN</code>.</div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-left"><div class="step-circle blue">3</div><div class="step-line"></div></div>
+    <div class="step-body">
+      <div class="step-title">Rode o servidor em modo DDE</div>
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">PowerShell</span><button class="copy-btn" onclick="copiar(this,'python main.py --asset PETR4 --modo dde')">COPIAR</button></div>
+        <pre>python main.py <span class="kw">--asset</span> <span class="str">PETR4</span> <span class="kw">--modo</span> <span class="str">dde</span></pre>
+      </div>
+      <div class="callout danger">
+        <div class="callout-icon">❗</div>
+        <div class="callout-text">O modo DDE só funciona no Windows com o Profit Pro aberto e DDE ativado. Para simular sem o Profit, use o <b>modo Manual</b>.</div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /panel-dde -->
+
+<!-- ═══════════════════════ PARÂMETROS COMPLETOS ═══════════════════════ -->
+<div class="section-head">Todos os parâmetros do servidor</div>
+
+<div class="code-block">
+  <div class="code-header"><span class="code-lang">Referência completa — python main.py --help</span></div>
+  <pre><span class="kw">--asset</span>           <span class="str">PETR4</span>   <span class="cmt"># ticker do ativo (PETR4, VALE3, ITUB4...)</span>
+<span class="kw">--modo</span>            <span class="str">manual</span>  <span class="cmt"># ocr | dde | manual</span>
+<span class="kw">--host</span>            <span class="str">127.0.0.1</span> <span class="cmt"># IP do servidor HTTP</span>
+<span class="kw">--port</span>            <span class="num">5000</span>    <span class="cmt"># porta (padrão 5000)</span>
+<span class="kw">--flow-window</span>     <span class="num">30.0</span>    <span class="cmt"># janela de análise de fluxo em segundos</span>
+<span class="kw">--flow-pct</span>        <span class="num">65.0</span>    <span class="cmt"># % mínimo de fluxo dominante para sinal</span>
+<span class="kw">--iceberg-min</span>     <span class="num">3</span>       <span class="cmt"># renovações mínimas para confirmar iceberg</span>
+<span class="kw">--tick-size</span>       <span class="num">0.01</span>    <span class="cmt"># tamanho do tick do ativo</span>
+<span class="kw">--min-confidence</span>  <span class="num">0.60</span>    <span class="cmt"># confiança mínima para gerar sinal (0.0–1.0)</span>
+<span class="kw">--calibrate</span>               <span class="cmt"># (modo ocr) salva screenshots e sai</span>
+<span class="kw">--tt-region</span>       <span class="str">x,y,w,h</span> <span class="cmt"># (modo ocr) região do T&T na tela</span>
+<span class="kw">--book-region</span>     <span class="str">x,y,w,h</span> <span class="cmt"># (modo ocr) região do Book na tela</span></pre>
+</div>
+
+<!-- ═══════════════════════ PROBLEMAS COMUNS ═══════════════════════ -->
+<div class="section-head">Problemas comuns e soluções</div>
+
+<div class="callout danger">
+  <div class="callout-icon">❌</div>
+  <div class="callout-text"><b>Erro: "No module named 'core'"</b><br>Você está rodando o python de dentro da pasta errada. Execute dentro de <code style="font-family:var(--mono)">fluxo_server/</code>, não da pasta raiz do zip.</div>
+</div>
+<div class="callout danger">
+  <div class="callout-icon">❌</div>
+  <div class="callout-text"><b>Erro: "Address already in use" (porta 5000)</b><br>Já tem um servidor rodando. Mate o processo ou use outra porta: <code style="font-family:var(--mono)">--port 5001</code></div>
+</div>
+<div class="callout danger">
+  <div class="callout-icon">❌</div>
+  <div class="callout-text"><b>Sinal sempre WAIT / confiança baixa</b><br>Normal no início — o motor precisa de dados suficientes. Envie pelo menos 6–8 ticks no mesmo preço com corretoras relevantes (Goldman, Bradesco, Itaú) para ver o sinal BUY/SELL aparecer.</div>
+</div>
+<div class="callout warn">
+  <div class="callout-icon">⚠️</div>
+  <div class="callout-text"><b>Logs do servidor</b><br>Os logs ficam em <code style="font-family:var(--mono)">fluxo_server/logs/fluxo_YYYYMMDD.log</code>. Consulte ali se algo não estiver funcionando.</div>
+</div>
+
+</div><!-- /content -->
+
+<footer>
+  <span>Fluxo Server v2 · Modo Simulação · B3</span>
+  <span>Comando rápido: <kbd>python main.py --asset PETR4 --modo manual</kbd></span>
+</footer>
+
+<script>
+function setModo(modo) {
+  document.querySelectorAll('.modo-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.mode-panel').forEach(p => p.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById('panel-' + modo).classList.add('active');
+}
+
+const ticks_venda = `Invoke-WebRequest -Uri http://127.0.0.1:5000/tick -Method POST \`
+  -ContentType "application/json" \`
+  -Body '{"price":38.40,"qty":2100,"broker":"BRADESCO","side":"C"}'
+
+Invoke-WebRequest -Uri http://127.0.0.1:5000/tick -Method POST \`
+  -ContentType "application/json" \`
+  -Body '{"price":38.40,"qty":3000,"broker":"GOLDMAN SACHS","side":"C"}'
+
+Invoke-WebRequest -Uri http://127.0.0.1:5000/tick -Method POST \`
+  -ContentType "application/json" \`
+  -Body '{"price":38.40,"qty":4800,"broker":"UBS","side":"C"}'
+
+Invoke-WebRequest -Uri http://127.0.0.1:5000/tick -Method POST \`
+  -ContentType "application/json" \`
+  -Body '{"price":38.40,"qty":5200,"broker":"JP MORGAN","side":"C"}'
+
+Invoke-WebRequest -Uri http://127.0.0.1:5000/signal | ConvertFrom-Json`;
+
+function copiar(btn, texto) {
+  const t = typeof texto === 'string' ? texto : btn.previousSibling?.textContent || '';
+  navigator.clipboard.writeText(t.trim()).then(() => {
+    const orig = btn.textContent;
+    btn.textContent = '✓ COPIADO';
+    btn.style.color = 'var(--green)';
+    setTimeout(() => { btn.textContent = orig; btn.style.color = ''; }, 1500);
+  });
+}
+</script>
+</body>
+</html>

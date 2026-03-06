@@ -1,0 +1,18 @@
+# FLUXO SERVER — Dependências Python
+# =====================================
+# Instalar com: pip install -r requirements.txt
+#
+# OBRIGATÓRIO (todos os modos):
+# (nenhuma dependência externa — usa apenas stdlib Python)
+
+# MODO OCR (captura de tela):
+mss>=9.0.1
+Pillow>=10.0.0
+pytesseract>=0.3.10
+opencv-python>=4.8.0
+
+# MODO DDE (Windows + Profit Pro):
+pywin32>=306         # modo DDE — Windows + Profit Pro (obrigatório para --modo dde)
+
+# OPCIONAL (melhor performance):
+numpy>=1.24.0

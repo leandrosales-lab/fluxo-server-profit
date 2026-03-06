@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Ambiente virtual
+venv/
+.venv/
+env/
+.env
+
+# Logs gerados em runtime
+logs/
+
+# Arquivos de sinal temporários
+sinal_atual.txt
+
+# Conhecimento gerado pelo transcritor (pode conter dados de vídeos proprietários)
+config/conhecimento_iceberg.json
+
+# Screenshots de calibração OCR
+calibration_*.png
+screenshot_*.png
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# macOS
+.DS_Store
