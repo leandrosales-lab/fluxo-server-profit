@@ -1,0 +1,53 @@
+COMO USAR A MACRO VBA — FLUXO_BRIDGE
+======================================
+
+1. ABRIR O EXCEL
+   - Criar um arquivo novo ou usar FLUXO_BRIDGE.xlsm (salvar como macro habilitada)
+   - Habilitar macros ao abrir
+
+2. IMPORTAR O MÓDULO VBA
+   - Alt+F11 → abre o Editor VBA
+   - Clique direito em "Módulos" → Importar Arquivo
+   - Selecionar: FLUXO_BRIDGE.bas
+   - Fechar o Editor VBA
+
+3. INSERIR FÓRMULAS DDE DO PROFIT (células E1:I1)
+   Abrir o Profit Pro e inserir nas células do Excel:
+
+   E1 = =Profit|Ultima!PETR4       (último preço)
+   F1 = =Profit|VolNeg!PETR4       (volume do último negócio)
+   G1 = =Profit|CodAgente!PETR4    (código do agente/corretora)
+   H1 = =Profit|TipNeg!PETR4       (tipo: C=compra, V=venda)
+   I1 = =Profit|QtdNeg!PETR4       (quantidade de negócios)
+
+   NOTA: Troque PETR4 pelo ativo desejado.
+   NOTA: O Profit deve ter o servidor DDE habilitado:
+         Ferramentas > Configurações > DDE > Habilitar servidor DDE
+
+4. INICIAR A BRIDGE
+   - No Excel: Alt+F8 → selecionar "IniciarBridge" → Executar
+   - O VBA lerá E1:I1 a cada 500ms e enviará ao servidor Python
+
+5. LINKAR OS PARÂMETROS DO ROBÔ NTSL
+   No Profit, ao configurar o robô robo_fluxo_v2_com_servidor.ntsl,
+   linkar via DDE as células do Excel:
+
+   iSinalExterno   → célula A1 desta planilha
+   fConfiancaSinal → célula B1 desta planilha
+   fPrecoSinal     → célula C1 desta planilha
+   fStopSinal      → célula D1 desta planilha
+
+   Fórmula DDE no Profit para ler célula A1 da planilha "Plan1":
+   =Excel|[FLUXO_BRIDGE.xlsm]Plan1!R1C1
+
+6. SEQUÊNCIA DE INICIALIZAÇÃO
+   a) Iniciar servidor Python:
+      python main.py --asset PETR4 --modo dde
+
+   b) Abrir Excel e iniciar macro IniciarBridge()
+
+   c) Abrir Profit Pro e iniciar o robô NTSL em simulação
+
+7. PARAR
+   - Alt+F8 → "PararBridge" → Executar
+   - O sinal é zerado (WAIT) automaticamente
