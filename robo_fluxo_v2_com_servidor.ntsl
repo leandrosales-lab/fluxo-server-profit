@@ -1,66 +1,20 @@
-// ============================================================
 // ROBÔ LEITURA DE FLUXO v2.0 — COM SERVIDOR PYTHON
 // Linguagem: NTSL | Profit Pro / Profit Ultra
-//
-// Esta versão recebe sinais do servidor Python via:
-//   - Leitura de célula Excel (DDE Profit → Excel → Python → Excel)
-//   - Ou: indicador auxiliar que lê o sinal e plota na tela
-//
-// SETUP:
-//   1. Iniciar o servidor Python:
-//      python main.py --asset PETR4 --modo dde
-//   2. Abrir o Excel com a macro DDE (PROFIT_DDE_TO_HTTP.xlsm)
-//   3. Linkar célula do sinal ao NTSL via DDE:
-//      No Profit, criar link DDE para célula do Excel que contém o sinal
-//   4. Este robô lê o sinal e executa ordens
-//
-// NOTA: Para integração direta sem Excel, o robô pode ler
-// o arquivo "sinal_atual.txt" que o servidor Python grava a cada tick.
-// ============================================================
 
-// ── PARÂMETROS
 input
-  // Arquivo de sinal (escrito pelo servidor Python)
-  // O servidor grava: BUY;19.05;18.99;JPMORGAN;0.85
-  // Formato: SINAL;PRECO;STOP;BROKER;CONFIANCA
-  // NOTA: NTSL não lê arquivos diretamente; use a integração via
-  // indicador auxiliar ou célula Excel conforme documentação.
-
-  // Quantidade por trade
   iQtdePorTrade(100);
-
-  // Horário de operação
   iHorarioInicio(1000);
   iHorarioFimEntrada(1630);
   iHorarioFimDia(1645);
-
-  // Gestão de risco
   fMetaDiaria(500.00);
   fLimitePerdaDiaria(300.00);
   iStopOffsetEmTicks(3);
-
-  // Confiança mínima para aceitar sinal do servidor Python
-  // (o servidor envia confiança de 0.0 a 1.0; ex: 0.70 = 70%)
   fConfMinima(0.70);
-
-  // Sinal recebido do servidor Python (via célula DDE ou indicador)
-  // Valores esperados: 1 = BUY, -1 = SELL, 0 = WAIT, 2 = CLOSE
-  // Para integrar: criar parâmetro de entrada linkado à célula Excel
-  iSinalExterno(0);    // 1=BUY, -1=SELL, 0=WAIT, 2=CLOSE
-
-  // Preço do iceberg/sinal (recebido do servidor)
+  iSinalExterno(0);
   fPrecoSinal(0.0);
-
-  // Stop do sinal (recebido do servidor)
   fStopSinal(0.0);
-
-  // Confiança do sinal (0.0 a 1.0) — enviada pelo servidor Python nessa escala
   fConfiancaSinal(0.0);
 
-  // Habilitar log no console do Profit (true = ligado)
-  bLogConsole(true);
-
-// ── VARIÁVEIS
 var
   iDataAtual: integer;
   bConfigurouRisco: boolean;
@@ -69,9 +23,11 @@ var
   fPrecoStopOffset: float;
   fResultadoDia: float;
   iSinalAnterior: integer;
+  bContinuar: boolean;
 
-// ── CÓDIGO PRINCIPAL
 begin
+
+  bContinuar := true;
 
   // Reset diário
   if Date <> iDataAtual then
@@ -79,8 +35,6 @@ begin
     iDataAtual       := Date;
     bConfigurouRisco := false;
     iSinalAnterior   := 0;
-    if bLogConsole then
-      ConsoleLog('=== NOVO DIA — Aguardando sinais do servidor Python ===');
   end;
 
   // Verificar meta/perda
@@ -88,114 +42,101 @@ begin
   if (fResultadoDia >= fMetaDiaria) or (fResultadoDia <= -fLimitePerdaDiaria) then
   begin
     if HasPosition then ClosePosition;
-    exit;
+    bContinuar := false;
   end;
 
   // Encerramento daytrade
-  if (Time >= iHorarioFimDia) and HasPosition then
+  if bContinuar and (Time >= iHorarioFimDia) and HasPosition then
   begin
     ClosePosition;
-    exit;
+    bContinuar := false;
   end;
 
-  // ── Processar sinal do servidor Python
-  // O sinal chega via iSinalExterno (célula DDE ou parâmetro)
-  // Confiança via fConfiancaSinal (0.0 a 1.0)
-
-  if Not HasPosition
-  and (Time >= iHorarioInicio)
-  and (Time <= iHorarioFimEntrada)
-  and (fConfiancaSinal >= fConfMinima)
-  then
+  if bContinuar then
   begin
 
-    // SINAL DE COMPRA do servidor Python
-    if (iSinalExterno = 1) and (iSinalAnterior <> 1) then
+    // Entrada por sinal de COMPRA
+    if Not HasPosition
+    and (Time >= iHorarioInicio)
+    and (Time <= iHorarioFimEntrada)
+    and (fConfiancaSinal >= fConfMinima)
+    and (iSinalExterno = 1)
+    and (iSinalAnterior <> 1)
+    then
     begin
       BuyAtMarket(iQtdePorTrade);
       bConfigurouRisco := false;
       iSinalAnterior   := 1;
-
-      if bLogConsole then
-        ConsoleLog('COMPRA por sinal do servidor Python | '
-                  + 'Preco: R$ ' + FloatToStr(fPrecoSinal)
-                  + ' | Stop: R$ ' + FloatToStr(fStopSinal)
-                  + ' | Confianca: ' + FloatToStr(fConfiancaSinal) + '%');
     end;
 
-    // SINAL DE VENDA do servidor Python
-    if (iSinalExterno = -1) and (iSinalAnterior <> -1) then
+    // Entrada por sinal de VENDA
+    if Not HasPosition
+    and (Time >= iHorarioInicio)
+    and (Time <= iHorarioFimEntrada)
+    and (fConfiancaSinal >= fConfMinima)
+    and (iSinalExterno = -1)
+    and (iSinalAnterior <> -1)
+    then
     begin
       SellShortAtMarket(iQtdePorTrade);
       bConfigurouRisco := false;
       iSinalAnterior   := -1;
-
-      if bLogConsole then
-        ConsoleLog('VENDA por sinal do servidor Python | '
-                  + 'Preco: R$ ' + FloatToStr(fPrecoSinal)
-                  + ' | Stop: R$ ' + FloatToStr(fStopSinal)
-                  + ' | Confianca: ' + FloatToStr(fConfiancaSinal) + '%');
     end;
 
-  end;
+    // Sinal de FECHAR
+    if (iSinalExterno = 2) and HasPosition then
+    begin
+      ClosePosition;
+      bConfigurouRisco := false;
+      iSinalAnterior   := 0;
+    end;
 
-  // Sinal de FECHAR do servidor Python
-  if (iSinalExterno = 2) and HasPosition then
-  begin
-    ClosePosition;
-    bConfigurouRisco := false;
-    iSinalAnterior   := 0;
-    if bLogConsole then
-      ConsoleLog('CLOSE por sinal do servidor Python (Iceberg sumiu / fluxo inverteu)');
-  end;
+    // Reset quando WAIT
+    if (iSinalExterno = 0) and (iSinalAnterior <> 0) then
+      iSinalAnterior := 0;
 
-  // Reset de sinal quando volta para WAIT
-  if (iSinalExterno = 0) and (iSinalAnterior <> 0) then
-    iSinalAnterior := 0;
+    // Gestão de risco
+    if HasPosition and Not bConfigurouRisco then
+    begin
+      if IsBought then
+      begin
+        if fStopSinal > 0 then
+          fPrecoStop := fStopSinal
+        else
+          fPrecoStop := BuyPrice - (2 * MinPriceIncrement);
+        fPrecoAlvo       := BuyPrice + (6 * MinPriceIncrement);
+        fPrecoStopOffset := fPrecoStop - (iStopOffsetEmTicks * MinPriceIncrement);
+      end
+      else if IsSold then
+      begin
+        if fStopSinal > 0 then
+          fPrecoStop := fStopSinal
+        else
+          fPrecoStop := SellPrice + (2 * MinPriceIncrement);
+        fPrecoAlvo       := SellPrice - (6 * MinPriceIncrement);
+        fPrecoStopOffset := fPrecoStop + (iStopOffsetEmTicks * MinPriceIncrement);
+      end;
+      bConfigurouRisco := true;
+    end;
 
-  // ── Gestão de risco (stop + alvo)
-  if HasPosition and Not bConfigurouRisco then
-  begin
     if IsBought then
     begin
-      // Usar stop do servidor Python se válido; senão geográfico
-      if fStopSinal > 0 then
-        fPrecoStop := fStopSinal
-      else
-        fPrecoStop := BuyPrice - (2 * MinPriceIncrement);
-
-      fPrecoAlvo       := BuyPrice + (6 * MinPriceIncrement);
-      fPrecoStopOffset := fPrecoStop - (iStopOffsetEmTicks * MinPriceIncrement);
-    end
-    else if IsSold then
-    begin
-      if fStopSinal > 0 then
-        fPrecoStop := fStopSinal
-      else
-        fPrecoStop := SellPrice + (2 * MinPriceIncrement);
-
-      fPrecoAlvo       := SellPrice - (6 * MinPriceIncrement);
-      fPrecoStopOffset := fPrecoStop + (iStopOffsetEmTicks * MinPriceIncrement);
+      SellToCoverStop(fPrecoStop, fPrecoStopOffset);
+      SellToCoverLimit(fPrecoAlvo);
     end;
-    bConfigurouRisco := true;
-  end;
 
-  if IsBought then
-  begin
-    SellToCoverStop(fPrecoStop, fPrecoStopOffset);
-    SellToCoverLimit(fPrecoAlvo);
-  end;
+    if IsSold then
+    begin
+      BuyToCoverStop(fPrecoStop, fPrecoStopOffset);
+      BuyToCoverLimit(fPrecoAlvo);
+    end;
 
-  if IsSold then
-  begin
-    BuyToCoverStop(fPrecoStop, fPrecoStopOffset);
-    BuyToCoverLimit(fPrecoAlvo);
-  end;
+    if Not HasPosition and bConfigurouRisco then
+    begin
+      bConfigurouRisco := false;
+      iSinalAnterior   := 0;
+    end;
 
-  if Not HasPosition and bConfigurouRisco then
-  begin
-    bConfigurouRisco := false;
-    iSinalAnterior   := 0;
   end;
 
 end;
