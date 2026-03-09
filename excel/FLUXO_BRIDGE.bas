@@ -142,7 +142,8 @@ Public Sub VerificarEEnviar()
             sSinalVal = ExtrairStr(sSinal, """signal"":""", """")
             dConf = CDbl(ExtrairStr(sSinal, """confidence"":", ","))
             dPreco = CDbl(ExtrairStr(sSinal, """price"":", ","))
-            dStop = CDbl(ExtrairStr(sSinal, """stop"":", "}"))
+            dStop = CDbl(ExtrairStr(sSinal, """stop_price"":", ","))
+
 
             ' Converter sinal texto → código numérico para NTSL
             Dim iSinalNum As Integer
