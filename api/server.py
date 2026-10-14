@@ -138,6 +138,8 @@ function renderFlow(s) {
       Dominante: ${dom}
     </div>
     <div style="margin-top:12px">
+      <div class="stat"><span>Delta acumulado</span><span class="stat-val" style="color:${(s.delta?.cumulative||0) >= 0 ? '#00c853' : '#f44336'}">${(s.delta?.cumulative||0).toLocaleString()}</span></div>
+      <div class="stat"><span>Delta ${s.delta?.window_sec||0}s</span><span class="stat-val" style="color:${(s.delta?.window||0) >= 0 ? '#00c853' : '#f44336'}">${(s.delta?.window||0).toLocaleString()}</span></div>
       <div class="stat"><span>Ticks processados</span><span class="stat-val">${s.tick_count?.toLocaleString()}</span></div>
       <div class="stat"><span>Ativo</span><span class="stat-val">${s.asset}</span></div>
     </div>
@@ -177,7 +179,22 @@ function renderPatterns(s) {
     html += '<div><b style="color:#888">🛡️ Absorção</b>';
     s.absorbed_levels.forEach(a => {
       html += `<div class="list-item">
-        Nível R$ ${a.price?.toFixed(2)} — ${a.touches} toques
+        Nível R$ ${a.price?.toFixed(2)} — ${a.touches} toques | ${a.volume?.toLocaleString()} vol
+        | absorvendo ${a.absorbed_side}
+      </div>`;
+    });
+    html += '</div>';
+  }
+
+  if (s.exhaustions?.length) {
+    html += '<div style="margin-top:8px"><b style="color:#ff9800">🪫 Exaustão</b>';
+    s.exhaustions.forEach(e => {
+      const cls = e.exhausted_side === 'compra' ? 'badge-red' : 'badge-green';
+      const label = e.exhausted_side === 'compra' ? '▼ TOPO' : '▲ FUNDO';
+      html += `<div class="list-item">
+        <span class="badge ${cls}">${label}</span>
+        R$ ${e.extreme_price?.toFixed(2)} | vol ${pct(e.vol_ratio*100)}% da média
+        ${e.delta_divergence ? '| divergência de delta' : ''}
       </div>`;
     });
     html += '</div>';

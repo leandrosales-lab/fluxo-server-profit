@@ -217,13 +217,176 @@ def test_absorcao():
 
     if state["absorbed_levels"]:
         lvl = state["absorbed_levels"][0]
-        ok(f"Absorção detectada @ R${lvl['price']:.2f} com {lvl['touches']} toques")
+        ok(f"Absorção detectada @ R${lvl['price']:.2f} com {lvl['touches']} toques "
+           f"(vol {lvl['volume']:,}, agressor absorvido: {lvl['absorbed_side']})")
     else:
         err("Nenhuma absorção detectada")
 
+    # 19.48 também foi tocado 6x, mas só nos recuos (volume baixo) → não é absorção
+    precos = [l["price"] for l in state["absorbed_levels"]]
+    if 19.48 in precos:
+        err(f"19.48 não deveria contar como absorção (volume baixo): {state['absorbed_levels']}")
+    else:
+        ok("Nível de recuo com volume baixo (19.48) filtrado corretamente")
+
+    if state["absorbed_levels"][0]["absorbed_side"] == "venda":
+        ok("Lado absorvido correto: agressão vendedora")
+    else:
+        err(f"Lado absorvido incorreto: {state['absorbed_levels'][0]['absorbed_side']}")
+
+
+def test_delta():
+    print(f"\n{AMARELO}═══ TESTE 5: Delta Acumulado ═══{RESET}")
+
+    engine = FlowEngine("WEGE3", EngineConfig(delta_window_sec=10.0))
+    now = time.time()
+    # Agressões antigas (fora da janela de 10s): +3000 compra
+    for i in range(3):
+        engine.add_tick(Tick(now - 60 + i, 40.00, 1000, f"B{i}", Side.BUY))
+    # Agressões recentes: +500 compra, -2000 venda
+    engine.add_tick(Tick(now - 5, 40.00, 500,  "X", Side.BUY))
+    engine.add_tick(Tick(now - 4, 39.99, 1200, "Y", Side.SELL))
+    engine.add_tick(Tick(now - 3, 39.98, 800,  "Z", Side.SELL))
+
+    d = engine.get_state()["delta"]
+    info(f"Delta: {d}")
+    if d["cumulative"] == 3000 + 500 - 2000:
+        ok(f"Delta acumulado correto: {d['cumulative']:+,}")
+    else:
+        err(f"Delta acumulado esperado +1500, recebeu {d['cumulative']}")
+    if d["window"] == 500 - 2000 and d["window_buy"] == 500 and d["window_sell"] == 2000:
+        ok(f"Delta da janela correto: {d['window']:+,}")
+    else:
+        err(f"Delta da janela incorreto: {d}")
+
+    engine.reset()
+    if engine.get_state()["delta"]["cumulative"] == 0:
+        ok("Delta zerado no reset")
+    else:
+        err("Delta não foi zerado no reset")
+
+
+def _simular_pernas(engine: FlowEngine, inicio: float, sentido: int,
+                    pernas: list[tuple[int, int, float]], recuo_ticks: int = 4) -> float:
+    """
+    Gera pernas na direção `sentido` (+1 alta, -1 baixa) separadas por recuos.
+    pernas: [(n_ticks_avanço, lote_agressão, intervalo_seg)]
+    Cada perna sobe/desce n_ticks e depois recua recuo_ticks (agressão contrária).
+    Retorna o timestamp do último tick.
+    """
+    tk = engine.cfg.tick_size
+    a_favor = Side.BUY if sentido > 0 else Side.SELL
+    contra  = Side.SELL if sentido > 0 else Side.BUY
+    preco = 20.00
+    ts = inicio
+    n = 0
+    engine.add_tick(Tick(ts, preco, 100, "INICIO", a_favor))
+    for avanco, lote, dt in pernas:
+        for _ in range(avanco):
+            ts += dt; n += 1
+            preco = round(preco + sentido * tk, 2)
+            engine.add_tick(Tick(ts, preco, lote, f"B{n}", a_favor))
+        for _ in range(recuo_ticks):
+            ts += 0.5; n += 1
+            preco = round(preco - sentido * tk, 2)
+            engine.add_tick(Tick(ts, preco, 300, f"B{n}", contra))
+    return ts
+
+
+def _cfg_exaustao() -> EngineConfig:
+    return EngineConfig(
+        flow_window_sec           = 10.0,
+        tick_size                 = 0.01,
+        exhaustion_reversal_ticks = 3,
+        exhaustion_min_legs       = 3,
+        exhaustion_vol_ratio      = 0.6,
+        min_confidence            = 0.50,
+    )
+
+
+def test_exaustao_topo():
+    print(f"\n{AMARELO}═══ TESTE 6: Exaustão Compradora (topo) ═══{RESET}")
+
+    engine = FlowEngine("PETR4", _cfg_exaustao())
+    info("3 pernas de alta: lote 1000 rápido → 900 → 150 lento (máximas mais altas)...")
+    _simular_pernas(engine, time.time() - 60, +1, [
+        (10, 1000, 0.3),
+        (8,  900,  0.4),
+        (6,  150,  1.5),
+    ])
+
+    state  = engine.get_state()
+    signal = engine.get_signal()
+    info(f"Pernas: {[(l['direction'], l['end_price'], l['vol_with']) for l in state['legs']]}")
+    info(f"Sinal: {signal.signal.value} | Padrão: {signal.pattern.value} | "
+         f"Conf: {signal.confidence:.2f} | Stop: {signal.stop_price}")
+    info(f"Razão: {signal.reason}")
+
+    if not state["exhaustions"]:
+        err("Nenhuma exaustão detectada")
+    ev = state["exhaustions"][0]
+    if ev["exhausted_side"] == "compra":
+        ok(f"Exaustão compradora @ {ev['extreme_price']:.2f} (vol {ev['vol_ratio']:.0%})")
+    else:
+        err(f"Lado exaurido incorreto: {ev['exhausted_side']}")
+    if ev["delta_divergence"]:
+        ok("Divergência de delta detectada")
+    else:
+        err("Divergência de delta esperada")
+    if signal.signal == Signal.SELL and signal.pattern.value == "Exaustão":
+        ok("Sinal SELL por exaustão gerado")
+    else:
+        err(f"Esperado SELL/Exaustão, recebeu {signal.signal.value}/{signal.pattern.value}")
+    if signal.stop_price > ev["extreme_price"]:
+        ok(f"Stop acima da máxima: {signal.stop_price:.2f}")
+    else:
+        err(f"Stop deveria ficar acima de {ev['extreme_price']}: {signal.stop_price}")
+
+    # Preço rompe a máxima → exaustão invalidada
+    last = engine._ticks[-1]
+    engine.add_tick(Tick(last.timestamp + 1, round(ev["extreme_price"] + 0.01, 2),
+                         2000, "ROMPE", Side.BUY))
+    if not engine.get_state()["exhaustions"]:
+        ok("Exaustão invalidada após rompimento da máxima")
+    else:
+        err("Exaustão deveria ser invalidada após rompimento")
+
+
+def test_exaustao_fundo():
+    print(f"\n{AMARELO}═══ TESTE 7: Exaustão Vendedora (fundo) ═══{RESET}")
+
+    engine = FlowEngine("VALE3", _cfg_exaustao())
+    _simular_pernas(engine, time.time() - 60, -1, [
+        (10, 1000, 0.3),
+        (8,  800,  0.4),
+        (6,  200,  1.5),
+    ])
+    signal = engine.get_signal()
+    info(f"Sinal: {signal.signal.value} | Padrão: {signal.pattern.value} | Razão: {signal.reason}")
+    if signal.signal == Signal.BUY and signal.pattern.value == "Exaustão":
+        ok("Sinal BUY por exaustão vendedora gerado")
+    else:
+        err(f"Esperado BUY/Exaustão, recebeu {signal.signal.value}/{signal.pattern.value}")
+
+
+def test_sem_exaustao():
+    print(f"\n{AMARELO}═══ TESTE 8: Tendência saudável (sem exaustão) ═══{RESET}")
+
+    engine = FlowEngine("ITUB4", _cfg_exaustao())
+    _simular_pernas(engine, time.time() - 60, +1, [
+        (10, 1000, 0.3),
+        (8,  1000, 0.3),
+        (8,  1100, 0.3),
+    ])
+    state = engine.get_state()
+    if not state["exhaustions"]:
+        ok("Nenhuma exaustão com volume crescente nas pernas")
+    else:
+        err(f"Exaustão falsa: {state['exhaustions']}")
+
 
 def test_api_http():
-    print(f"\n{AMARELO}═══ TESTE 5: API HTTP (servidor embutido) ═══{RESET}")
+    print(f"\n{AMARELO}═══ TESTE 9: API HTTP (servidor embutido) ═══{RESET}")
 
     import threading
     import urllib.request
@@ -292,6 +455,10 @@ def main():
     test_iceberg_expira(engine)
     test_urgencia()
     test_absorcao()
+    test_delta()
+    test_exaustao_topo()
+    test_exaustao_fundo()
+    test_sem_exaustao()
     test_api_http()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")

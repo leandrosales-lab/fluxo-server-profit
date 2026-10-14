@@ -7,9 +7,11 @@ Sociedade dos Traders, processando ticks em tempo real.
 Detecta:
   - Iceberg por corretora (lote renovando no mesmo preço)
   - Best Offer Passivo (player sempre no 1º nível)
-  - Absorção (preço travado no mesmo nível)
+  - Absorção (muito volume agredido no mesmo nível sem o preço passar)
   - Urgência (player subindo/descendo a escada de preços)
   - Pressão acumulada de fluxo (% compra vs venda)
+  - Delta acumulado (volume agredido comprador - vendedor)
+  - Exaustão (novas extremidades com cada vez menos agressão)
 
 Emite sinais: BUY / SELL / CLOSE / WAIT
 """
@@ -46,6 +48,7 @@ class PatternType(Enum):
     BEST_OFFER  = "BestOffer"
     ABSORPTION  = "Absorção"
     URGENCY     = "Urgência"
+    EXHAUSTION  = "Exaustão"
     NONE        = "Nenhum"
 
 
@@ -82,6 +85,76 @@ class IcebergCandidate:
     first_seen:     float = field(default_factory=time.time)
     last_renewed:   float = field(default_factory=time.time)
     confirmed:      bool = False
+
+
+@dataclass
+class Leg:
+    """Perna de preço (zigzag) entre dois pivôs, com estatísticas da agressão."""
+    direction:      Side        # BUY = perna de alta, SELL = perna de baixa
+    start_ts:       float
+    end_ts:         float
+    start_price:    float
+    end_price:      float       # extremidade (máxima da perna de alta / mínima da de baixa)
+    vol_with:       int         # volume agredido a favor da perna
+    vol_against:    int         # volume agredido contra a perna
+    trades:         int         # negócios na perna
+    cum_delta_end:  int         # delta acumulado no momento da extremidade
+
+    @property
+    def duration(self) -> float:
+        return max(self.end_ts - self.start_ts, 1e-6)
+
+    @property
+    def speed(self) -> float:
+        """Negócios por segundo."""
+        return self.trades / self.duration
+
+    @property
+    def avg_lot(self) -> float:
+        return (self.vol_with + self.vol_against) / max(self.trades, 1)
+
+    def to_dict(self) -> dict:
+        return {
+            "direction":     self.direction.value,
+            "start_price":   self.start_price,
+            "end_price":     self.end_price,
+            "duration_sec":  round(self.duration, 1),
+            "vol_with":      self.vol_with,
+            "vol_against":   self.vol_against,
+            "trades":        self.trades,
+            "speed":         round(self.speed, 2),
+            "avg_lot":       round(self.avg_lot, 1),
+            "cum_delta_end": self.cum_delta_end,
+        }
+
+
+@dataclass
+class ExhaustionEvent:
+    """Exaustão confirmada no fim de uma perna (topo ou fundo)."""
+    direction:      Side        # lado que exauriu: BUY = compradores cansaram (topo)
+    extreme_price:  float
+    confirmed_ts:   float       # timestamp (do tick) em que a reversão confirmou
+    vol_ratio:      float       # volume da última perna / média das anteriores
+    delta_divergence: bool
+    speed_ratio:    float
+    lot_ratio:      float
+    legs_compared:  int
+    confidence:     float
+    reason:         str
+
+    def to_dict(self) -> dict:
+        return {
+            "exhausted_side":   self.direction.value,
+            "extreme_price":    self.extreme_price,
+            "confirmed_ts":     self.confirmed_ts,
+            "vol_ratio":        round(self.vol_ratio, 2),
+            "delta_divergence": self.delta_divergence,
+            "speed_ratio":      round(self.speed_ratio, 2),
+            "lot_ratio":        round(self.lot_ratio, 2),
+            "legs_compared":    self.legs_compared,
+            "confidence":       round(self.confidence, 3),
+            "reason":           self.reason,
+        }
 
 
 @dataclass
@@ -144,9 +217,40 @@ class EngineConfig:
     # Absorção: janela de tempo para contar toques (seg)
     absorption_window_sec:  float = 60.0
 
+    # Absorção: volume agredido mínimo no nível (absoluto)
+    absorption_min_volume:  int   = 0
+
+    # Absorção: volume do nível deve ser >= N x a média dos demais níveis da janela
+    absorption_vol_ratio:   float = 1.5
+
     # Urgência: player aparece em N preços diferentes em X seg
     urgency_levels_min:     int   = 3
     urgency_window_sec:     float = 10.0
+
+    # Delta: janela curta (seg) exposta no estado
+    delta_window_sec:       float = 30.0
+
+    # Exaustão: ticks de recuo a partir da extremidade para fechar uma perna (zigzag)
+    exhaustion_reversal_ticks: int = 3
+
+    # Exaustão: nº mínimo de pernas na mesma direção (fazendo novas extremidades)
+    exhaustion_min_legs:    int   = 3
+
+    # Exaustão: volume a favor da última perna / média das anteriores (<= isso = exaustão)
+    exhaustion_vol_ratio:   float = 0.6
+
+    # Exaustão: queda de velocidade / lote médio que conta como confirmação extra
+    exhaustion_speed_ratio: float = 0.6
+    exhaustion_lot_ratio:   float = 0.8
+
+    # Exaustão: as pernas comparadas precisam estar dentro desta janela (seg)
+    exhaustion_window_sec:  float = 180.0
+
+    # Exaustão: por quanto tempo (seg) o sinal continua válido após confirmar
+    exhaustion_signal_ttl_sec: float = 20.0
+
+    # Exaustão: distância (em ticks) para considerar iceberg/absorção "no mesmo nível"
+    exhaustion_confluence_ticks: int = 3
 
     # Stop automático em ticks atrás do nível do Iceberg
     stop_ticks_behind:      int   = 2
@@ -201,8 +305,21 @@ class FlowEngine:
         self._best_bid_log: dict[str, deque] = defaultdict(lambda: deque(maxlen=200))  # lado compra
 
         # ── Toques de preço para absorção
-        # chave: price_rounded → lista de timestamps
+        # chave: price_rounded → deque de (timestamp, qty, side agressor)
         self._price_touches: dict[float, deque] = defaultdict(lambda: deque(maxlen=500))
+
+        # ── Delta acumulado (volume agredido comprador - vendedor) desde o reset
+        self._cum_delta: int = 0
+
+        # ── Zigzag para exaustão
+        self._zz_dir:          Side  = Side.NONE
+        self._zz_extreme:      float = 0.0
+        self._zz_extreme_ts:   float = 0.0
+        self._zz_extreme_cd:   int   = 0     # delta acumulado na extremidade
+        self._zz_origin:       float = 0.0   # preço onde a perna atual começou
+        self._zz_origin_ts:    float = 0.0
+        self._legs:            deque[Leg] = deque(maxlen=50)
+        self._exhaustions:     deque[ExhaustionEvent] = deque(maxlen=20)
 
         # ── Urgência: preços onde cada player agrediu
         # chave: (broker, side) → deque de (price, timestamp)
@@ -228,7 +345,9 @@ class FlowEngine:
             self._ticks.append(tick)
             self._update_iceberg(tick)
             self._update_urgency(tick)
-            self._register_price_touch(tick.price)
+            self._register_price_touch(tick)
+            self._update_delta(tick)
+            self._update_zigzag(tick)
             self._analyze()
 
     def update_book(self, levels: list[BookLevel]):
@@ -337,23 +456,216 @@ class FlowEngine:
     # DETECÇÃO DE ABSORÇÃO
     # ──────────────────────────────────────────────────────────
 
-    def _register_price_touch(self, price: float):
-        price_r = round(price, 2)
-        self._price_touches[price_r].append(time.time())
+    def _register_price_touch(self, tick: Tick):
+        price_r = round(tick.price, 2)
+        self._price_touches[price_r].append((time.time(), tick.qty, tick.side))
 
     def _get_absorbed_levels(self) -> list[tuple]:
         """
-        Retorna níveis de preço que foram tocados >= min_touches
-        na janela de absorção. Indica defesa de região.
+        Retorna níveis onde houve absorção na janela: tocados >= min_touches
+        E com volume agredido bem acima dos demais níveis (o preço "travou"
+        apesar da agressão). Formato: [(price, touches, volume, side_absorvido)],
+        onde side_absorvido é o lado agressor dominante (quem foi absorvido).
+        Ordenado por volume.
         """
         now = time.time()
         cutoff = now - self.cfg.absorption_window_sec
-        levels = []
+
+        stats = {}
         for price, touches in self._price_touches.items():
-            recent = [t for t in touches if t >= cutoff]
-            if len(recent) >= self.cfg.absorption_min_touches:
-                levels.append((price, len(recent)))
-        return sorted(levels, key=lambda x: -x[1])
+            recent = [(q, s) for t, q, s in touches if t >= cutoff]
+            if not recent:
+                continue
+            vol_buy  = sum(q for q, s in recent if s == Side.BUY)
+            vol_sell = sum(q for q, s in recent if s == Side.SELL)
+            stats[price] = (len(recent), vol_buy, vol_sell)
+
+        total_vol = sum(vb + vs for _, vb, vs in stats.values())
+        levels = []
+        for price, (n, vol_buy, vol_sell) in stats.items():
+            vol = vol_buy + vol_sell
+            if n < self.cfg.absorption_min_touches or vol < self.cfg.absorption_min_volume:
+                continue
+            # Comparar com a média de volume dos OUTROS níveis da janela
+            others = len(stats) - 1
+            if others > 0:
+                avg_others = (total_vol - vol) / others
+                if avg_others > 0 and vol < self.cfg.absorption_vol_ratio * avg_others:
+                    continue
+            side = Side.BUY if vol_buy > vol_sell else Side.SELL
+            levels.append((price, n, vol, side))
+        return sorted(levels, key=lambda x: -x[2])
+
+    # ──────────────────────────────────────────────────────────
+    # DELTA ACUMULADO
+    # ──────────────────────────────────────────────────────────
+
+    def _update_delta(self, tick: Tick):
+        if tick.side == Side.BUY:
+            self._cum_delta += tick.qty
+        elif tick.side == Side.SELL:
+            self._cum_delta -= tick.qty
+
+    def _calc_window_delta(self, window_sec: float) -> tuple[int, int, int]:
+        """(vol_compra, vol_venda, delta) agredidos na janela, relativa ao último tick."""
+        if not self._ticks:
+            return 0, 0, 0
+        cutoff = self._ticks[-1].timestamp - window_sec
+        vol_buy = vol_sell = 0
+        for t in reversed(self._ticks):
+            if t.timestamp < cutoff:
+                break
+            if t.side == Side.BUY:
+                vol_buy += t.qty
+            elif t.side == Side.SELL:
+                vol_sell += t.qty
+        return vol_buy, vol_sell, vol_buy - vol_sell
+
+    # ──────────────────────────────────────────────────────────
+    # DETECÇÃO DE EXAUSTÃO (zigzag de pernas + agressão por perna)
+    # ──────────────────────────────────────────────────────────
+
+    def _update_zigzag(self, tick: Tick):
+        """
+        Segmenta o preço em pernas. Uma perna termina quando o preço recua
+        exhaustion_reversal_ticks a partir da extremidade; nesse momento a
+        perna é fechada e avaliada para exaustão.
+        """
+        p, ts = tick.price, tick.timestamp
+        rev = self.cfg.exhaustion_reversal_ticks * self.cfg.tick_size - 1e-9
+
+        if self._zz_dir == Side.NONE:
+            if self._zz_origin_ts == 0.0:
+                self._zz_origin, self._zz_origin_ts = p, ts
+                self._zz_extreme, self._zz_extreme_ts = p, ts
+                self._zz_extreme_cd = self._cum_delta
+                return
+            if abs(p - self._zz_origin) >= rev:
+                self._zz_dir = Side.BUY if p > self._zz_origin else Side.SELL
+                self._zz_extreme, self._zz_extreme_ts = p, ts
+                self._zz_extreme_cd = self._cum_delta
+            return
+
+        up = self._zz_dir == Side.BUY
+        if (up and p > self._zz_extreme) or (not up and p < self._zz_extreme):
+            self._zz_extreme, self._zz_extreme_ts = p, ts
+            self._zz_extreme_cd = self._cum_delta
+            return
+
+        if (up and p <= self._zz_extreme - rev) or (not up and p >= self._zz_extreme + rev):
+            leg = self._build_leg(self._zz_dir, self._zz_origin_ts, self._zz_extreme_ts,
+                                  self._zz_origin, self._zz_extreme, self._zz_extreme_cd)
+            self._legs.append(leg)
+            self._check_exhaustion(leg, ts)
+            # Nova perna na direção oposta, começando na extremidade
+            self._zz_origin, self._zz_origin_ts = self._zz_extreme, self._zz_extreme_ts
+            self._zz_dir = Side.SELL if up else Side.BUY
+            self._zz_extreme, self._zz_extreme_ts = p, ts
+            self._zz_extreme_cd = self._cum_delta
+
+    def _build_leg(self, direction: Side, start_ts: float, end_ts: float,
+                   start_price: float, end_price: float, cum_delta_end: int) -> Leg:
+        vol_with = vol_against = trades = 0
+        for t in reversed(self._ticks):
+            if t.timestamp > end_ts:
+                continue
+            if t.timestamp <= start_ts:
+                break
+            trades += 1
+            if t.side == direction:
+                vol_with += t.qty
+            elif t.side != Side.NONE:
+                vol_against += t.qty
+        return Leg(direction=direction, start_ts=start_ts, end_ts=end_ts,
+                   start_price=start_price, end_price=end_price,
+                   vol_with=vol_with, vol_against=vol_against,
+                   trades=trades, cum_delta_end=cum_delta_end)
+
+    def _check_exhaustion(self, last: Leg, now_ts: float):
+        """
+        Exaustão de compra (topo): as últimas pernas de alta fazem máximas
+        cada vez mais altas, mas a última teve bem menos agressão compradora
+        que as anteriores. Sinais extras: divergência de delta, queda de
+        velocidade e de lote médio. A confirmação é o próprio recuo que
+        fechou a perna. Exaustão de venda (fundo) é o espelho.
+        """
+        up = last.direction == Side.BUY
+        same = [l for l in self._legs
+                if l.direction == last.direction
+                and last.end_ts - l.end_ts <= self.cfg.exhaustion_window_sec]
+        # Manter só a sequência final de pernas que fazem novas extremidades
+        trend = [same[-1]]
+        for l in reversed(same[:-1]):
+            newer = trend[0]
+            if (up and newer.end_price > l.end_price) or (not up and newer.end_price < l.end_price):
+                trend.insert(0, l)
+            else:
+                break
+        if len(trend) < self.cfg.exhaustion_min_legs:
+            return
+
+        prev = trend[:-1]
+        avg_vol   = sum(l.vol_with for l in prev) / len(prev)
+        avg_speed = sum(l.speed for l in prev) / len(prev)
+        avg_lot   = sum(l.avg_lot for l in prev) / len(prev)
+        if avg_vol <= 0:
+            return
+
+        vol_ratio = last.vol_with / avg_vol
+        if vol_ratio > self.cfg.exhaustion_vol_ratio:
+            return
+
+        before = prev[-1]
+        divergence  = (last.cum_delta_end < before.cum_delta_end) if up \
+                      else (last.cum_delta_end > before.cum_delta_end)
+        speed_ratio = last.speed / avg_speed if avg_speed > 0 else 1.0
+        lot_ratio   = last.avg_lot / avg_lot if avg_lot > 0 else 1.0
+
+        conf = 0.50 + (self.cfg.exhaustion_vol_ratio - vol_ratio) / self.cfg.exhaustion_vol_ratio * 0.15
+        if divergence:
+            conf += 0.10
+        if speed_ratio <= self.cfg.exhaustion_speed_ratio:
+            conf += 0.05
+        if lot_ratio <= self.cfg.exhaustion_lot_ratio:
+            conf += 0.05
+        if len(trend) > self.cfg.exhaustion_min_legs:
+            conf += 0.03
+
+        lado = "COMPRADORA (topo)" if up else "VENDEDORA (fundo)"
+        details = [f"vol {vol_ratio:.0%} da média de {len(prev)} pernas"]
+        if divergence:
+            details.append("divergência de delta")
+        if speed_ratio <= self.cfg.exhaustion_speed_ratio:
+            details.append(f"velocidade {speed_ratio:.0%}")
+        if lot_ratio <= self.cfg.exhaustion_lot_ratio:
+            details.append(f"lote médio {lot_ratio:.0%}")
+
+        ev = ExhaustionEvent(
+            direction=last.direction, extreme_price=last.end_price,
+            confirmed_ts=now_ts, vol_ratio=vol_ratio,
+            delta_divergence=divergence, speed_ratio=speed_ratio,
+            lot_ratio=lot_ratio, legs_compared=len(trend),
+            confidence=min(0.90, conf),
+            reason=f"Exaustão {lado} @ {last.end_price:.2f} | " + " | ".join(details),
+        )
+        self._exhaustions.append(ev)
+        logger.info(ev.reason)
+
+    def _active_exhaustions(self) -> list[ExhaustionEvent]:
+        """Exaustões dentro do TTL cuja extremidade ainda não foi rompida."""
+        if not self._ticks:
+            return []
+        last = self._ticks[-1]
+        active = []
+        for ev in self._exhaustions:
+            if last.timestamp - ev.confirmed_ts > self.cfg.exhaustion_signal_ttl_sec:
+                continue
+            if ev.direction == Side.BUY and last.price > ev.extreme_price:
+                continue
+            if ev.direction == Side.SELL and last.price < ev.extreme_price:
+                continue
+            active.append(ev)
+        return active
 
     # ──────────────────────────────────────────────────────────
     # DETECÇÃO DE URGÊNCIA
@@ -550,7 +862,7 @@ class FlowEngine:
         # (implementado via ausência recente de toques em nível que tinha muitos antes)
         # Nesta versão, sinalizamos quando há nível absorbido E fluxo forte
         if absorbed_levels and flow_strength >= self.cfg.flow_pct_threshold:
-            top_level, touches = absorbed_levels[0]
+            top_level, touches, abs_vol, _ = absorbed_levels[0]
             thr = self.cfg.flow_pct_threshold
             conf = min(0.85, 0.50 + (touches / 20) * 0.25 + (flow_strength - thr) / (100 - thr) * 0.20)
             last_price = self._ticks[-1].price if self._ticks else 0
@@ -562,7 +874,7 @@ class FlowEngine:
                     "price":      last_price,
                     "stop_price": round(top_level - self.cfg.stop_ticks_behind * self.cfg.tick_size, 2),
                     "confidence": conf,
-                    "reason":     f"Absorção @ {top_level:.2f} ({touches} toques) | "
+                    "reason":     f"Absorção @ {top_level:.2f} ({touches} toques, vol {abs_vol:,}) | "
                                   f"Preço rompeu para {last_price:.2f} | Fluxo: {pct_buy:.1f}%"
                 })
             elif flow_side == Side.SELL and last_price < top_level:
@@ -572,9 +884,41 @@ class FlowEngine:
                     "price":      last_price,
                     "stop_price": round(top_level + self.cfg.stop_ticks_behind * self.cfg.tick_size, 2),
                     "confidence": conf,
-                    "reason":     f"Absorção @ {top_level:.2f} ({touches} toques) | "
+                    "reason":     f"Absorção @ {top_level:.2f} ({touches} toques, vol {abs_vol:,}) | "
                                   f"Preço rompeu para {last_price:.2f} | Fluxo: {pct_sell:.1f}%"
                 })
+
+        # Exaustão → sinal CONTRA o lado que exauriu (topo → SELL, fundo → BUY).
+        # Confluência: iceberg/absorção do lado oposto perto da extremidade soma confiança.
+        tol = self.cfg.exhaustion_confluence_ticks * self.cfg.tick_size + 1e-9
+        for ev in self._active_exhaustions():
+            conf = ev.confidence
+            extras = []
+            opposite = Side.SELL if ev.direction == Side.BUY else Side.BUY
+            if any(s == opposite and abs(p - ev.extreme_price) <= tol
+                   for (_, s, p), _ in confirmed_icebergs):
+                conf += 0.10
+                extras.append("iceberg oposto")
+            if any(abs(p - ev.extreme_price) <= tol and s == ev.direction
+                   for p, _, _, s in absorbed_levels):
+                conf += 0.05
+                extras.append("absorção na extremidade")
+            reason = ev.reason + (" | + " + ", ".join(extras) if extras else "")
+            last_price = self._ticks[-1].price
+            offset = self.cfg.stop_ticks_behind * self.cfg.tick_size
+            cand = {
+                "pattern":    PatternType.EXHAUSTION,
+                "broker":     "Detectado por fluxo",
+                "price":      last_price,
+                "confidence": min(0.95, conf),
+                "reason":     reason,
+            }
+            if ev.direction == Side.BUY:
+                cand["stop_price"] = round(ev.extreme_price + offset, 2)
+                sell_candidates.append(cand)
+            else:
+                cand["stop_price"] = round(ev.extreme_price - offset, 2)
+                buy_candidates.append(cand)
 
         # ── Escolher o melhor sinal
         best_signal = self._pick_best_signal(buy_candidates, sell_candidates)
@@ -651,7 +995,9 @@ class FlowEngine:
                  "renewals": ic.renewals, "total_vol": ic.total_vol}
                 for _, ic in self._icebergs.items() if ic.confirmed
             ]
-            absorbed = [{"price": p, "touches": t} for p, t in self._get_absorbed_levels()[:3]]
+            absorbed = [{"price": p, "touches": t, "volume": v, "absorbed_side": s.value}
+                        for p, t, v, s in self._get_absorbed_levels()[:3]]
+            win_buy, win_sell, win_delta = self._calc_window_delta(self.cfg.delta_window_sec)
             urgent   = [{"broker": b, "side": s.value, "levels": n}
                         for b, s, n in self._get_urgent_brokers()]
             return {
@@ -661,6 +1007,15 @@ class FlowEngine:
                 "flow_pct_sell":      round(pct_sell, 1),
                 "icebergs_confirmed": confirmed,
                 "absorbed_levels":    absorbed,
+                "delta": {
+                    "cumulative":  self._cum_delta,
+                    "window":      win_delta,
+                    "window_buy":  win_buy,
+                    "window_sell": win_sell,
+                    "window_sec":  self.cfg.delta_window_sec,
+                },
+                "legs":               [l.to_dict() for l in list(self._legs)[-6:]],
+                "exhaustions":        [e.to_dict() for e in self._active_exhaustions()],
                 "urgent_brokers":     urgent,
                 "best_ask_brokers":   list(self._get_best_ask_brokers().keys()),
                 "best_bid_brokers":   list(self._get_best_bid_brokers().keys()),
@@ -678,6 +1033,13 @@ class FlowEngine:
             self._best_bid_log.clear()
             self._price_touches.clear()
             self._urgency_log.clear()
+            self._cum_delta = 0
+            self._zz_dir = Side.NONE
+            self._zz_extreme = self._zz_extreme_ts = 0.0
+            self._zz_origin = self._zz_origin_ts = 0.0
+            self._zz_extreme_cd = 0
+            self._legs.clear()
+            self._exhaustions.clear()
             self._current_signal = FlowSignal(
                 signal=Signal.WAIT, pattern=PatternType.NONE,
                 direction=Side.NONE, price=0.0, stop_price=0.0,
