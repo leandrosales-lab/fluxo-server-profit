@@ -17,6 +17,7 @@ Detecta:
 Emite sinais: BUY / SELL / CLOSE / WAIT
 """
 
+import bisect
 import time
 import math
 import threading
@@ -223,6 +224,10 @@ class FlowSignal:
         }
 
 
+# Timeframes dos candles servidos em GET /candles (segundos)
+CANDLE_TFS = (15, 60, 300)
+
+
 # ──────────────────────────────────────────────────────────────
 # CONFIGURAÇÕES
 # ──────────────────────────────────────────────────────────────
@@ -356,6 +361,22 @@ class FlowEngine:
         # ── Histórico de ticks (janela deslizante)
         self._ticks: deque[Tick] = deque(maxlen=5000)
 
+        # ── Times & Trades mais longo para a API (/trades), independente da janela de análise
+        self._trades_log: deque[Tick] = deque(maxlen=1000)
+
+        # ── Candles incrementais do dia inteiro, por timeframe (segundos):
+        #    tf → {início do candle: candle} + lista ordenada dos inícios
+        self._candles: dict[int, dict[int, dict]] = {tf: {} for tf in CANDLE_TFS}
+        self._candle_keys: dict[int, list[int]] = {tf: [] for tf in CANDLE_TFS}
+
+        # ── Sinais novos (mesma regra do ReplayPlayer), para desenhar no gráfico
+        self._signals_log: deque[dict] = deque(maxlen=1000)
+        self._last_signal_key: Optional[tuple] = None
+
+        # ── Book: horário do último snapshot e profundidade já vista (none | top | full)
+        self._book_updated: Optional[float] = None
+        self._book_depth: str = "none"
+
         # ── Book atual (preço → BookLevel)
         self._book_buy:  dict[float, BookLevel] = {}
         self._book_sell: dict[float, BookLevel] = {}
@@ -414,7 +435,10 @@ class FlowEngine:
             self._register_price_touch(tick)
             self._update_delta(tick)
             self._update_zigzag(tick)
+            self._trades_log.append(tick)
+            self._update_candles(tick)
             self._analyze()
+            self._registrar_sinal()
 
     def update_book(self, levels: list[BookLevel]):
         """Atualiza o Book de Ofertas com snapshot completo."""
@@ -429,8 +453,15 @@ class FlowEngine:
                     self._book_buy[p] = lvl
                 else:
                     self._book_sell[p] = lvl
+            if levels:
+                self._book_updated = max(l.timestamp for l in levels)
+                if max(len(self._book_buy), len(self._book_sell)) > 1:
+                    self._book_depth = "full"
+                elif self._book_depth == "none":
+                    self._book_depth = "top"
             self._update_best_offer_log()
             self._analyze()
+            self._registrar_sinal()
 
     # ──────────────────────────────────────────────────────────
     # RELÓGIO DO ENGINE
@@ -1257,6 +1288,89 @@ class FlowEngine:
         )
 
     # ──────────────────────────────────────────────────────────
+    # GRÁFICO, TIMES & TRADES E BOOK (alimentam a API do dashboard)
+    # ──────────────────────────────────────────────────────────
+
+    def _update_candles(self, tick: Tick):
+        """Atualiza o candle do tick em cada timeframe (negócio atrasado cai no candle dele)."""
+        for tf in CANDLE_TFS:
+            inicio = int(tick.timestamp // tf * tf)
+            c = self._candles[tf].get(inicio)
+            if c is None:
+                c = {"time": inicio, "open": tick.price, "high": tick.price, "low": tick.price,
+                     "close": tick.price, "volume": 0, "buy": 0, "sell": 0,
+                     "_first": tick.timestamp, "_last": tick.timestamp}
+                self._candles[tf][inicio] = c
+                bisect.insort(self._candle_keys[tf], inicio)
+            else:
+                c["high"] = max(c["high"], tick.price)
+                c["low"] = min(c["low"], tick.price)
+                # abertura e fechamento seguem o horário do negócio, não a ordem de chegada
+                if tick.timestamp >= c["_last"]:
+                    c["close"], c["_last"] = tick.price, tick.timestamp
+                if tick.timestamp < c["_first"]:
+                    c["open"], c["_first"] = tick.price, tick.timestamp
+            c["volume"] += tick.qty
+            if tick.side == Side.BUY:
+                c["buy"] += tick.qty
+            elif tick.side == Side.SELL:
+                c["sell"] += tick.qty
+
+    def _registrar_sinal(self):
+        """Guarda cada sinal BUY/SELL novo (chave sinal + padrão + stop; WAIT zera a chave)."""
+        sig = self._current_signal
+        if sig.signal not in (Signal.BUY, Signal.SELL):
+            self._last_signal_key = None
+            return
+        chave = (sig.signal, sig.pattern, sig.stop_price)
+        if chave == self._last_signal_key:
+            return
+        self._last_signal_key = chave
+        self._signals_log.append({
+            "timestamp": sig.timestamp, "signal": sig.signal.value, "pattern": sig.pattern.value,
+            "price": sig.price, "stop_price": sig.stop_price, "confidence": round(sig.confidence, 3),
+            "broker": sig.broker, "reason": sig.reason,
+        })
+
+    @staticmethod
+    def _trade_dict(t: Tick) -> dict:
+        return {"timestamp": t.timestamp, "price": t.price, "qty": t.qty, "side": t.side.value,
+                "broker": t.broker, "passive_broker": t.passive_broker}
+
+    def get_trades(self, limit: int = 200) -> list[dict]:
+        """Últimos `limit` negócios (no máximo 1000), do mais antigo ao mais novo."""
+        with self._lock:
+            limit = max(0, min(int(limit), self._trades_log.maxlen))
+            return [self._trade_dict(t) for t in list(self._trades_log)[-limit:]] if limit else []
+
+    def get_candles(self, tf: int, since: Optional[float] = None) -> list[dict]:
+        """Candles do timeframe `tf` (segundos, um de CANDLE_TFS), a partir de `since` se informado."""
+        if tf not in CANDLE_TFS:
+            raise ValueError(f"timeframe inválido: {tf} (use um de {list(CANDLE_TFS)})")
+        campos = ("time", "open", "high", "low", "close", "volume", "buy", "sell")
+        with self._lock:
+            chaves = self._candle_keys[tf]
+            i = bisect.bisect_left(chaves, since) if since is not None else 0
+            return [{k: self._candles[tf][t][k] for k in campos} for t in chaves[i:]]
+
+    def get_signals(self, since: Optional[float] = None) -> list[dict]:
+        """Sinais novos registrados, do mais antigo ao mais novo, a partir de `since` se informado."""
+        with self._lock:
+            return [dict(s) for s in self._signals_log if since is None or s["timestamp"] >= since]
+
+    def get_book(self) -> dict:
+        """Último snapshot do book. depth: none (nunca recebeu), top (só o 1º nível) ou full."""
+        def nivel(l: BookLevel) -> dict:
+            return {"price": l.price, "qty": l.qty, "broker": l.broker}
+        with self._lock:
+            return {
+                "depth":   self._book_depth,
+                "bids":    [nivel(self._book_buy[p]) for p in sorted(self._book_buy, reverse=True)],
+                "asks":    [nivel(self._book_sell[p]) for p in sorted(self._book_sell)],
+                "updated": self._book_updated,
+            }
+
+    # ──────────────────────────────────────────────────────────
     # API PÚBLICA
     # ──────────────────────────────────────────────────────────
 
@@ -1296,10 +1410,7 @@ class FlowEngine:
                 "best_ask_brokers":   list(self._get_best_ask_brokers().keys()),
                 "best_bid_brokers":   list(self._get_best_bid_brokers().keys()),
                 # 10 últimos negócios, do mais antigo ao mais novo (fita do dashboard)
-                "recent_trades":      [{"timestamp": t.timestamp, "price": t.price, "qty": t.qty,
-                                        "side": t.side.value, "broker": t.broker,
-                                        "passive_broker": t.passive_broker}
-                                       for t in list(self._ticks)[-10:]],
+                "recent_trades":      [self._trade_dict(t) for t in list(self._ticks)[-10:]],
                 "signal":             self._current_signal.to_dict(),
             }
 
@@ -1322,6 +1433,14 @@ class FlowEngine:
             self._zz_extreme_cd = 0
             self._legs.clear()
             self._exhaustions.clear()
+            self._trades_log.clear()
+            for tf in CANDLE_TFS:
+                self._candles[tf].clear()
+                self._candle_keys[tf].clear()
+            self._signals_log.clear()
+            self._last_signal_key = None
+            self._book_updated = None
+            self._book_depth = "none"
             self._current_signal = FlowSignal(
                 signal=Signal.WAIT, pattern=PatternType.NONE,
                 direction=Side.NONE, price=0.0, stop_price=0.0,

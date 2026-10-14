@@ -1525,6 +1525,188 @@ def test_desempenho_estado():
         err(f"recent_trades ausente ou incompleto: {ult[-1:] if ult else ult}")
 
 
+def test_api_grafico_tt_book():
+    print(f"\n{AMARELO}═══ TESTE 21: API de gráfico, T&T e book ═══{RESET}")
+
+    import json
+    import tempfile
+    import urllib.error
+    import urllib.request
+    import api.server as srv
+    from api.server import FlowServer
+
+    porta = 15571
+    base = f"http://127.0.0.1:{porta}"
+
+    def get(rota):
+        try:
+            with urllib.request.urlopen(base + rota, timeout=3) as r:
+                return r.status, r.read(), r.headers.get("Content-Type", "")
+        except urllib.error.HTTPError as e:
+            return e.code, e.read(), e.headers.get("Content-Type", "")
+
+    def get_json(rota):
+        cod, corpo, _ = get(rota)
+        return cod, json.loads(corpo)
+
+    def post(rota, dados):
+        req = urllib.request.Request(base + rota, data=json.dumps(dados).encode(),
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=3) as r:
+            return json.loads(r.read())
+
+    engine = FlowEngine("PETR4", EngineConfig())
+    server = FlowServer(engine, host="127.0.0.1", port=porta)
+    server.start()
+    time.sleep(0.3)
+    try:
+        # Book antes de qualquer snapshot
+        cod, b = get_json("/book")
+        if cod == 200 and b["depth"] == "none" and b["bids"] == [] and b["updated"] is None:
+            ok("GET /book sem dados: depth none")
+        else:
+            err(f"/book inicial incorreto: {b}")
+
+        # Negócios: candles de 15 s em 990, 1005 e 1020; de 60 s em 960 e 1020
+        t0 = 1000.0
+        negocios = [(t0 + 1, 37.40, 100, "C"), (t0 + 5, 37.45, 200, "V"), (t0 + 14, 37.42, 300, "C"),
+                    (t0 + 16, 37.41, 100, "V"), (t0 + 31, 37.50, 500, "C")]
+        for ts, p, q, lado in negocios:
+            post("/tick", {"timestamp": ts, "price": p, "qty": q, "broker": "XP INC", "side": lado})
+
+        cod, c15 = get_json("/candles?tf=15")
+        cs = c15["candles"]
+        primeiro = cs[0] if cs else {}
+        seg = cs[1] if len(cs) > 1 else {}
+        if cod == 200 and c15["tf"] == 15 and [c["time"] for c in cs] == [990, 1005, 1020] \
+                and (primeiro["open"], primeiro["close"], primeiro["volume"], primeiro["buy"]) == (37.40, 37.40, 100, 100) \
+                and (seg["open"], seg["high"], seg["low"], seg["close"]) == (37.45, 37.45, 37.41, 37.41) \
+                and (seg["volume"], seg["buy"], seg["sell"]) == (600, 300, 300):
+            ok("Candles de 15 s com OHLC, volume e lado agressor")
+        else:
+            err(f"Candles de 15 s incorretos: {cs}")
+        cod, c60 = get_json("/candles?tf=60")
+        if [c["time"] for c in c60["candles"]] == [960, 1020] and c60["candles"][0]["volume"] == 700:
+            ok("Candles de 60 s agregam o mesmo pregão")
+        else:
+            err(f"Candles de 60 s incorretos: {c60}")
+        cod, cs2 = get_json("/candles?tf=15&since=1005")
+        if [c["time"] for c in cs2["candles"]] == [1005, 1020]:
+            ok("since filtra candles a partir do horário pedido")
+        else:
+            err(f"since ignorado: {cs2}")
+        # Negócio atrasado cai no candle dele sem mudar o fechamento
+        post("/tick", {"timestamp": t0 + 0.5, "price": 37.30, "qty": 100, "broker": "UBS", "side": "V"})
+        _, c15b = get_json("/candles?tf=15")
+        p0 = c15b["candles"][0]
+        if (p0["open"], p0["low"], p0["close"]) == (37.30, 37.30, 37.40):
+            ok("Negócio fora de ordem atualiza abertura/mínima, não o fechamento")
+        else:
+            err(f"Negócio atrasado tratado errado: {p0}")
+        cod, _ = get_json("/candles?tf=42")
+        if cod == 400:
+            ok("Timeframe inválido → 400")
+        else:
+            err(f"tf inválido devolveu {cod}")
+
+        cod, tr = get_json("/trades?limit=3")
+        t = tr["trades"]
+        if cod == 200 and len(t) == 3 and t[-1]["price"] == 37.30 and t[0]["timestamp"] == t0 + 16 \
+                and set(t[0]) == {"timestamp", "price", "qty", "side", "broker", "passive_broker"}:
+            ok("GET /trades?limit=3 devolve os 3 últimos, do mais antigo ao mais novo")
+        else:
+            err(f"/trades incorreto: {t}")
+        _, tr_all = get_json("/trades")
+        if len(tr_all["trades"]) == 6:
+            ok("GET /trades sem limit devolve o histórico disponível (até 200)")
+        else:
+            err(f"/trades sem limit: {len(tr_all['trades'])}")
+
+        # Book: topo (1 nível por lado) e depois profundidade completa
+        post("/book", {"levels": [{"price": 37.29, "qty": 500, "side": "C"},
+                                  {"price": 37.31, "qty": 400, "side": "V"}]})
+        _, b = get_json("/book")
+        if b["depth"] == "top" and b["bids"][0]["price"] == 37.29 and b["asks"][0]["price"] == 37.31:
+            ok("Book com 1 nível por lado → depth top")
+        else:
+            err(f"Book topo incorreto: {b}")
+        post("/book", {"levels": [{"price": 37.29, "qty": 500, "side": "C", "broker": "ITAU"},
+                                  {"price": 37.28, "qty": 900, "side": "C", "broker": "XP INC"},
+                                  {"price": 37.31, "qty": 400, "side": "V"},
+                                  {"price": 37.32, "qty": 100, "side": "V"}]})
+        _, b = get_json("/book")
+        if b["depth"] == "full" and [x["price"] for x in b["bids"]] == [37.29, 37.28] \
+                and [x["price"] for x in b["asks"]] == [37.31, 37.32] and b["bids"][1]["broker"] == "XP INC":
+            ok("Book com profundidade → depth full; bids decrescentes, asks crescentes")
+        else:
+            err(f"Book completo incorreto: {b}")
+
+        # Estáticos: travessia recusada, arquivo inexistente 404
+        for rota in ("/static/../server.py", "/static/..%2Fserver.py", "/static/sub/x.js", "/static/naoexiste.js"):
+            cod, _, _ = get(rota)
+            if cod != 404:
+                err(f"{rota} devolveu {cod} (esperado 404)")
+        ok("/static recusa '..', subpastas e arquivos inexistentes")
+
+        # /dashboard sem o arquivo → 503; com o arquivo → estado injetado com </ escapado
+        original = srv.STATIC_DIR
+        with tempfile.TemporaryDirectory() as tmp:
+            srv.STATIC_DIR = tmp
+            cod, corpo, _ = get("/dashboard")
+            if cod == 503:
+                ok("/dashboard sem api/static/dashboard.html → 503")
+            else:
+                err(f"/dashboard sem arquivo devolveu {cod}")
+            with open(os.path.join(tmp, "dashboard.html"), "w", encoding="utf-8") as f:
+                f.write("<script>var s = __STATE_JSON__;</script>")
+            with open(os.path.join(tmp, "x.js"), "w", encoding="utf-8") as f:
+                f.write("var x = 1;")
+            post("/tick", {"timestamp": t0 + 40, "price": 37.33, "qty": 100,
+                           "broker": "</script><b>", "side": "C"})
+            cod, corpo, tipo = get("/dashboard")
+            html = corpo.decode()
+            if cod == 200 and "__STATE_JSON__" not in html and "<\\/script><b>" in html and "text/html" in tipo:
+                ok("/dashboard injeta o estado e escapa </ dentro do JSON")
+            else:
+                err(f"/dashboard incorreto: {cod} {html[:200]}")
+            cod, corpo, tipo = get("/static/x.js")
+            if cod == 200 and corpo == b"var x = 1;" and tipo.startswith("application/javascript"):
+                ok("/static serve .js com o content-type certo")
+            else:
+                err(f"/static/x.js: {cod} {tipo}")
+        srv.STATIC_DIR = original
+    finally:
+        server.stop()
+
+    # Sinais: só as trocas entram no registro (direto no engine, com um pregão conhecido)
+    e = FlowEngine("PETR4", EngineConfig())
+    vistos, ultima = [], None
+    for i in range(60):
+        lado = Side.SELL if i % 5 else Side.BUY
+        e.add_tick(Tick(2000 + i, 37.40 if lado == Side.SELL else 37.41, 500, f"C{i % 3}", lado,
+                        passive_broker="ITAU" if lado == Side.SELL else "UBS"))
+        s = e.get_signal()
+        chave = (s.signal, s.pattern, s.stop_price) if s.signal in (Signal.BUY, Signal.SELL) else None
+        if chave and chave != ultima:
+            vistos.append(chave)
+        ultima = chave
+    reg = e.get_signals()
+    if vistos and [(r["signal"], r["pattern"], r["stop_price"]) for r in reg] == \
+            [(c[0].value, c[1].value, c[2]) for c in vistos]:
+        ok(f"/signals registra só as trocas de sinal ({len(reg)} de 60 negócios)")
+    else:
+        err(f"Registro de sinais diferente das trocas: {reg} vs {vistos}")
+    if e.get_signals(since=reg[-1]["timestamp"]) == reg[-1:]:
+        ok("since filtra os sinais")
+    else:
+        err("since não filtrou os sinais")
+    e.reset()
+    if e.get_signals() == [] and e.get_candles(60) == [] and e.get_trades() == [] and e.get_book()["depth"] == "none":
+        ok("reset limpa candles, negócios, sinais e book")
+    else:
+        err("reset não limpou os registros da API")
+
+
 def main():
     print(f"\n{AZUL}╔══════════════════════════════════════════════╗{RESET}")
     print(f"{AZUL}║   FLUXO SERVER — Suite de Testes Automáticos  ║{RESET}")
@@ -1554,6 +1736,7 @@ def main():
     test_fuso_csv()
     test_argumentos_cli()
     test_desempenho_estado()
+    test_api_grafico_tt_book()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")
