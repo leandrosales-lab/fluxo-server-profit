@@ -22,6 +22,8 @@ python main.py --asset PETR4 --modo rtd --gravar petr4_hoje.csv
 - Se o arquivo já existir, os negócios novos entram no final (nada é apagado).
 - O arquivo é atualizado a cada negócio. Se o programa fechar de repente, o que já chegou fica salvo.
 
+Para pegar **dias passados** sem ter gravado ao vivo, baixe o histórico pela ProfitDLL (seção 7).
+
 ### Formato do arquivo
 
 ```
@@ -164,3 +166,76 @@ Serve para conferir se tudo funciona. Não serve para calibrar nada.
 O engine mede todas as janelas (fluxo, absorção, urgência, best offer, exaustão) pelo **horário dos negócios**, e não pelo relógio do computador. O "agora" do engine é o horário do último negócio ou book recebido. Antes do primeiro negócio, ele usa o relógio do computador.
 
 Por isso o mesmo arquivo dá sempre os mesmos sinais, em qualquer velocidade. Ao vivo, o horário dos negócios é praticamente o do relógio, então nada muda. A única diferença ao vivo: se o mercado parar, as janelas só "andam" quando chega o próximo negócio.
+
+---
+
+## 7. Baixar histórico pela ProfitDLL
+
+Com a ProfitDLL dá para baixar os negócios de dias que já passaram, tick a tick, direto no formato do replay. Assim a calibração usa pregões reais, sem precisar ter gravado ao vivo. A Nelogica guarda cerca de 30 dias de histórico tick a tick.
+
+Precisa das mesmas coisas do modo `dll`: Windows, a `ProfitDLL.dll`, o `profitTypes.py` e as variáveis `PROFITDLL_*` (veja `docs/registro-2026-10-14.md`, seção 3).
+
+### O fluxo: baixar → replay → grid
+
+**1. Baixar** (um arquivo por dia, na pasta `historico/`):
+
+```
+python -m profitdll.historico --asset WDOFUT --inicio 2026-10-01 --fim 2026-10-10 ^
+    --saida historico/wdo_{data}.csv --agentes agentes.json
+```
+
+Isso gera `historico/wdo_2026-10-01.csv`, `historico/wdo_2026-10-02.csv`, `historico/wdo_2026-10-05.csv`...
+
+**2. Ver um dia no replay:**
+
+```
+python main.py --asset WDOFUT --modo replay --arquivo historico/wdo_2026-10-01.csv --tick-size 0.5 --sem-servidor
+```
+
+**3. Calibrar com o grid:**
+
+```
+python main.py --asset WDOFUT --modo replay --arquivo historico/wdo_2026-10-01.csv --tick-size 0.5 ^
+    --grid exhaustion_vol_ratio=0.5,0.6,0.7 exhaustion_reversal_ticks=2,3,4 --saida grid_0110.csv
+```
+
+Faça o grid em alguns dias e confira os melhores valores nos **outros** dias baixados. Para rodar vários dias de uma vez no replay, baixe tudo num arquivo só (sem `{data}` no nome, veja abaixo): o engine é zerado quando a data muda.
+
+### Opções
+
+| Opção | Para que serve |
+|---|---|
+| `--asset` | Ticker (`WDOFUT`, `WINZ26`, `PETR4`...) — obrigatório |
+| `--inicio` | Primeiro dia, `2026-10-01` ou `01/10/2026` — obrigatório |
+| `--fim` | Último dia (se faltar, baixa só o dia do `--inicio`) |
+| `--saida` | Onde gravar. Padrão: `historico/{asset}_{data}.csv` |
+| `--bolsa` | `F` (BMF) ou `B` (Bovespa). Se faltar, é deduzida do ticker |
+| `--agentes` | JSON `{"codigo": "NOME"}` com o nome das corretoras (igual ao modo `dll`) |
+| `--hora-inicio` / `--hora-fim` | Janela de cada dia. Padrão `09:00:00` a `18:35:00` |
+| `--timeout-dia` | Quantos segundos esperar cada dia terminar (padrão 600) |
+| `--tentativas` | Quantas vezes tentar um dia que deu erro (padrão 2) |
+| `--refazer` | Baixa de novo os dias que já têm arquivo |
+
+### Um arquivo por dia ou um arquivo só
+
+- **Com `{data}` no nome** (o padrão): um arquivo por dia. `{data}` vira `AAAA-MM-DD` e `{asset}` vira o ticker. Se o download parar no meio, rode o mesmo comando de novo: os dias que já têm arquivo são pulados. Cada arquivo só aparece quando o dia termina inteiro, então um arquivo que existe nunca está pela metade.
+- **Sem `{data}` no nome** (ex.: `--saida historico/wdo_outubro.csv`): todos os dias no mesmo arquivo, um depois do outro. Se o arquivo já existir, o programa para e avisa; use `--refazer` para apagar e baixar de novo.
+
+### Como funciona por dentro
+
+- O programa entra com o mesmo login do modo `dll`, mas **não assina** o ativo: só pede o histórico.
+- Pede **um dia de cada vez** (a DLL aceita até 10 dias por pedido, mas a Nelogica recomenda dia a dia: WDO e WIN têm centenas de milhares de negócios por dia). Sábados e domingos são pulados. Feriados não são conhecidos: a DLL não devolve nada e o dia fica sem arquivo.
+- Espera a DLL avisar que chegou a 100%. Cada dia é gravado assim que termina.
+- Converte cada negócio com a mesma regra do tempo real: tipo 2 = compra agressora, tipo 3 = venda agressora. A corretora agressora vai em `corretora_agressora` e a outra em `corretora_passiva`. Os outros tipos (leilão, cross, RLP...) ficam de fora e são contados no log.
+- O horário vem da DLL como horário de Brasília (`14/10/2026 10:00:00.125`) e vira o `timestamp` em segundos, com milissegundos. A conversão usa UTC-3 fixo, então não depende do fuso do computador.
+- Antes de gravar, os negócios do dia são postos em ordem de horário (e, no mesmo milissegundo, pelo número do negócio). Número de negócio repetido é gravado uma vez só e aparece no log como duplicado.
+
+No fim de cada dia o log mostra algo como:
+
+```
+01/10/2026: 412530 negócios recebidos, 398112 gravados, 14418 sem agressão
+```
+
+A pasta `historico/` está no `.gitignore`: os pregões baixados não vão para o repositório.
+
+**Status:** a parte de conversão, ordem, dias úteis e gravação tem testes (`python test_engine.py`, teste 16). O download em si **não foi testado com a DLL real** ainda.
