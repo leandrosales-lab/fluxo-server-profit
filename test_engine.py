@@ -457,8 +457,70 @@ def test_profitdll():
             err("start() deveria falhar fora do Windows")
 
 
+def test_rtd():
+    print(f"\n{AMARELO}═══ TESTE 10: Inferência de negócios do RTD ═══{RESET}")
+
+    from core.rtd import RTDTradeInferer, RTDSnapshot
+
+    def snap(price, vol, neg, bid=0.0, ask=0.0, buyer="ITAU", seller="XP INC"):
+        return RTDSnapshot(price=price, volume=vol, trades=neg, buyer=buyer,
+                           seller=seller, bid=bid, ask=ask, timestamp=time.time())
+
+    inf = RTDTradeInferer()
+    if inf.update(snap(19.50, 100000, 500)) is None:
+        ok("Primeiro retrato só define a base (volume acumulado não vira tick)")
+    else:
+        err("Primeiro retrato não deveria gerar tick")
+
+    t = inf.update(snap(19.51, 100300, 501))
+    if t and t.qty == 300 and t.side == Side.BUY and t.broker == "ITAU":
+        ok("Quantidade = diferença do VOL (300); preço subiu → compra pelo ACP")
+    else:
+        err(f"Tick incorreto: {t}")
+
+    t = inf.update(snap(19.51, 100500, 502))
+    if t and t.side == Side.BUY and t.qty == 200:
+        ok("Zero-tick mantém o lado anterior")
+    else:
+        err(f"Zero-tick incorreto: {t}")
+
+    t = inf.update(snap(19.49, 101500, 505))
+    if t and t.side == Side.SELL and t.broker == "XP INC" and t.qty == 1000:
+        ok("Preço caiu → venda pelo AVD")
+    else:
+        err(f"Tick de venda incorreto: {t}")
+    if inf.aggregated_trades == 2:
+        ok("3 negócios entre retratos contados como agregados (2 extras)")
+    else:
+        err(f"aggregated_trades esperado 2: {inf.aggregated_trades}")
+
+    if inf.update(snap(19.49, 101500, 505, bid=19.48, ask=19.50)) is None:
+        ok("Retrato sem negócio novo não gera tick")
+    else:
+        err("Retrato sem negócio não deveria gerar tick")
+
+    # Regra da cotação usa o bid/ask ANTERIOR: preço caiu, mas negociou no ask → compra
+    inf2 = RTDTradeInferer()
+    inf2.update(snap(19.52, 1000, 10, bid=19.48, ask=19.50))
+    t = inf2.update(snap(19.50, 1500, 11, bid=19.49, ask=19.51))
+    if t and t.side == Side.BUY:
+        ok("Regra da cotação: negócio no ask anterior → compra (mesmo com preço caindo)")
+    else:
+        err(f"Regra da cotação incorreta: {t}")
+    t = inf2.update(snap(19.49, 1800, 12, bid=19.48, ask=19.50))
+    if t and t.side == Side.SELL and inf2.side_by_quote == 2:
+        ok("Regra da cotação: negócio no bid anterior → venda")
+    else:
+        err(f"Regra da cotação (bid) incorreta: {t} / {inf2.stats()}")
+
+    if inf2.update(snap(19.50, 50, 1)) is None and inf2.update(snap(19.51, 80, 2)).qty == 30:
+        ok("Virada de dia (acumulados zeraram) redefine a base")
+    else:
+        err("Virada de dia não tratada")
+
+
 def test_api_http():
-    print(f"\n{AMARELO}═══ TESTE 10: API HTTP (servidor embutido) ═══{RESET}")
+    print(f"\n{AMARELO}═══ TESTE 11: API HTTP (servidor embutido) ═══{RESET}")
 
     import threading
     import urllib.request
@@ -504,12 +566,46 @@ def test_api_http():
     except Exception as e:
         err(f"Erro ao enviar tick: {e}")
 
+    info("Testando POST /tick com side inválido ...")
+    req = urllib.request.Request(
+        "http://127.0.0.1:15555/tick",
+        data=json.dumps({"price": 23.50, "qty": 500, "side": "N"}).encode(),
+        headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        urllib.request.urlopen(req, timeout=3)
+        err("side 'N' deveria ser recusado")
+    except urllib.error.HTTPError as e:
+        if e.code == 400:
+            ok("side 'N' recusado com 400 (antes virava venda)")
+        else:
+            err(f"Código inesperado: {e.code}")
+
+    info("Testando POST /rtd ...")
+    def post_rtd(body):
+        r = urllib.request.Request("http://127.0.0.1:15555/rtd",
+                                   data=json.dumps(body).encode(),
+                                   headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(r, timeout=3) as resp:
+            return resp.read().decode()
+    post_rtd({"price": 23.50, "volume": 10000, "trades": 50, "buyer": "itau", "seller": "xp inc"})
+    raw = post_rtd({"price": 23.51, "volume": 10400, "trades": 51, "buyer": "itau", "seller": "xp inc"})
+    resp = json.loads(raw)
+    if resp.get("tick") == {"side": "compra", "qty": 400, "broker": "ITAU"}:
+        ok("POST /rtd inferiu compra de 400 pelo ITAU")
+    else:
+        err(f"Resposta inesperada do /rtd: {resp}")
+    # A macro VBA lê estes campos por texto — o formato precisa bater
+    if '"signal": "' in raw and '"confidence": ' in raw and '"stop_price": ' in raw:
+        ok("Resposta no formato que a macro VBA lê")
+    else:
+        err(f"Formato da resposta mudou: {raw[:120]}")
+
     info("Testando GET /state ...")
     try:
         with urllib.request.urlopen("http://127.0.0.1:15555/state", timeout=3) as r:
             state = json.loads(r.read().decode())
-            if state.get("asset") == "BBDC4":
-                ok(f"GET /state OK | ticks: {state['tick_count']}")
+            if state.get("asset") == "BBDC4" and state.get("rtd", {}).get("ticks_emitted") == 1:
+                ok(f"GET /state OK | ticks: {state['tick_count']} | rtd: {state['rtd']}")
             else:
                 err(f"Ativo incorreto: {state.get('asset')}")
     except Exception as e:
@@ -532,6 +628,7 @@ def main():
     test_exaustao_fundo()
     test_sem_exaustao()
     test_profitdll()
+    test_rtd()
     test_api_http()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")

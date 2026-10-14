@@ -37,7 +37,7 @@ OPCAO 1: RTD (RECOMENDADO)
 
    MANUAL (inserir nas celulas do Excel):
    E1 = =RTD("rtdtrading.rtdserver";;"PETR4_F_0";"ULT")   (ultimo preco)
-   F1 = =RTD("rtdtrading.rtdserver";;"PETR4_F_0";"VOL")   (volume)
+   F1 = =RTD("rtdtrading.rtdserver";;"PETR4_F_0";"VOL")   (quantidade acumulada no dia)
    G1 = =RTD("rtdtrading.rtdserver";;"PETR4_F_0";"ACP")   (agente comprador)
    H1 = =RTD("rtdtrading.rtdserver";;"PETR4_F_0";"AVD")   (agente vendedor)
    I1 = =RTD("rtdtrading.rtdserver";;"PETR4_F_0";"NEG")   (num negocios)
@@ -49,17 +49,37 @@ OPCAO 1: RTD (RECOMENDADO)
    Exemplo para mini-dolar:
    E1 = =RTD("rtdtrading.rtdserver";;"WDOFUT_B_0";"ULT")
 
+   IMPORTANTE: VOL precisa ser a QUANTIDADE acumulada (acoes/contratos),
+   nao o volume financeiro em R$. O servidor calcula a quantidade de cada
+   negocio pela diferenca de VOL entre duas leituras.
+
+   OPCIONAL (melhora o lado agressor): se o seu Profit exporta o melhor
+   bid/ask via RTD, preencha CAMPO_BID e CAMPO_ASK no topo do modulo
+   VBA e rode InserirFormulasRTD de novo (vao para J1 e K1). Sem eles,
+   o lado e' inferido pela variacao do preco (regra do tick).
+
+   Se as celulas mostrarem #N/D, inverta SUFIXO_ACOES e SUFIXO_FUTUROS
+   no topo do modulo VBA.
+
    NOTA: Se usar Excel em portugues, o separador e ";" (ponto-virgula).
          Se usar Excel em ingles, use "," (virgula).
 
 5. INICIAR O SERVIDOR PYTHON
    No PowerShell:
      cd C:\Users\usuario\Downloads\fluxo-server-profit
-     python main.py --asset PETR4 --modo manual --port 5000
+     python main.py --asset PETR4 --modo rtd --port 5000
 
 6. INICIAR A BRIDGE
    - No Excel: Alt+F8 → selecionar "IniciarBridge" → Executar
-   - O VBA lera E1:I1 a cada 500ms e enviara ao servidor Python
+   - A cada atualizacao do RTD o VBA envia o retrato ao servidor (POST /rtd)
+   - RECOMENDADO: no editor VBA, clique duas vezes na Planilha1 e cole:
+         Private Sub Worksheet_Calculate()
+             FLUXO_BRIDGE_RTD.AoAtualizarRTD
+         End Sub
+     Sem isso, a leitura acontece so' a cada 1 segundo.
+   - Confira em http://127.0.0.1:5000/state o bloco "rtd":
+     ticks_emitted deve crescer; aggregated_trades mostra quantos
+     negocios chegaram agrupados (quanto menor, melhor)
 
 7. LINKAR OS PARAMETROS DO ROBO NTSL
    No Profit, ao configurar o robo robo_fluxo_v2_com_servidor.ntsl,
@@ -75,7 +95,7 @@ OPCAO 1: RTD (RECOMENDADO)
 
 8. SEQUENCIA DE INICIALIZACAO
    a) Iniciar servidor Python:
-      python main.py --asset PETR4 --modo manual --port 5000
+      python main.py --asset PETR4 --modo rtd --port 5000
 
    b) Abrir Excel e rodar InserirFormulasRTD (se ainda nao fez)
 
@@ -117,7 +137,15 @@ OPCAO 2: DDE (LEGADO)
 
 4. INICIAR A BRIDGE
    - No Excel: Alt+F8 → selecionar "IniciarBridge" → Executar
-   - O VBA lera E1:I1 a cada 500ms e enviara ao servidor Python
+   - A cada atualizacao do RTD o VBA envia o retrato ao servidor (POST /rtd)
+   - RECOMENDADO: no editor VBA, clique duas vezes na Planilha1 e cole:
+         Private Sub Worksheet_Calculate()
+             FLUXO_BRIDGE_RTD.AoAtualizarRTD
+         End Sub
+     Sem isso, a leitura acontece so' a cada 1 segundo.
+   - Confira em http://127.0.0.1:5000/state o bloco "rtd":
+     ticks_emitted deve crescer; aggregated_trades mostra quantos
+     negocios chegaram agrupados (quanto menor, melhor)
 
 5. LINKAR OS PARAMETROS DO ROBO NTSL
    (mesmo procedimento da opcao RTD, passo 7)

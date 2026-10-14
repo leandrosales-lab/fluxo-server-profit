@@ -2,16 +2,19 @@ Attribute VB_Name = "FLUXO_BRIDGE_RTD"
 ' ============================================================
 ' FLUXO BRIDGE RTD — Macro VBA para Excel (usa RTD do Profit)
 ' ============================================================
-' Intermediario entre o Profit Pro (RTD) e o servidor Python
+' Intermediario entre o Profit Pro (RTD) e o servidor Python.
 '
-' DIFERENCA DO DDE:
-'   RTD e mais estavel e recomendado pela Nelogica.
-'   Usa =RTD("rtdtrading.rtdserver";; "ATIVO_F_0"; "CAMPO")
-'   Nao requer ativar servidor DDE no Profit.
+' O RTD NAO entrega o Times & Trades, apenas um retrato do ativo
+' (ultimo preco, volume e numero de negocios acumulados no dia,
+' agentes do ultimo negocio). A macro envia esse retrato BRUTO para
+' POST /rtd e o servidor Python infere o negocio:
+'   - quantidade = diferenca do volume acumulado
+'   - lado agressor = regra da cotacao (bid/ask, se configurados)
+'                     ou regra do tick (subiu = compra, caiu = venda)
 '
 ' ARQUITETURA:
-'   Profit RTD  ->  Celulas E1:I1 (formulas RTD)
-'   VBA Timer   ->  Le E1:I1, envia POST ao servidor Python
+'   Profit RTD  ->  Celulas E1:K1 (formulas RTD)
+'   Excel       ->  a cada atualizacao do RTD, envia POST /rtd
 '   Servidor    ->  Retorna sinal (A1), confianca (B1), preco (C1), stop (D1)
 '   NTSL Robot  ->  Le A1:D1 via parametros DDE linkados ao Excel
 '
@@ -20,28 +23,27 @@ Attribute VB_Name = "FLUXO_BRIDGE_RTD"
 '   B1 = fConfiancaSinal  (0.0 a 1.0)
 '   C1 = fPrecoSinal      (preco do sinal)
 '   D1 = fStopSinal       (stop do sinal)
-'   E1 = ULT   via RTD do Profit (ultimo preco)
-'   F1 = VOL   via RTD do Profit (volume)
-'   G1 = ACP   via RTD do Profit (agente comprador)
-'   H1 = AVD   via RTD do Profit (agente vendedor)
-'   I1 = NEG   via RTD do Profit (numero de negocios)
-'
-' FORMULAS RTD (inserir manualmente nas celulas):
-'   E1 = =RTD("rtdtrading.rtdserver";;"PETR4_F_0";"ULT")
-'   F1 = =RTD("rtdtrading.rtdserver";;"PETR4_F_0";"VOL")
-'   G1 = =RTD("rtdtrading.rtdserver";;"PETR4_F_0";"ACP")
-'   H1 = =RTD("rtdtrading.rtdserver";;"PETR4_F_0";"AVD")
-'   I1 = =RTD("rtdtrading.rtdserver";;"PETR4_F_0";"NEG")
-'
-' SUFIXOS DO ATIVO:
-'   _F_0 = Bovespa (acoes: PETR4, VALE3, etc.)
-'   _B_0 = BMF (futuros: DOLFUT, WINFUT, etc.)
+'   E1 = ULT  (ultimo preco)
+'   F1 = VOL  (QUANTIDADE acumulada no dia — nao pode ser volume financeiro)
+'   G1 = ACP  (agente comprador do ultimo negocio)
+'   H1 = AVD  (agente vendedor do ultimo negocio)
+'   I1 = NEG  (numero de negocios acumulado)
+'   J1 = melhor bid   (opcional — configure CAMPO_BID)
+'   K1 = melhor ask   (opcional — configure CAMPO_ASK)
 '
 ' SETUP:
-'   1. Inserir as formulas RTD nas celulas E1:I1
-'   2. No Profit: menu Ferramentas > Exportar em Tempo Real > RTD
-'   3. Rodar macro IniciarBridge()
-'   4. Linkar parametros do robo NTSL as celulas A1:D1 via DDE Excel
+'   1. Importe este modulo (Alt+F11 > Arquivo > Importar)
+'   2. No Profit: Ferramentas > Exportar em Tempo Real > RTD
+'   3. Rode InserirFormulasRTD() e confira se E1:I1 mostram valores
+'      (se aparecer #N/D, troque SUFIXO_ACOES / SUFIXO_FUTUROS)
+'   4. RECOMENDADO — envio a cada atualizacao do RTD: clique duas vezes
+'      na Planilha1 no editor VBA e cole:
+'          Private Sub Worksheet_Calculate()
+'              FLUXO_BRIDGE_RTD.AoAtualizarRTD
+'          End Sub
+'      Sem isso, a macro consulta a cada 1 segundo (perde mais negocios).
+'   5. Rode IniciarBridge()
+'   6. Linke os parametros do robo NTSL as celulas A1:D1 via DDE Excel
 ' ============================================================
 
 Option Explicit
@@ -49,14 +51,27 @@ Option Explicit
 ' -- Configuracoes
 Private Const PYTHON_URL As String = "http://127.0.0.1:5000"
 Private Const ASSET As String = "PETR4"
-Private Const INTERVAL_MS As Long = 500   ' intervalo de polling em ms
+
+' Sufixo do ativo nas formulas RTD. Se as celulas mostrarem #N/D,
+' inverta os dois valores.
+Private Const SUFIXO_ACOES As String = "_F_0"
+Private Const SUFIXO_FUTUROS As String = "_B_0"
+
+' Campos RTD do melhor bid/ask. Deixe "" se o seu Profit nao tiver.
+' Consulte a lista de campos em Exportar em Tempo Real > RTD.
+Private Const CAMPO_BID As String = ""
+Private Const CAMPO_ASK As String = ""
 
 ' -- Estado interno
-Private mUltimoTradeCount As Long
 Private mRodando As Boolean
+Private mProcessando As Boolean
+Private mUltimoVolume As Double
+Private mUltimoNeg As Double
+Private mUltimoBid As Double
+Private mUltimoAsk As Double
 
 ' ============================================================
-' IniciarBridge — inicia o timer de polling
+' IniciarBridge — liga o envio
 ' ============================================================
 Public Sub IniciarBridge()
     If mRodando Then
@@ -64,10 +79,15 @@ Public Sub IniciarBridge()
         Exit Sub
     End If
 
-    mUltimoTradeCount = 0
+    ' Padrao do Excel e' agrupar atualizacoes RTD a cada 2s — perde negocios
+    Application.RTD.ThrottleInterval = 0
+
+    mUltimoVolume = -1
+    mUltimoNeg = -1
+    mUltimoBid = -1
+    mUltimoAsk = -1
     mRodando = True
 
-    ' Inicializar celulas de saida
     With ThisWorkbook.Sheets(1)
         .Cells(1, 1).Value = 0   ' iSinalExterno = WAIT
         .Cells(1, 2).Value = 0   ' fConfiancaSinal
@@ -75,27 +95,26 @@ Public Sub IniciarBridge()
         .Cells(1, 4).Value = 0   ' fStopSinal
     End With
 
-    ' Agendar primeira execucao
-    Application.OnTime Now + TimeSerial(0, 0, 1), "VerificarEEnviarRTD"
+    ' Timer de seguranca (1s) — complementa o evento Worksheet_Calculate
+    Application.OnTime Now + TimeSerial(0, 0, 1), "TimerRTD"
 
     MsgBox "Fluxo Bridge RTD iniciado!" & vbCrLf & _
            "Servidor Python: " & PYTHON_URL & vbCrLf & vbCrLf & _
            "Certifique-se de que:" & vbCrLf & _
            "  1. As formulas RTD estao em E1:I1" & vbCrLf & _
            "  2. O Profit Pro esta aberto com RTD habilitado" & vbCrLf & _
-           "  3. O servidor Python esta rodando", vbInformation
+           "  3. O servidor Python esta rodando (--modo rtd)", vbInformation
 End Sub
 
 ' ============================================================
-' PararBridge — para o timer
+' PararBridge — desliga o envio
 ' ============================================================
 Public Sub PararBridge()
     mRodando = False
     On Error Resume Next
-    Application.OnTime Now + TimeSerial(0, 0, 1), "VerificarEEnviarRTD", , False
+    Application.OnTime Now + TimeSerial(0, 0, 1), "TimerRTD", , False
     On Error GoTo 0
 
-    ' Limpar sinal
     With ThisWorkbook.Sheets(1)
         .Cells(1, 1).Value = 0
         .Cells(1, 2).Value = 0
@@ -118,13 +137,12 @@ Public Sub InserirFormulasRTD()
                       "Configurar RTD", ASSET)
     If sAtivo = "" Then Exit Sub
 
-    ' Detectar sufixo: futuros usam _B_0, acoes usam _F_0
     If UCase(sAtivo) Like "WIN*" Or UCase(sAtivo) Like "DOL*" Or _
        UCase(sAtivo) Like "IND*" Or UCase(sAtivo) Like "WDO*" Or _
        UCase(sAtivo) Like "BGI*" Then
-        sSufixo = "_B_0"
+        sSufixo = SUFIXO_FUTUROS
     Else
-        sSufixo = "_F_0"
+        sSufixo = SUFIXO_ACOES
     End If
 
     Dim sAtivoRTD As String
@@ -132,14 +150,14 @@ Public Sub InserirFormulasRTD()
 
     Set ws = ThisWorkbook.Sheets(1)
 
-    ' Inserir formulas RTD
-    ws.Cells(1, 5).Formula = "=RTD(""rtdtrading.rtdserver"",,""" & sAtivoRTD & """,""ULT"")"
-    ws.Cells(1, 6).Formula = "=RTD(""rtdtrading.rtdserver"",,""" & sAtivoRTD & """,""VOL"")"
-    ws.Cells(1, 7).Formula = "=RTD(""rtdtrading.rtdserver"",,""" & sAtivoRTD & """,""ACP"")"
-    ws.Cells(1, 8).Formula = "=RTD(""rtdtrading.rtdserver"",,""" & sAtivoRTD & """,""AVD"")"
-    ws.Cells(1, 9).Formula = "=RTD(""rtdtrading.rtdserver"",,""" & sAtivoRTD & """,""NEG"")"
+    ws.Cells(1, 5).Formula = FormulaRTD(sAtivoRTD, "ULT")
+    ws.Cells(1, 6).Formula = FormulaRTD(sAtivoRTD, "VOL")
+    ws.Cells(1, 7).Formula = FormulaRTD(sAtivoRTD, "ACP")
+    ws.Cells(1, 8).Formula = FormulaRTD(sAtivoRTD, "AVD")
+    ws.Cells(1, 9).Formula = FormulaRTD(sAtivoRTD, "NEG")
+    If CAMPO_BID <> "" Then ws.Cells(1, 10).Formula = FormulaRTD(sAtivoRTD, CAMPO_BID)
+    If CAMPO_ASK <> "" Then ws.Cells(1, 11).Formula = FormulaRTD(sAtivoRTD, CAMPO_ASK)
 
-    ' Labels na linha 2 para referencia
     ws.Cells(2, 1).Value = "Sinal"
     ws.Cells(2, 2).Value = "Confianca"
     ws.Cells(2, 3).Value = "Preco"
@@ -149,133 +167,122 @@ Public Sub InserirFormulasRTD()
     ws.Cells(2, 7).Value = "ACP (RTD)"
     ws.Cells(2, 8).Value = "AVD (RTD)"
     ws.Cells(2, 9).Value = "NEG (RTD)"
+    ws.Cells(2, 10).Value = "BID (RTD)"
+    ws.Cells(2, 11).Value = "ASK (RTD)"
 
     MsgBox "Formulas RTD inseridas para " & sAtivoRTD & "!" & vbCrLf & _
-           "Verifique se os dados estao chegando nas celulas E1:I1.", vbInformation
+           "Verifique se os dados estao chegando nas celulas E1:I1." & vbCrLf & _
+           "Se aparecer #N/D, inverta SUFIXO_ACOES e SUFIXO_FUTUROS.", vbInformation
+End Sub
+
+Private Function FormulaRTD(sAtivoRTD As String, sCampo As String) As String
+    FormulaRTD = "=RTD(""rtdtrading.rtdserver"",,""" & sAtivoRTD & """,""" & sCampo & """)"
+End Function
+
+' ============================================================
+' TimerRTD — consulta de seguranca a cada 1 segundo
+' ============================================================
+Public Sub TimerRTD()
+    If Not mRodando Then Exit Sub
+    AoAtualizarRTD
+    Application.OnTime Now + TimeSerial(0, 0, 1), "TimerRTD"
 End Sub
 
 ' ============================================================
-' VerificarEEnviarRTD — loop principal (chamado pelo timer)
+' AoAtualizarRTD — chamado pelo Worksheet_Calculate e pelo timer
 ' ============================================================
-Public Sub VerificarEEnviarRTD()
-    If Not mRodando Then Exit Sub
+Public Sub AoAtualizarRTD()
+    If Not mRodando Or mProcessando Then Exit Sub
+    mProcessando = True
+    On Error GoTo Fim
 
     Dim ws As Worksheet
     Set ws = ThisWorkbook.Sheets(1)
 
-    ' -- Ler dados RTD do Profit (celulas E1:I1)
-    Dim dLastPrice As Double
-    Dim dVolume As Double
-    Dim sAgenteCompra As String
-    Dim sAgenteVenda As String
-    Dim lTradeCount As Long
+    Dim dPreco As Double, dVolume As Double, dNeg As Double
+    Dim dBid As Double, dAsk As Double
+    dPreco = NumeroCelula(ws.Cells(1, 5))
+    dVolume = NumeroCelula(ws.Cells(1, 6))
+    dNeg = NumeroCelula(ws.Cells(1, 9))
+    dBid = NumeroCelula(ws.Cells(1, 10))
+    dAsk = NumeroCelula(ws.Cells(1, 11))
 
-    On Error Resume Next
-    dLastPrice = CDbl(ws.Cells(1, 5).Value)       ' E1 = ULT (ultimo preco)
-    dVolume = CDbl(ws.Cells(1, 6).Value)           ' F1 = VOL (volume)
-    sAgenteCompra = CStr(ws.Cells(1, 7).Value)    ' G1 = ACP (agente compra)
-    sAgenteVenda = CStr(ws.Cells(1, 8).Value)     ' H1 = AVD (agente venda)
-    lTradeCount = CLng(ws.Cells(1, 9).Value)       ' I1 = NEG (num negocios)
-    On Error GoTo 0
+    ' Enviar so' quando algo mudou (novo negocio ou novo bid/ask)
+    If dPreco > 0 And (dVolume <> mUltimoVolume Or dNeg <> mUltimoNeg Or _
+                       dBid <> mUltimoBid Or dAsk <> mUltimoAsk) Then
+        mUltimoVolume = dVolume
+        mUltimoNeg = dNeg
+        mUltimoBid = dBid
+        mUltimoAsk = dAsk
 
-    ' -- Enviar tick ao servidor Python somente se houve novo negocio
-    If lTradeCount > mUltimoTradeCount And dLastPrice > 0 Then
-        mUltimoTradeCount = lTradeCount
+        Dim sJSON As String
+        sJSON = "{""price"":" & NumJSON(dPreco) & _
+                ",""volume"":" & NumJSON(dVolume) & _
+                ",""trades"":" & NumJSON(dNeg) & _
+                ",""buyer"":""" & TextoJSON(ws.Cells(1, 7).Text) & """" & _
+                ",""seller"":""" & TextoJSON(ws.Cells(1, 8).Text) & """" & _
+                ",""bid"":" & NumJSON(dBid) & _
+                ",""ask"":" & NumJSON(dAsk) & "}"
 
-        ' RTD nao tem campo de lado (C/V) direto, mas tem agente compra/venda.
-        ' O servidor Python determina o lado pela analise do fluxo.
-        ' Enviamos ambos os agentes para o servidor decidir.
-        Dim sSide As String
-        sSide = "N"   ' N = nao determinado (servidor infere)
-
-        ' Montar JSON do tick
-        Dim sTickJSON As String
-        sTickJSON = "{""price"":" & Format(dLastPrice, "0.00") & _
-                    ",""qty"":" & Format(dVolume, "0") & _
-                    ",""broker"":""" & sAgenteCompra & """" & _
-                    ",""broker_sell"":""" & sAgenteVenda & """" & _
-                    ",""side"":""" & sSide & """}"
-
-        ' Enviar POST /tick
-        EnviarPOST PYTHON_URL & "/tick", sTickJSON
-
-        ' -- Consultar sinal atual (GET /signal)
-        Dim sSinal As String
-        sSinal = FazerGET(PYTHON_URL & "/signal")
-
-        If sSinal <> "" Then
-            ' Parsear campos do JSON de resposta
-            Dim sSinalVal As String
-            Dim dConf As Double
-            Dim dPreco As Double
-            Dim dStop As Double
-
-            sSinalVal = ExtrairStr(sSinal, """signal"":""", """")
-            dConf = CDbl(ExtrairStr(sSinal, """confidence"":", ","))
-            dPreco = CDbl(ExtrairStr(sSinal, """price"":", ","))
-            dStop = CDbl(ExtrairStr(sSinal, """stop_price"":", ","))
-
-            ' Converter sinal texto -> codigo numerico para NTSL
-            Dim iSinalNum As Integer
-            Select Case UCase(sSinalVal)
-                Case "BUY":   iSinalNum = 1
-                Case "SELL":  iSinalNum = -1
-                Case "CLOSE": iSinalNum = 2
-                Case Else:    iSinalNum = 0   ' WAIT
-            End Select
-
-            ' Gravar nas celulas de saida (lidas pelo robo NTSL via DDE)
-            ws.Cells(1, 1).Value = iSinalNum  ' A1 = iSinalExterno
-            ws.Cells(1, 2).Value = dConf      ' B1 = fConfiancaSinal
-            ws.Cells(1, 3).Value = dPreco     ' C1 = fPrecoSinal
-            ws.Cells(1, 4).Value = dStop      ' D1 = fStopSinal
-        End If
+        Dim sResp As String
+        sResp = EnviarPOST(PYTHON_URL & "/rtd", sJSON)
+        If sResp <> "" Then GravarSinal ws, sResp
     End If
 
-    ' Reagendar proxima execucao
-    If mRodando Then
-        Application.OnTime Now + TimeSerial(0, 0, 0) + INTERVAL_MS / 86400000#, _
-                            "VerificarEEnviarRTD", , True
-    End If
+Fim:
+    mProcessando = False
 End Sub
 
 ' ============================================================
-' EnviarPOST — faz HTTP POST com WinHTTP
+' GravarSinal — escreve A1:D1 a partir da resposta do servidor
 ' ============================================================
-Private Sub EnviarPOST(sURL As String, sBody As String)
+Private Sub GravarSinal(ws As Worksheet, sResp As String)
+    Dim iSinalNum As Integer
+    Select Case UCase(ExtrairStr(sResp, """signal"": """, """"))
+        Case "BUY":   iSinalNum = 1
+        Case "SELL":  iSinalNum = -1
+        Case "CLOSE": iSinalNum = 2
+        Case Else:    iSinalNum = 0   ' WAIT
+    End Select
+
+    ' Val() sempre usa ponto decimal — CDbl() quebraria no Excel em portugues
+    ws.Cells(1, 1).Value = iSinalNum
+    ws.Cells(1, 2).Value = Val(ExtrairStr(sResp, """confidence"": ", ","))
+    ws.Cells(1, 3).Value = Val(ExtrairStr(sResp, """price"": ", ","))
+    ws.Cells(1, 4).Value = Val(ExtrairStr(sResp, """stop_price"": ", ","))
+End Sub
+
+' ============================================================
+' Utilitarios
+' ============================================================
+Private Function NumeroCelula(c As Range) As Double
+    If IsError(c.Value) Then Exit Function
+    If IsNumeric(c.Value) Then NumeroCelula = CDbl(c.Value)
+End Function
+
+' Numero com ponto decimal, independente do idioma do Windows
+Private Function NumJSON(d As Double) As String
+    NumJSON = Trim(Str(d))
+End Function
+
+Private Function TextoJSON(s As String) As String
+    s = Replace(s, "\", "")
+    TextoJSON = Replace(s, """", "")
+End Function
+
+Private Function EnviarPOST(sURL As String, sBody As String) As String
     On Error GoTo ErrHandler
     Dim oHTTP As Object
     Set oHTTP = CreateObject("WinHttp.WinHttpRequest.5.1")
     oHTTP.Open "POST", sURL, False
     oHTTP.SetRequestHeader "Content-Type", "application/json"
     oHTTP.Send sBody
-    Exit Sub
-ErrHandler:
-    ' Silencioso: servidor pode nao estar ativo
-End Sub
-
-' ============================================================
-' FazerGET — faz HTTP GET e retorna o corpo da resposta
-' ============================================================
-Private Function FazerGET(sURL As String) As String
-    On Error GoTo ErrHandler
-    Dim oHTTP As Object
-    Set oHTTP = CreateObject("WinHttp.WinHttpRequest.5.1")
-    oHTTP.Open "GET", sURL, False
-    oHTTP.Send
-    If oHTTP.Status = 200 Then
-        FazerGET = oHTTP.ResponseText
-    Else
-        FazerGET = ""
-    End If
+    If oHTTP.Status = 200 Then EnviarPOST = oHTTP.ResponseText
     Exit Function
 ErrHandler:
-    FazerGET = ""
+    EnviarPOST = ""   ' servidor pode nao estar ativo
 End Function
 
-' ============================================================
-' ExtrairStr — extrai valor entre dois delimitadores num JSON
-' ============================================================
 Private Function ExtrairStr(sJSON As String, sIni As String, sFim As String) As String
     Dim iPosIni As Long, iPosFim As Long
     iPosIni = InStr(sJSON, sIni)

@@ -9,7 +9,8 @@ Porta padrão: 5000
 Endpoints:
   GET  /signal          → sinal atual (BUY/SELL/WAIT/CLOSE)
   GET  /state           → estado completo do motor
-  POST /tick            → injetar tick manualmente (testes)
+  POST /tick            → injetar tick (side obrigatório: C/V)
+  POST /rtd             → retrato do RTD do Profit; o servidor infere o tick
   POST /book            → injetar snapshot do book (testes)
   GET  /health          → status do servidor
   GET  /dashboard       → interface web de monitoramento
@@ -28,6 +29,17 @@ from urllib.parse import urlparse, parse_qs
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from core.engine import FlowEngine, Tick, BookLevel, Side, EngineConfig
+from core.rtd import RTDTradeInferer, RTDSnapshot
+
+
+def _parse_side(value) -> Side:
+    """C/COMPRA/BUY → BUY, V/VENDA/SELL → SELL. Qualquer outro valor é erro."""
+    v = str(value).strip().upper()
+    if v in ("C", "COMPRA", "BUY"):
+        return Side.BUY
+    if v in ("V", "VENDA", "SELL"):
+        return Side.SELL
+    raise ValueError(f"side inválido: {value!r} (use C ou V)")
 
 logger = logging.getLogger("API")
 
@@ -229,6 +241,7 @@ document.getElementById('ts').textContent = new Date().toLocaleTimeString('pt-BR
 
 class FlowHandler(BaseHTTPRequestHandler):
     engine: FlowEngine = None   # referência estática, preenchida no start
+    rtd: RTDTradeInferer = None
 
     def log_message(self, fmt, *args):
         logger.debug(f"{self.client_address[0]} — {fmt % args}")
@@ -273,6 +286,7 @@ class FlowHandler(BaseHTTPRequestHandler):
 
         elif path == "/state":
             state = self.engine.get_state()
+            state["rtd"] = self.rtd.stats()
             self._send_json(state)
 
         elif path == "/health":
@@ -302,7 +316,7 @@ class FlowHandler(BaseHTTPRequestHandler):
             # Injetar tick manualmente (para testes ou integração via DDE)
             body = self._read_body()
             try:
-                side = Side.BUY if body.get("side", "C").upper() in ("C", "BUY") else Side.SELL
+                side = _parse_side(body["side"])
                 tick = Tick(
                     timestamp = body.get("timestamp", time.time()),
                     price     = float(body["price"]),
@@ -321,7 +335,7 @@ class FlowHandler(BaseHTTPRequestHandler):
             try:
                 levels = []
                 for row in body.get("levels", []):
-                    side = Side.BUY if row.get("side", "C").upper() in ("C", "BUY") else Side.SELL
+                    side = _parse_side(row["side"])
                     levels.append(BookLevel(
                         price  = float(row["price"]),
                         qty    = int(row["qty"]),
@@ -330,6 +344,23 @@ class FlowHandler(BaseHTTPRequestHandler):
                     ))
                 self.engine.update_book(levels)
                 self._send_json({"ok": True, "levels": len(levels)})
+            except (KeyError, ValueError) as e:
+                self._send_json({"error": str(e)}, 400)
+
+        elif path == "/rtd":
+            # Retrato do RTD: price, volume, trades, buyer, seller, [bid, ask]
+            body = self._read_body()
+            try:
+                tick = self.rtd.update(RTDSnapshot.from_dict(body))
+                if tick:
+                    self.engine.add_tick(tick)
+                # Campos do sinal no nível raiz (a macro VBA os lê por texto)
+                resp = self.engine.get_signal().to_dict()
+                resp["ok"] = True
+                resp["tick"] = None if tick is None else {
+                    "side": tick.side.value, "qty": tick.qty, "broker": tick.broker,
+                }
+                self._send_json(resp)
             except (KeyError, ValueError) as e:
                 self._send_json({"error": str(e)}, 400)
 
@@ -345,6 +376,7 @@ class FlowHandler(BaseHTTPRequestHandler):
 
         elif path == "/reset":
             self.engine.reset()
+            self.rtd.reset()
             self._send_json({"ok": True, "message": "Motor resetado"})
 
         else:
@@ -365,6 +397,7 @@ class FlowServer:
 
         # Injetar referência estática no handler
         FlowHandler.engine = engine
+        FlowHandler.rtd    = RTDTradeInferer()
 
     def start(self):
         self._server = HTTPServer((self.host, self.port), FlowHandler)
