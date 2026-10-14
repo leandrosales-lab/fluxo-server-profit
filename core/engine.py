@@ -347,6 +347,12 @@ class FlowEngine:
         self.cfg     = config or EngineConfig()
         self._lock   = threading.RLock()
 
+        # ── Relógio do engine: tempo do último evento recebido (tick ou book).
+        # Todas as janelas de tempo usam este relógio, e não o relógio do
+        # computador, para que um pregão gravado (modo replay) se comporte
+        # igual ao ao vivo. Antes do primeiro evento, cai no time.time().
+        self._clock: float = 0.0
+
         # ── Histórico de ticks (janela deslizante)
         self._ticks: deque[Tick] = deque(maxlen=5000)
 
@@ -401,6 +407,7 @@ class FlowEngine:
         """Processa um negócio do Times & Trades."""
         with self._lock:
             tick.asset = self.asset
+            self._avancar_relogio(tick.timestamp)
             self._ticks.append(tick)
             self._update_iceberg(tick)
             self._update_urgency(tick)
@@ -412,6 +419,8 @@ class FlowEngine:
     def update_book(self, levels: list[BookLevel]):
         """Atualiza o Book de Ofertas com snapshot completo."""
         with self._lock:
+            if levels:
+                self._avancar_relogio(max(l.timestamp for l in levels))
             self._book_buy.clear()
             self._book_sell.clear()
             for lvl in levels:
@@ -422,6 +431,23 @@ class FlowEngine:
                     self._book_sell[p] = lvl
             self._update_best_offer_log()
             self._analyze()
+
+    # ──────────────────────────────────────────────────────────
+    # RELÓGIO DO ENGINE
+    # ──────────────────────────────────────────────────────────
+
+    def _avancar_relogio(self, ts: float):
+        """O relógio só anda para frente (evento atrasado não volta o tempo)."""
+        try:
+            ts = float(ts)
+        except (TypeError, ValueError):
+            return
+        if ts > self._clock:
+            self._clock = ts
+
+    def _now(self) -> float:
+        """Agora, no tempo do mercado: timestamp do último evento recebido."""
+        return self._clock if self._clock > 0 else time.time()
 
     # ──────────────────────────────────────────────────────────
     # DETECÇÃO DE ICEBERG
@@ -587,7 +613,7 @@ class FlowEngine:
 
     def _update_best_offer_log(self):
         """Registra quem está no 1º nível do book, separando ask (venda) e bid (compra)."""
-        now = time.time()
+        now = self._now()
 
         # Best ask (venda) → log exclusivo do lado vendedor
         if self._book_sell:
@@ -603,7 +629,7 @@ class FlowEngine:
 
     def _count_best_level_brokers(self, log: dict) -> dict:
         """Conta presenças recentes de cada broker em um nível. {broker: count}"""
-        now = time.time()
+        now = self._now()
         cutoff = now - self.cfg.best_offer_window_sec
         result = {}
         for broker, times in log.items():
@@ -626,7 +652,7 @@ class FlowEngine:
 
     def _register_price_touch(self, tick: Tick):
         price_r = round(tick.price, 2)
-        self._price_touches[price_r].append((time.time(), tick.qty, tick.side))
+        self._price_touches[price_r].append((tick.timestamp, tick.qty, tick.side))
 
     def _get_absorbed_levels(self) -> list[tuple]:
         """
@@ -636,7 +662,7 @@ class FlowEngine:
         onde side_absorvido é o lado agressor dominante (quem foi absorvido).
         Ordenado por volume.
         """
-        now = time.time()
+        now = self._now()
         cutoff = now - self.cfg.absorption_window_sec
 
         stats = {}
@@ -849,7 +875,7 @@ class FlowEngine:
         Retorna brokers com urgência: apareceram em >= N preços distintos
         em <= X segundos. Formato: [(broker, side, n_levels)]
         """
-        now = time.time()
+        now = self._now()
         cutoff = now - self.cfg.urgency_window_sec
         urgent = []
         for (broker, side), history in self._urgency_log.items():
@@ -868,7 +894,7 @@ class FlowEngine:
         Calcula % de volume comprador e vendedor na janela de tempo.
         Retorna: (pct_buy, pct_sell)
         """
-        now = time.time()
+        now = self._now()
         cutoff = now - self.cfg.flow_window_sec
 
         vol_buy  = 0
@@ -1110,7 +1136,8 @@ class FlowEngine:
                 signal=Signal.WAIT, pattern=PatternType.NONE,
                 direction=Side.NONE, price=last_price, stop_price=0.0,
                 broker="", confidence=0.0,
-                reason=f"Aguardando setup | Fluxo: {pct_buy:.1f}% compra / {pct_sell:.1f}% venda"
+                reason=f"Aguardando setup | Fluxo: {pct_buy:.1f}% compra / {pct_sell:.1f}% venda",
+                timestamp=self._now(),
             )
 
     def _iceberg_passive_candidate(self, ic: IcebergCandidate, pct_buy: float, pct_sell: float,
@@ -1199,7 +1226,7 @@ class FlowEngine:
             signal=sig, pattern=best["pattern"], direction=dir_,
             price=best["price"], stop_price=best["stop_price"],
             broker=best["broker"], confidence=best["confidence"],
-            reason=best["reason"]
+            reason=best["reason"], timestamp=self._now(),
         )
 
     # ──────────────────────────────────────────────────────────
@@ -1256,6 +1283,7 @@ class FlowEngine:
             self._price_touches.clear()
             self._urgency_log.clear()
             self._cum_delta = 0
+            self._clock = 0.0
             self._zz_dir = Side.NONE
             self._zz_extreme = self._zz_extreme_ts = 0.0
             self._zz_origin = self._zz_origin_ts = 0.0

@@ -873,6 +873,262 @@ def test_iceberg_rtd_passiva():
         err(f"Iceberg via RTD não detectado: {ics}")
 
 
+# ──────────────────────────────────────────────────────────────
+# MODO REPLAY
+# ──────────────────────────────────────────────────────────────
+
+_PASTA = os.path.dirname(os.path.abspath(__file__))
+_EXEMPLO = os.path.join(_PASTA, "replay", "exemplo_wdo.csv")
+
+
+def _arquivo_temp(conteudo: str, encoding: str = "utf-8") -> str:
+    import tempfile
+    fd, caminho = tempfile.mkstemp(suffix=".csv")
+    with os.fdopen(fd, "w", encoding=encoding, newline="") as f:
+        f.write(conteudo)
+    return caminho
+
+
+def test_relogio_engine():
+    print(f"\n{AMARELO}═══ TESTE 12: Engine usa o tempo do tick (não o relógio do PC) ═══{RESET}")
+
+    engine = FlowEngine("PETR4", EngineConfig(flow_window_sec=30.0,
+                                              absorption_min_touches=4))
+    if abs(engine._now() - time.time()) < 5:
+        ok("Sem ticks, o relógio do engine cai no relógio do computador")
+    else:
+        err("Fallback do relógio incorreto")
+
+    # Pregão de 14/10/2025 (um ano antes): com o relógio do PC, tudo
+    # estaria fora das janelas e o fluxo daria 50/50
+    base = 1760443200.0
+    for i in range(6):
+        engine.add_tick(Tick(base + i * 2, 19.50, 800, f"V{i}", Side.SELL))
+        engine.add_tick(Tick(base + i * 2 + 1, 19.48, 100, f"C{i}", Side.BUY))
+    st = engine.get_state()
+    if engine._now() == base + 11:
+        ok("Relógio do engine = timestamp do último tick")
+    else:
+        err(f"Relógio esperado {base + 11}, recebeu {engine._now()}")
+    if st["flow_pct_sell"] > 80:
+        ok(f"Pressão de fluxo calculada no tempo do pregão ({st['flow_pct_sell']:.1f}% venda)")
+    else:
+        err(f"Fluxo deveria ser vendedor no tempo do tick: {st['flow_pct_buy']}/{st['flow_pct_sell']}")
+    if st["absorbed_levels"] and st["absorbed_levels"][0]["price"] == 19.50:
+        ok("Absorção detectada com ticks antigos (janela no tempo do tick)")
+    else:
+        err(f"Absorção esperada em 19.50: {st['absorbed_levels']}")
+
+    # Tick atrasado não volta o relógio
+    engine.add_tick(Tick(base + 3, 19.49, 100, "ATRASADO", Side.BUY))
+    if engine._now() == base + 11:
+        ok("Tick fora de ordem não faz o relógio voltar")
+    else:
+        err("Relógio voltou com tick atrasado")
+
+    sig = engine.get_signal()
+    if abs(sig.timestamp - (base + 11)) < 1e-6:
+        ok("Timestamp do sinal = tempo do pregão")
+    else:
+        err(f"Sinal com timestamp do relógio do PC: {sig.timestamp}")
+
+    engine.reset()
+    if engine._clock == 0.0:
+        ok("Reset zera o relógio do engine")
+    else:
+        err("Reset deveria zerar o relógio")
+
+
+def test_replay_leitura():
+    print(f"\n{AMARELO}═══ TESTE 13: Leitura de CSV (formato próprio e Profit) ═══{RESET}")
+
+    from replay.csv_ticks import ler_csv
+    from dataclasses import fields
+    tem_passiva = "passive_broker" in {f.name for f in fields(Tick)}
+
+    # Formato do Fluxo Server
+    arq = _arquivo_temp(
+        "timestamp,preco,quantidade,agressor,corretora_agressora,corretora_passiva\n"
+        "1760443200.125,5123.5,10,B,XP INC,BTG PACTUAL\n"
+        "1760443200.250,5123,3,S,UBS,\n"
+        "2026-10-14T10:00:01.500,5123.5,7,C,\"ITAU, SA\",GENIAL\n")
+    try:
+        r = ler_csv(arq)
+    finally:
+        os.unlink(arq)
+    t = r.ticks
+    if len(t) == 3 and t[0].price == 5123.5 and t[0].qty == 10 and t[0].side == Side.BUY \
+            and t[1].side == Side.SELL and t[0].broker == "XP INC" and t[2].broker == "ITAU, SA":
+        ok("Formato próprio: preço, quantidade, lado e corretora lidos")
+    else:
+        err(f"Leitura do formato próprio incorreta: {t}")
+    if abs(t[0].timestamp - 1760443200.125) < 1e-6:
+        ok("Timestamp epoch com milissegundos preservado")
+    else:
+        err(f"Timestamp incorreto: {t[0].timestamp}")
+    if tem_passiva:
+        if t[0].passive_broker == "BTG PACTUAL":
+            ok("Corretora passiva lida (Tick com passive_broker)")
+        else:
+            err(f"passive_broker incorreto: {t[0].passive_broker}")
+    else:
+        ok("Tick ainda sem passive_broker: leitura funciona sem o campo")
+
+    # Exportação do Times & Trades do Profit: ';', vírgula decimal, mais novo primeiro
+    arq = _arquivo_temp(
+        "Times & Trades - WDOFUT\n"
+        "Data;Compradora;Preço;Quantidade;Vendedora;Agressor\n"
+        "14/10/2026 10:00:03,100;XP INC;5.124,00;1.000;UBS;Comprador\n"
+        "14/10/2026 10:00:02,000;ITAU;5.123,50;5;BTG PACTUAL;Vendedor\n"
+        "14/10/2026 10:00:01,500;GENIAL;5.123,50;2;CLEAR;Leilão\n"
+        "14/10/2026 10:00:01,000;MODAL;5.123,00;3;SAFRA;Comprador\n",
+        encoding="cp1252")
+    try:
+        r = ler_csv(arq)
+    finally:
+        os.unlink(arq)
+    t = r.ticks
+    if r.separador == ";" and len(t) == 3 and r.linhas_ignoradas == 1:
+        ok("Profit: separador ';' e linha de leilão (sem agressor) ignorada")
+    else:
+        err(f"Leitura do Profit incorreta: sep={r.separador!r} ticks={len(t)} ign={r.linhas_ignoradas}")
+    if [x.price for x in t] == [5123.0, 5123.5, 5124.0] and r.invertido:
+        ok("Profit: vírgula decimal e ordem do mais novo para o mais antigo corrigida")
+    else:
+        err(f"Preços/ordem incorretos: {[x.price for x in t]}")
+    if t[2].qty == 1000:
+        ok("Profit: quantidade com separador de milhar (1.000)")
+    else:
+        err(f"Quantidade incorreta: {t[2].qty}")
+    if t[1].side == Side.SELL and t[1].broker == "BTG PACTUAL" \
+            and t[2].side == Side.BUY and t[2].broker == "XP INC":
+        ok("Profit: corretora agressora tirada da Compradora/Vendedora conforme o agressor")
+    else:
+        err(f"Agressora incorreta: {t[1]} / {t[2]}")
+    if tem_passiva and t[2].passive_broker != "UBS":
+        err(f"Passiva do Profit incorreta: {t[2].passive_broker}")
+    if abs(t[2].timestamp - t[0].timestamp - 2.1) < 1e-3:
+        ok("Profit: hora com milissegundos depois da vírgula")
+    else:
+        err(f"Diferença de tempo incorreta: {t[2].timestamp - t[0].timestamp}")
+
+    # Data e hora em colunas separadas, separador ','
+    arq = _arquivo_temp('Data,Hora,Preço,Qtd,Agressor,Corretora\n'
+                        '14/10/2026,10:00:00.500,"5123,5",4,V,UBS\n')
+    try:
+        t = ler_csv(arq).ticks
+    finally:
+        os.unlink(arq)
+    if len(t) == 1 and t[0].price == 5123.5 and t[0].side == Side.SELL and t[0].broker == "UBS":
+        ok("Data e Hora em colunas separadas; cabeçalhos reconhecidos de forma flexível")
+    else:
+        err(f"Leitura com Data/Hora separadas incorreta: {t}")
+
+
+def test_replay_gravacao():
+    print(f"\n{AMARELO}═══ TESTE 14: Gravação → leitura (ida e volta) ═══{RESET}")
+
+    import tempfile
+    from replay.csv_ticks import GravadorTicks, ler_ticks, criar_tick
+
+    originais = [
+        criar_tick(1760443200.125, 5123.5, 10, "XP INC", Side.BUY, "UBS"),
+        criar_tick(1760443200.987, 5123.0, 3, "MORGAN, STANLEY", Side.SELL, ""),
+        criar_tick(1760443201.5, 5122.5, 1500, "BTG PACTUAL", Side.SELL, "ITAU"),
+    ]
+    fd, caminho = tempfile.mkstemp(suffix=".csv")
+    os.close(fd)
+    os.unlink(caminho)
+    try:
+        engine = FlowEngine("WDOFUT", EngineConfig(tick_size=0.5))
+        grav = GravadorTicks(caminho)
+        engine.add_tick = grav.envolver(engine.add_tick)
+        for t in originais:
+            engine.add_tick(t)
+        grav.fechar()
+        if engine.get_state()["tick_count"] == 3 and grav.gravados == 3:
+            ok("Gravador entrega os ticks ao engine e grava os 3")
+        else:
+            err(f"Gravador falhou: engine={engine.get_state()['tick_count']} gravados={grav.gravados}")
+        lidos = ler_ticks(caminho)
+    finally:
+        if os.path.exists(caminho):
+            os.unlink(caminho)
+
+    iguais = len(lidos) == len(originais) and all(
+        abs(a.timestamp - b.timestamp) < 1e-6 and a.price == b.price and a.qty == b.qty
+        and a.side == b.side and a.broker == b.broker
+        and getattr(a, "passive_broker", "") == getattr(b, "passive_broker", "")
+        for a, b in zip(originais, lidos))
+    if iguais:
+        ok("Ida e volta preserva tempo (ms), preço, quantidade, lado e corretoras")
+    else:
+        err(f"Ida e volta diferente:\n{originais}\n{lidos}")
+
+
+def test_replay_deterministico():
+    print(f"\n{AMARELO}═══ TESTE 15: Replay determinístico + mini backtest + grid ═══{RESET}")
+
+    from replay.csv_ticks import ler_ticks
+    from replay.player import (executar_replay, interpretar_grid, rodar_grid,
+                               avaliar_sinais, SinalReplay)
+
+    def rodar():
+        cfg = EngineConfig(tick_size=0.5, flow_pct_threshold=65.0, min_confidence=0.60)
+        sinais, player = executar_replay(FlowEngine("WDOFUT", cfg), ler_ticks(_EXEMPLO),
+                                         velocidade=0, alvo_ticks=4, horizonte_sec=300)
+        return [(s.indice, s.sinal, s.padrao, s.preco, s.stop, s.confianca, s.resultado,
+                 s.mfe_ticks, s.mae_ticks) for s in sinais], player
+
+    a, player = rodar()
+    b, _ = rodar()
+    info(f"{player.ticks_entregues} ticks, {len(a)} sinais")
+    if a and a == b:
+        ok(f"Duas execuções → os mesmos {len(a)} sinais e resultados")
+    else:
+        err("Replay não é determinístico")
+    padroes = {x[2] for x in a}
+    if "Exaustão" in padroes and "Absorção" in padroes:
+        ok("Exemplo WDO gera sinais de exaustão e de absorção")
+    else:
+        err(f"Exemplo deveria gerar exaustão e absorção: {padroes}")
+
+    # Mini backtest num caso controlado: BUY @ 100, stop 99, tick 0.5, alvo 2 ticks
+    ticks = [Tick(0, 100.0, 1, "", Side.BUY), Tick(1, 100.5, 1, "", Side.BUY),
+             Tick(2, 101.0, 1, "", Side.BUY), Tick(3, 98.0, 1, "", Side.SELL)]
+    s = SinalReplay(0, 0, "BUY", "Exaustão", 100.0, 99.0, 0.7, "", "")
+    s2 = SinalReplay(1, 1, "SELL", "Absorção", 100.5, 101.0, 0.7, "", "")
+    avaliar_sinais([s, s2], ticks, 0.5, alvo_ticks=2, horizonte_sec=60)
+    if s.resultado == "alvo" and s.mfe_ticks == 2 and s.mae_ticks == 4:
+        ok("BUY: alvo antes do stop; MFE 2 / MAE 4 ticks no horizonte")
+    else:
+        err(f"Backtest BUY incorreto: {s}")
+    if s2.resultado == "stop":
+        ok("SELL: stop tocado antes do alvo")
+    else:
+        err(f"Backtest SELL incorreto: {s2}")
+
+    grade = interpretar_grid(["exhaustion_vol_ratio=0.3,0.6", "exhaustion_reversal_ticks=3,4"])
+    if grade == {"exhaustion_vol_ratio": [0.3, 0.6], "exhaustion_reversal_ticks": [3, 4]} \
+            and isinstance(grade["exhaustion_reversal_ticks"][0], int):
+        ok("Grid interpretado com os tipos do EngineConfig")
+    else:
+        err(f"Grid interpretado errado: {grade}")
+    try:
+        interpretar_grid(["parametro_que_nao_existe=1,2"])
+        err("Parâmetro inexistente deveria dar erro")
+    except ValueError:
+        ok("Parâmetro inexistente no grid é recusado")
+    linhas = rodar_grid(ler_ticks(_EXEMPLO), grade, EngineConfig(tick_size=0.5),
+                        asset="WDOFUT", alvo_ticks=4, horizonte_sec=300)
+    if len(linhas) == 4 and all("taxa_acerto" in l and "n_sinais" in l for l in linhas):
+        resumo = [(l["exhaustion_vol_ratio"], l["exhaustion_reversal_ticks"],
+                   l["n_sinais"], l["n_exaustao"]) for l in linhas]
+        ok(f"Grid rodou 4 combinações (vol_ratio, reversal, sinais, exaustões): {resumo}")
+    else:
+        err(f"Grid incorreto: {linhas}")
+
+
 def main():
     print(f"\n{AZUL}╔══════════════════════════════════════════════╗{RESET}")
     print(f"{AZUL}║   FLUXO SERVER — Suite de Testes Automáticos  ║{RESET}")
@@ -893,6 +1149,10 @@ def main():
     test_iceberg_passivas_espalhadas()
     test_iceberg_fallback()
     test_iceberg_rtd_passiva()
+    test_relogio_engine()
+    test_replay_leitura()
+    test_replay_gravacao()
+    test_replay_deterministico()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")
