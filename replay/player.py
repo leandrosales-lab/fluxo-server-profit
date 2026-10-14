@@ -25,6 +25,7 @@ from datetime import datetime
 from typing import Callable, Optional
 
 from core.engine import FlowEngine, EngineConfig, PatternType, Signal, Side, Tick
+from replay.csv_ticks import FUSO_B3
 
 logger = logging.getLogger("Replay")
 
@@ -62,7 +63,7 @@ class SinalReplay:
 
 def _hora(ts: float) -> str:
     try:
-        return datetime.fromtimestamp(ts).strftime("%d/%m/%Y %H:%M:%S.%f")[:-3]
+        return datetime.fromtimestamp(ts, FUSO_B3).strftime("%d/%m/%Y %H:%M:%S.%f")[:-3]
     except (OverflowError, OSError, ValueError):
         return str(ts)
 
@@ -139,7 +140,7 @@ class ReplayPlayer:
 
 def _dia(ts: float):
     try:
-        return datetime.fromtimestamp(ts).date()
+        return datetime.fromtimestamp(ts, FUSO_B3).date()   # pregão = dia na B3
     except (OverflowError, OSError, ValueError):
         return None
 

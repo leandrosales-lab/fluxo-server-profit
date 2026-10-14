@@ -32,7 +32,7 @@ import re
 import threading
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from core.engine import Tick, Side
@@ -47,6 +47,10 @@ _CAMPOS_TICK = {f.name for f in dataclasses.fields(Tick)}
 
 # Data usada quando o arquivo só tem a hora do negócio
 DATA_PADRAO = "01/01/2000"
+
+# Data/hora sem fuso no arquivo = horário da B3 (Brasília, UTC-3, sem horário de verão
+# desde 2019), e não o fuso do computador que roda o replay. Mesmo fuso do profitdll.bridge.
+FUSO_B3 = timezone(timedelta(hours=-3))
 
 
 def criar_tick(timestamp: float, preco: float, qtd: int, corretora: str,
@@ -240,7 +244,7 @@ _FORMATOS_DATA = [
 
 
 def _timestamp(txt: str) -> float:
-    """Epoch (s ou ms), ISO, ou dd/mm/aaaa hh:mm:ss[.mmm]. Só hora → DATA_PADRAO."""
+    """Epoch (s ou ms), ISO, ou dd/mm/aaaa hh:mm:ss[.mmm]. Só hora → DATA_PADRAO. Sem fuso → B3."""
     s = (txt or "").strip()
     if not s:
         raise ValueError("data/hora vazia")
@@ -254,12 +258,13 @@ def _timestamp(txt: str) -> float:
         s = f"{DATA_PADRAO} {s}"
     try:
         iso = s[:-1] + "+00:00" if s.endswith("Z") else s
-        return datetime.fromisoformat(iso).timestamp()
+        dt = datetime.fromisoformat(iso)
+        return (dt if dt.tzinfo else dt.replace(tzinfo=FUSO_B3)).timestamp()
     except ValueError:
         pass
     for fmt in _FORMATOS_DATA:
         try:
-            return datetime.strptime(s, fmt).timestamp()
+            return datetime.strptime(s, fmt).replace(tzinfo=FUSO_B3).timestamp()
         except ValueError:
             continue
     raise ValueError(f"data/hora não reconhecida: {txt!r}")

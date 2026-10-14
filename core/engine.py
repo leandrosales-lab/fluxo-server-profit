@@ -611,6 +611,10 @@ class FlowEngine:
     # DETECÇÃO DE BEST OFFER PASSIVO
     # ──────────────────────────────────────────────────────────
 
+    def _relevantes(self) -> set:
+        """Corretoras de alta relevância em maiúsculas (montado uma vez por chamada, não por tick)."""
+        return {b.upper() for b in self.cfg.high_relevance_brokers}
+
     def _update_best_offer_log(self):
         """
         Registra quem está no 1º nível do book, separando ask (venda) e bid (compra).
@@ -670,6 +674,15 @@ class FlowEngine:
         """
         now = self._now()
         cutoff = now - self.cfg.absorption_window_sec
+
+        # Poda: o relógio só anda para frente, então o que ficou antes do corte nunca
+        # mais entra na janela. O filtro abaixo continua valendo para eventos fora de ordem.
+        for price in list(self._price_touches):
+            touches = self._price_touches[price]
+            while touches and touches[0][0] < cutoff:
+                touches.popleft()
+            if not touches:
+                del self._price_touches[price]
 
         stats = {}
         for price, touches in self._price_touches.items():
@@ -883,6 +896,13 @@ class FlowEngine:
         """
         now = self._now()
         cutoff = now - self.cfg.urgency_window_sec
+        # Poda (mesma lógica da absorção): o que saiu da janela não volta
+        for key in list(self._urgency_log):
+            history = self._urgency_log[key]
+            while history and history[0][1] < cutoff:
+                history.popleft()
+            if not history:
+                del self._urgency_log[key]
         urgent = []
         for (broker, side), history in self._urgency_log.items():
             recent = [(p, t) for p, t in history if t >= cutoff]
@@ -905,12 +925,13 @@ class FlowEngine:
 
         vol_buy  = 0
         vol_sell = 0
+        relevantes = self._relevantes()
 
         for tick in reversed(self._ticks):
             if tick.timestamp < cutoff:
                 break
             # Dar peso 2x para corretoras de alta relevância
-            weight = 2 if tick.broker.upper() in [b.upper() for b in self.cfg.high_relevance_brokers] else 1
+            weight = 2 if tick.broker.upper() in relevantes else 1
             if tick.side == Side.BUY:
                 vol_buy  += tick.qty * weight
             else:
@@ -1156,7 +1177,7 @@ class FlowEngine:
         buy = ic.side == Side.BUY
         conf = ic.confidence
         extras = []
-        if ic.broker.upper() in [b.upper() for b in self.cfg.high_relevance_brokers]:
+        if ic.broker.upper() in self._relevantes():
             conf += 0.10
             extras.append("corretora relevante")
         if ic.broker in (best_bid if buy else best_ask):
@@ -1202,7 +1223,7 @@ class FlowEngine:
         conf += min(0.25, (flow_pct - self.cfg.flow_pct_threshold) / 35 * 0.25)
 
         # Broker relevante
-        if ic.broker.upper() in [b.upper() for b in self.cfg.high_relevance_brokers]:
+        if ic.broker.upper() in self._relevantes():
             conf += 0.15
 
         # Broker também está no best offer
@@ -1274,6 +1295,11 @@ class FlowEngine:
                 "urgent_brokers":     urgent,
                 "best_ask_brokers":   list(self._get_best_ask_brokers().keys()),
                 "best_bid_brokers":   list(self._get_best_bid_brokers().keys()),
+                # 10 últimos negócios, do mais antigo ao mais novo (fita do dashboard)
+                "recent_trades":      [{"timestamp": t.timestamp, "price": t.price, "qty": t.qty,
+                                        "side": t.side.value, "broker": t.broker,
+                                        "passive_broker": t.passive_broker}
+                                       for t in list(self._ticks)[-10:]],
                 "signal":             self._current_signal.to_dict(),
             }
 

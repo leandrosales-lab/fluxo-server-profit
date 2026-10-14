@@ -1424,6 +1424,107 @@ def test_historico_dll():
         err(f"Leitura do dia baixado diferente:\n{res.ticks}\n{leitura.ticks}")
 
 
+def test_fuso_csv():
+    print(f"\n{AMARELO}═══ TESTE 18: Horário do CSV no fuso da B3 (independe do PC) ═══{RESET}")
+
+    import tempfile
+    from datetime import datetime, timezone
+    from replay.csv_ticks import ler_csv
+
+    fd, arq = tempfile.mkstemp(suffix=".csv")
+    os.close(fd)
+    with open(arq, "w", encoding="utf-8") as f:
+        f.write("Data;Preço;Quantidade;Agressor\n"
+                "14/10/2026 10:00:00,125;37,40;100;Comprador\n"
+                "2026-10-14T10:00:01-03:00;37,41;100;Vendedor\n"
+                "2026-10-14T13:00:02Z;37,42;100;Comprador\n")
+    try:
+        t = ler_csv(arq).ticks
+    finally:
+        os.unlink(arq)
+    esperado = datetime(2026, 10, 14, 13, 0, 0, 125000, tzinfo=timezone.utc).timestamp()
+    if abs(t[0].timestamp - esperado) < 1e-6:
+        ok("Data sem fuso é lida como horário de Brasília (13:00:00.125 UTC), em qualquer PC")
+    else:
+        err(f"Data sem fuso lida no fuso do PC: {t[0].timestamp} != {esperado}")
+    if abs(t[1].timestamp - (esperado + 0.875)) < 1e-6 and abs(t[2].timestamp - (esperado + 1.875)) < 1e-6:
+        ok("Data ISO com fuso explícito (-03:00 ou Z) é respeitada")
+    else:
+        err(f"Fuso explícito ignorado: {[x.timestamp - esperado for x in t]}")
+
+    from replay.player import _hora
+    if _hora(esperado).endswith("10:00:00.125"):
+        ok("Relatório do replay mostra a hora da B3")
+    else:
+        err(f"Hora do relatório fora do fuso da B3: {_hora(esperado)}")
+
+
+def test_argumentos_cli():
+    print(f"\n{AMARELO}═══ TESTE 19: Opções da linha de comando valem sobre o conhecimento dos vídeos ═══{RESET}")
+
+    from types import SimpleNamespace
+    from config.cli_overrides import aplicar_argumentos
+    from config.conhecimento_videos import aplicar_conhecimento
+
+    engine = FlowEngine("PETR4", EngineConfig())
+    aplicar_conhecimento(engine)
+    args = SimpleNamespace(flow_window=None, flow_pct=70.0, iceberg_min=5, tick_size=0.01, min_confidence=0.75)
+    aplicar_argumentos(engine.cfg, args)
+    c = engine.cfg
+    if (c.flow_pct_threshold, c.iceberg_min_renewals, c.min_confidence) == (70.0, 5, 0.75):
+        ok("--flow-pct, --iceberg-min e --min-confidence não são sobrescritos")
+    else:
+        err(f"Opções sobrescritas: {c.flow_pct_threshold}, {c.iceberg_min_renewals}, {c.min_confidence}")
+
+    engine2 = FlowEngine("PETR4", EngineConfig())
+    aplicar_conhecimento(engine2)
+    antes = (engine2.cfg.flow_pct_threshold, engine2.cfg.min_confidence, engine2.cfg.flow_window_sec)
+    aplicar_argumentos(engine2.cfg, SimpleNamespace(flow_window=None, flow_pct=None, iceberg_min=None,
+                                                    tick_size=0.01, min_confidence=None))
+    if (engine2.cfg.flow_pct_threshold, engine2.cfg.min_confidence, engine2.cfg.flow_window_sec) == antes:
+        ok("Opção não informada mantém o valor do conhecimento/padrão")
+    else:
+        err("Opção não informada alterou a configuração")
+
+
+def test_desempenho_estado():
+    print(f"\n{AMARELO}═══ TESTE 20: Janelas podadas (pregão longo) e últimos negócios no estado ═══{RESET}")
+
+    import random
+    random.seed(7)
+    engine = FlowEngine("PETR4", EngineConfig())
+    corretoras = [f"C{i}" for i in range(40)]
+    ts, p = 1_000_000.0, 37.40
+    inicio = time.perf_counter()
+    for _ in range(12000):
+        ts += random.uniform(0.05, 0.8)
+        p = round(p + random.choice([-0.01, 0, 0, 0.01]), 2)
+        engine.add_tick(Tick(ts, p, random.choice([100, 200, 500]), random.choice(corretoras),
+                             random.choice([Side.BUY, Side.SELL]), passive_broker=random.choice(corretoras)))
+    dur = time.perf_counter() - inicio
+    toques = sum(len(d) for d in engine._price_touches.values())
+    urg = sum(len(d) for d in engine._urgency_log.values())
+    janela = engine.cfg.absorption_window_sec
+    recentes = [t for t in engine._ticks if t.timestamp >= ts - janela]
+    if toques <= len(recentes) + 1 and urg <= len(recentes) * 2:
+        ok(f"Toques e urgência guardam só a janela ({toques} toques, {urg} urgência)")
+    else:
+        err(f"Histórico não podado: {toques} toques, {urg} urgência para {len(recentes)} negócios na janela")
+    info(f"12.000 negócios em {dur:.1f}s ({12000 / dur:,.0f}/s)")
+    if dur < 60:
+        ok("Desempenho não degrada com o tamanho do pregão")
+    else:
+        err(f"Lento demais: {dur:.1f}s")
+
+    estado = engine.get_state()
+    ult = estado.get("recent_trades")
+    if ult and len(ult) == 10 and ult[-1]["price"] == p and ult[-1]["timestamp"] == ts \
+            and set(ult[-1]) >= {"timestamp", "price", "qty", "side", "broker", "passive_broker"}:
+        ok("get_state() traz os 10 últimos negócios, do mais antigo ao mais novo")
+    else:
+        err(f"recent_trades ausente ou incompleto: {ult[-1:] if ult else ult}")
+
+
 def main():
     print(f"\n{AZUL}╔══════════════════════════════════════════════╗{RESET}")
     print(f"{AZUL}║   FLUXO SERVER — Suite de Testes Automáticos  ║{RESET}")
@@ -1450,6 +1551,9 @@ def main():
     test_replay_gravacao()
     test_replay_deterministico()
     test_historico_dll()
+    test_fuso_csv()
+    test_argumentos_cli()
+    test_desempenho_estado()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")

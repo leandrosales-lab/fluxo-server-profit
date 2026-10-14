@@ -326,11 +326,12 @@ def parse_args():
     p.add_argument("--saida",       default=None,
                    help="Replay: CSV com os sinais (ou com o grid, se --grid)")
     # Parâmetros do motor
-    p.add_argument("--flow-window",    default=30.0, type=float, help="Janela de fluxo (seg)")
-    p.add_argument("--flow-pct",       default=65.0, type=float, help="%% mínimo de fluxo dominante")
-    p.add_argument("--iceberg-min",    default=3,    type=int,   help="Renovações mínimas do Iceberg")
+    # None = não informada: vale o padrão/conhecimento (as informadas vencem, ver config/cli_overrides.py)
+    p.add_argument("--flow-window",    default=None, type=float, help="Janela de fluxo (seg). Padrão 30")
+    p.add_argument("--flow-pct",       default=None, type=float, help="%% mínimo de fluxo dominante. Padrão 65")
+    p.add_argument("--iceberg-min",    default=None, type=int,   help="Renovações mínimas do Iceberg. Padrão 3")
     p.add_argument("--tick-size",      default=0.01, type=float, help="Tamanho do tick do ativo")
-    p.add_argument("--min-confidence", default=0.60, type=float, help="Confiança mínima para sinal")
+    p.add_argument("--min-confidence", default=None, type=float, help="Confiança mínima para sinal. Padrão 0.60")
     return p.parse_args()
 
 
@@ -339,15 +340,9 @@ def main():
 
     # ── Criar motor de fluxo
     from config.knowledge_loader import carregar_conhecimento
+    from config.cli_overrides import aplicar_argumentos
 
-    engine_cfg = EngineConfig(
-        flow_window_sec     = args.flow_window,
-        flow_pct_threshold  = args.flow_pct,
-        iceberg_min_renewals = args.iceberg_min,
-        tick_size           = args.tick_size,
-        min_confidence      = args.min_confidence,
-    )
-    engine = FlowEngine(asset=args.asset, config=engine_cfg)
+    engine = FlowEngine(asset=args.asset, config=EngineConfig(tick_size=args.tick_size))
 
     # ── Aplicar conhecimento extraído dos vídeos
     try:
@@ -358,6 +353,9 @@ def main():
 
     # ── Carregar ajustes do JSON de conhecimento (gerado pelo transcritor)
     carregar_conhecimento(engine)
+
+    # ── Por último, as opções digitadas na linha de comando (vencem o conhecimento)
+    aplicar_argumentos(engine.cfg, args)
 
     # ── Gravação: cada tick entregue ao engine também vai para o CSV
     gravador = None
