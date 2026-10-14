@@ -10,6 +10,8 @@ USO:
   python main.py --asset PETR4 --modo rtd
   python main.py --asset WDOFUT --modo dll --tick-size 0.5
   python main.py --asset PETR4 --modo manual --port 5000
+  python main.py --asset WDOFUT --modo dll --tick-size 0.5 --gravar pregao.csv
+  python main.py --asset WDOFUT --modo replay --arquivo pregao.csv --tick-size 0.5 --sem-servidor
 
 MODOS:
   ocr    → Captura tela do Profit via OCR (Tesseract)
@@ -17,6 +19,7 @@ MODOS:
   rtd    → Recebe dados via Excel RTD Bridge
   dll    → ProfitDLL da Nelogica: cada negócio com lado agressor (recomendado)
   manual → Aguarda dados via POST /tick e /book (testes/integração)
+  replay → Roda um pregão gravado em CSV (calibração — veja docs/replay.md)
 
 REQUISITOS:
   Python 3.10+
@@ -168,6 +171,81 @@ def setup_dll_mode(engine: FlowEngine, args):
 
 
 # ──────────────────────────────────────────────────────────────
+# MODO REPLAY
+# ──────────────────────────────────────────────────────────────
+
+def rodar_modo_replay(engine: FlowEngine, args):
+    """Roda o CSV pelo engine, imprime o relatório e (opcional) o grid."""
+    from replay.csv_ticks import ler_csv
+    from replay.player import (executar_replay, montar_relatorio, salvar_sinais_csv,
+                               interpretar_grid, rodar_grid, montar_tabela_grid,
+                               salvar_grid_csv)
+
+    if not args.arquivo:
+        logger.error("Modo replay precisa de --arquivo pregao.csv")
+        return
+    leitura = ler_csv(args.arquivo)
+    ticks = leitura.ticks
+    logger.info(f"Replay: {len(ticks)} ticks de {args.arquivo} "
+                f"({leitura.linhas_ignoradas} linhas ignoradas) | colunas: {leitura.colunas}")
+    if not ticks:
+        logger.error("Nenhum tick válido no arquivo")
+        return
+
+    # ── Grid de calibração: um replay por combinação, sempre em lote
+    if args.grid:
+        import copy
+        grade = interpretar_grid(args.grid)
+        total = 1
+        for v in grade.values():
+            total *= len(v)
+        logger.info(f"Grid: {total} combinações de {list(grade)}")
+        linhas = rodar_grid(ticks, grade, base_cfg=copy.deepcopy(engine.cfg),
+                            asset=args.asset, alvo_ticks=args.alvo_ticks,
+                            horizonte_sec=args.horizonte)
+        print(montar_tabela_grid(linhas, list(grade)))
+        saida = args.saida or "grid_resultado.csv"
+        salvar_grid_csv(saida, linhas)
+        print(f"  Resultado completo salvo em {saida}")
+        return
+
+    server = None
+    if not args.sem_servidor:
+        server = FlowServer(engine, host=args.host, port=args.port)
+        server.start()
+        print(f"  Dashboard do replay: http://{args.host}:{args.port}/dashboard")
+
+    def ao_sinal(s):
+        logger.info(f"[REPLAY] {s.sinal} {s.padrao} @ {s.preco:g} stop {s.stop:g} "
+                    f"conf {s.confianca:.2f}")
+
+    try:
+        sinais, _ = executar_replay(engine, ticks, args.velocidade,
+                                    args.alvo_ticks, args.horizonte, ao_sinal=ao_sinal)
+    except KeyboardInterrupt:
+        logger.info("Replay interrompido")
+        if server:
+            server.stop()
+        return
+
+    print(montar_relatorio(ticks, sinais, args.alvo_ticks, args.horizonte))
+    if args.saida:
+        salvar_sinais_csv(args.saida, sinais)
+        print(f"  Sinais salvos em {args.saida}")
+    sys.stdout.flush()
+
+    if server:
+        print("  Replay terminou. O servidor continua no ar com o estado final "
+              "(Ctrl+C para sair).")
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+        server.stop()
+
+
+# ──────────────────────────────────────────────────────────────
 # RESET DIÁRIO (meia-noite)
 # ──────────────────────────────────────────────────────────────
 
@@ -214,7 +292,7 @@ def status_loop(engine: FlowEngine, interval: int = 30):
 def parse_args():
     p = argparse.ArgumentParser(description="Fluxo Server — Leitura de Fluxo B3")
     p.add_argument("--asset",       default="PETR4",   help="Ticker do ativo (ex: PETR4)")
-    p.add_argument("--modo",        default="manual",  choices=["ocr", "dde", "rtd", "dll", "manual"],
+    p.add_argument("--modo",        default="manual",  choices=["ocr", "dde", "rtd", "dll", "manual", "replay"],
                    help="Modo de captura de dados")
     p.add_argument("--host",        default="127.0.0.1", help="Host do servidor HTTP")
     p.add_argument("--port",        default=5000,      type=int, help="Porta do servidor HTTP")
@@ -228,6 +306,24 @@ def parse_args():
                    help="Bolsa na ProfitDLL: B (Bovespa) ou F (BMF). Padrão: inferido do ticker (modo dll)")
     p.add_argument("--agentes",     default=None,
                    help="JSON {codigo: nome} das corretoras (modo dll)")
+    # Gravação e replay
+    p.add_argument("--gravar",      default=None,
+                   help="Grava cada negócio entregue ao engine neste CSV (qualquer modo)")
+    p.add_argument("--arquivo",     default=None,
+                   help="CSV do pregão a reproduzir (modo replay)")
+    p.add_argument("--velocidade",  default=0.0, type=float,
+                   help="Replay: 0 = máximo, 1 = tempo real, N = N vezes mais rápido")
+    p.add_argument("--sem-servidor", action="store_true",
+                   help="Replay em lote, sem servidor HTTP")
+    p.add_argument("--alvo-ticks",  default=4.0, type=float,
+                   help="Replay: ticks a favor que contam como acerto (padrão 4)")
+    p.add_argument("--horizonte",   default=300.0, type=float,
+                   help="Replay: segundos após o sinal para medir o resultado (padrão 300)")
+    p.add_argument("--grid",        nargs="+", default=None, metavar="PARAM=V1,V2",
+                   help="Replay: varre combinações do EngineConfig "
+                        "(ex: exhaustion_vol_ratio=0.5,0.6 exhaustion_reversal_ticks=2,3)")
+    p.add_argument("--saida",       default=None,
+                   help="Replay: CSV com os sinais (ou com o grid, se --grid)")
     # Parâmetros do motor
     p.add_argument("--flow-window",    default=30.0, type=float, help="Janela de fluxo (seg)")
     p.add_argument("--flow-pct",       default=65.0, type=float, help="%% mínimo de fluxo dominante")
@@ -261,6 +357,22 @@ def main():
 
     # ── Carregar ajustes do JSON de conhecimento (gerado pelo transcritor)
     carregar_conhecimento(engine)
+
+    # ── Gravação: cada tick entregue ao engine também vai para o CSV
+    gravador = None
+    if args.gravar:
+        import atexit
+        from replay.csv_ticks import GravadorTicks
+        gravador = GravadorTicks(args.gravar)
+        engine.add_tick = gravador.envolver(engine.add_tick)
+        atexit.register(gravador.fechar)
+
+    # ── Modo replay: roda o arquivo e sai (não precisa de captura nem reset diário)
+    if args.modo == "replay":
+        rodar_modo_replay(engine, args)
+        if gravador:
+            gravador.fechar()
+        return
 
     # ── Calibração OCR
     if args.calibrate and args.modo == "ocr":
@@ -330,6 +442,8 @@ def main():
         if data_source:
             data_source.stop()
         server.stop()
+        if gravador:
+            gravador.fechar()
         sys.exit(0)
 
     signal.signal(signal.SIGINT,  handle_exit)
