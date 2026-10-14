@@ -33,7 +33,7 @@ logger = logging.getLogger("RTD")
 @dataclass
 class RTDSnapshot:
     price:     float            # ULT — último preço
-    volume:    float            # VOL — quantidade acumulada no dia
+    volume:    float            # QTT — quantidade acumulada no dia (VOL do Profit é R$, não serve)
     trades:    int              # NEG — nº de negócios acumulado no dia
     buyer:     str = ""         # ACP — agente comprador do último negócio
     seller:    str = ""         # AVD — agente vendedor do último negócio
