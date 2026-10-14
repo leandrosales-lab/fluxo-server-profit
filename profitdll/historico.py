@@ -37,24 +37,22 @@ import logging
 import argparse
 import threading
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.engine import Tick
 from profitdll.bridge import (ProfitDLLBridge, trade_para_tick, bolsa_padrao,
-                              carregar_nomes_agentes)
+                              carregar_nomes_agentes, FUSO_B3,
+                              data_b3_para_epoch as _data_b3_ou_none)
 
 logger = logging.getLogger("ProfitDLLHistorico")
 
-# Horário de Brasília fixo (UTC-3, sem horário de verão desde 2019).
-# Fuso fixo de propósito: não depende do tzdata nem do fuso do computador.
-FUSO_B3 = timezone(timedelta(hours=-3))
+# FUSO_B3 (UTC-3 fixo) e a conversão de data vêm do bridge.py, para o
+# histórico e o tempo real gerarem exatamente o mesmo horário.
 
 # Formato EXIGIDO pela DLL na requisição (sem milissegundos)
 FORMATO_REQUISICAO = "%d/%m/%Y %H:%M:%S"
-# Formatos em que a data chega no callback (com e sem milissegundos)
-FORMATOS_CALLBACK = ("%d/%m/%Y %H:%M:%S.%f", "%d/%m/%Y %H:%M:%S")
 
 HORA_INICIO_PADRAO = "09:00:00"
 HORA_FIM_PADRAO    = "18:35:00"
@@ -71,13 +69,9 @@ def data_b3_para_epoch(txt: str) -> float:
     Ex.: "14/10/2026 10:00:00.125" → 1791982800.125 (13:00:00.125 UTC)
     Aceita também sem milissegundos. Erro de formato → ValueError.
     """
-    s = (txt or "").strip()
-    for fmt in FORMATOS_CALLBACK:
-        try:
-            dt = datetime.strptime(s, fmt)
-        except ValueError:
-            continue
-        return dt.replace(tzinfo=FUSO_B3).timestamp()
+    ts = _data_b3_ou_none(txt)
+    if ts is not None:
+        return ts
     raise ValueError(f"data da DLL fora do formato DD/MM/YYYY HH:mm:SS.ZZZ: {txt!r}")
 
 
