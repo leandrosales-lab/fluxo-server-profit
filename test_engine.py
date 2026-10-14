@@ -1129,6 +1129,135 @@ def test_replay_deterministico():
         err(f"Grid incorreto: {linhas}")
 
 
+def test_historico_dll():
+    print(f"\n{AMARELO}═══ TESTE 16: Histórico pela ProfitDLL → CSV do replay ═══{RESET}")
+
+    import tempfile, shutil
+    from datetime import date, datetime, timezone
+    from profitdll.historico import (data_b3_para_epoch, dias_uteis, janela_do_dia,
+                                     converter_trades, gravar_dia, caminho_do_dia,
+                                     ler_data, ler_hora)
+    from replay.csv_ticks import ler_csv
+
+    # Data B3 (Brasília, UTC-3) com milissegundos → epoch
+    esperado = datetime(2026, 10, 14, 13, 0, 0, 125000, tzinfo=timezone.utc).timestamp()
+    if abs(data_b3_para_epoch("14/10/2026 10:00:00.125") - esperado) < 1e-6:
+        ok("14/10/2026 10:00:00.125 (Brasília) = 13:00:00.125 UTC, com ms")
+    else:
+        err(f"Conversão de data B3 errada: {data_b3_para_epoch('14/10/2026 10:00:00.125')}")
+    if abs(data_b3_para_epoch("14/10/2026 10:00:00") - (esperado - 0.125)) < 1e-6:
+        ok("Data sem milissegundos também é aceita")
+    else:
+        err("Data sem milissegundos convertida errado")
+    for ruim in ("2026-10-14 10:00:00", "10/14/2026 10:00:00", "", "14/10/2026"):
+        try:
+            data_b3_para_epoch(ruim)
+            err(f"Data fora do formato deveria falhar: {ruim!r}")
+        except ValueError:
+            pass
+    ok("Datas fora do formato DD/MM/YYYY HH:mm:SS.ZZZ são recusadas")
+
+    # Janela da requisição no formato estrito da DLL (strftime, com zeros)
+    if janela_do_dia(date(2026, 3, 5)) == ("05/03/2026 09:00:00", "05/03/2026 18:35:00") \
+            and janela_do_dia(date(2026, 3, 5), "9:30", "17:00:00") == \
+            ("05/03/2026 09:30:00", "05/03/2026 17:00:00"):
+        ok("Janela do dia: '%d/%m/%Y %H:%M:%S' com zeros à esquerda")
+    else:
+        err(f"Janela do dia incorreta: {janela_do_dia(date(2026, 3, 5))}")
+    try:
+        janela_do_dia(date(2026, 3, 5), "18:00:00", "09:00:00")
+        err("Hora final antes da inicial deveria falhar")
+    except ValueError:
+        ok("Hora final antes da inicial é recusada")
+    if ler_data("2026-10-01") == ler_data("01/10/2026") == date(2026, 10, 1) \
+            and ler_hora("9:05") == "09:05:00":
+        ok("Datas AAAA-MM-DD / DD/MM/AAAA e horas HH:MM[:SS] da linha de comando")
+    else:
+        err("Leitura de data/hora da linha de comando incorreta")
+
+    # Dias úteis: 01/10/2026 (quinta) a 10/10/2026 (sábado)
+    dias = dias_uteis(date(2026, 10, 1), date(2026, 10, 10))
+    esperados = [date(2026, 10, d) for d in (1, 2, 5, 6, 7, 8, 9)]
+    if dias == esperados:
+        ok(f"Dias úteis entre 01/10 e 10/10: {[d.day for d in dias]} (sem sáb/dom)")
+    else:
+        err(f"Dias úteis incorretos: {dias}")
+    if dias_uteis(date(2026, 10, 3), date(2026, 10, 4)) == []:
+        ok("Fim de semana sozinho → nenhum dia")
+    else:
+        err("Fim de semana deveria dar lista vazia")
+    try:
+        dias_uteis(date(2026, 10, 10), date(2026, 10, 1))
+        err("Data final antes da inicial deveria falhar")
+    except ValueError:
+        ok("Data final antes da inicial é recusada")
+    if caminho_do_dia("historico/wdo_{data}.csv", date(2026, 10, 1)) == "historico/wdo_2026-10-01.csv" \
+            and caminho_do_dia("h/{asset}_{data}.csv", date(2026, 10, 1), "WDOFUT") == \
+            "h/WDOFUT_2026-10-01.csv":
+        ok("Nome do arquivo por dia: {data} → AAAA-MM-DD, {asset} → ticker")
+    else:
+        err("caminho_do_dia incorreto")
+
+    # Tuplas como o callback acumula, fora de ordem e com sujeira
+    # (data, tradeNumber, preço, volume R$, qtd, comprador, vendedor, tradeType)
+    nomes = {3: "XP INC", 8: "UBS", 72: "BRADESCO"}
+    brutos = [
+        ("14/10/2026 10:00:01.500", 103, 5401.0, 0.0, 5, 3, 8, 3),      # venda: agressor UBS
+        ("14/10/2026 10:00:00.250", 101, 5400.5, 0.0, 2, 3, 8, 2),      # compra: agressor XP
+        ("14/10/2026 10:00:00.250", 100, 5400.0, 0.0, 1, 72, 3, 2),     # mesmo ms, nº menor
+        ("14/10/2026 10:00:00.900", 102, 5400.5, 0.0, 10, 3, 8, 4),     # leilão → ignorado
+        ("14/10/2026 10:00:01.000", 104, 5400.5, 0.0, 3, 3, 8, 1),      # cross → ignorado
+        ("14/10/2026 10:00:00.250", 101, 5400.5, 0.0, 2, 3, 8, 2),      # duplicado
+        ("13/10/2026 17:59:59.000", 99, 5390.0, 0.0, 1, 3, 8, 2),       # outro dia
+        ("14-10-2026 10:00:02", 105, 5401.0, 0.0, 1, 3, 8, 2),          # data inválida
+        ("14/10/2026 10:00:03.000", 106, 5401.5, 0.0, 7, 8, 72, 2),     # compra: agressor UBS
+    ]
+    res = converter_trades(brutos, nomes, date(2026, 10, 14))
+    if (res.recebidos, res.ignorados, res.duplicados, res.fora_do_dia, res.invalidos) \
+            == (9, 2, 1, 1, 1) and res.numeros_duplicados == [101]:
+        ok("Contagem: 9 recebidos, 2 sem agressão, 1 duplicado (nº 101), "
+           "1 de outro dia, 1 data inválida")
+    else:
+        err(f"Contagem incorreta: {res}")
+    seq = [(t.price, t.qty, t.side, t.broker, getattr(t, "passive_broker", ""))
+           for t in res.ticks]
+    if seq == [(5400.0, 1, Side.BUY, "BRADESCO", "XP INC"),
+               (5400.5, 2, Side.BUY, "XP INC", "UBS"),
+               (5401.0, 5, Side.SELL, "UBS", "XP INC"),
+               (5401.5, 7, Side.BUY, "UBS", "BRADESCO")]:
+        ok("Ordem cronológica por (timestamp, tradeNumber), agressora/passiva pelo TradeType")
+    else:
+        err(f"Ticks convertidos incorretos: {seq}")
+    ts = [t.timestamp for t in res.ticks]
+    if ts == sorted(ts) and abs(ts[0] - (esperado + 0.125)) < 1e-6:
+        ok("Timestamps em epoch crescentes, com milissegundos")
+    else:
+        err(f"Timestamps incorretos: {ts}")
+
+    # Gravação de um dia fake e leitura de volta com o leitor do replay
+    pasta = tempfile.mkdtemp()
+    try:
+        caminho = caminho_do_dia(os.path.join(pasta, "sub", "wdo_{data}.csv"), date(2026, 10, 14))
+        n = gravar_dia(caminho, res.ticks)
+        sobras = os.listdir(os.path.dirname(caminho))
+        leitura = ler_csv(caminho)
+    finally:
+        shutil.rmtree(pasta, ignore_errors=True)
+    if n == 4 and sobras == ["wdo_2026-10-14.csv"]:
+        ok("Dia gravado na pasta criada, sem sobrar o arquivo .parcial")
+    else:
+        err(f"Gravação do dia incorreta: n={n} arquivos={sobras}")
+    iguais = len(leitura.ticks) == len(res.ticks) and leitura.linhas_ignoradas == 0 and all(
+        abs(a.timestamp - b.timestamp) < 1e-6 and a.price == b.price and a.qty == b.qty
+        and a.side == b.side and a.broker == b.broker
+        and getattr(a, "passive_broker", "") == getattr(b, "passive_broker", "")
+        for a, b in zip(res.ticks, leitura.ticks))
+    if iguais and not leitura.invertido:
+        ok("Leitor do replay lê o dia baixado igual ao que foi gravado")
+    else:
+        err(f"Leitura do dia baixado diferente:\n{res.ticks}\n{leitura.ticks}")
+
+
 def main():
     print(f"\n{AZUL}╔══════════════════════════════════════════════╗{RESET}")
     print(f"{AZUL}║   FLUXO SERVER — Suite de Testes Automáticos  ║{RESET}")
@@ -1153,6 +1282,7 @@ def main():
     test_replay_leitura()
     test_replay_gravacao()
     test_replay_deterministico()
+    test_historico_dll()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")

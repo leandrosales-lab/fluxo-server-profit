@@ -40,3 +40,6 @@ desktop.ini
 
 # macOS
 .DS_Store
+
+# Histórico baixado pela ProfitDLL (python -m profitdll.historico)
+historico/
