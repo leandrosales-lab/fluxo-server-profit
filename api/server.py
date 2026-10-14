@@ -244,6 +244,7 @@ document.getElementById('ts').textContent = new Date().toLocaleTimeString('pt-BR
 class FlowHandler(BaseHTTPRequestHandler):
     engine: FlowEngine = None   # referência estática, preenchida no start
     rtd: RTDTradeInferer = None
+    dll = None                  # ProfitDLLBridge no modo dll (contadores no /state)
 
     def log_message(self, fmt, *args):
         logger.debug(f"{self.client_address[0]} — {fmt % args}")
@@ -289,6 +290,8 @@ class FlowHandler(BaseHTTPRequestHandler):
         elif path == "/state":
             state = self.engine.get_state()
             state["rtd"] = self.rtd.stats()
+            if self.dll is not None:
+                state["dll"] = self.dll.stats()
             self._send_json(state)
 
         elif path == "/health":
@@ -402,6 +405,11 @@ class FlowServer:
         # Injetar referência estática no handler
         FlowHandler.engine = engine
         FlowHandler.rtd    = RTDTradeInferer()
+        FlowHandler.dll    = None
+
+    def registrar_dll(self, bridge):
+        """Expõe os contadores da ProfitDLL no GET /state (bloco "dll")."""
+        FlowHandler.dll = bridge
 
     def start(self):
         self._server = HTTPServer((self.host, self.port), FlowHandler)

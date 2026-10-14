@@ -427,9 +427,9 @@ def test_profitdll():
     consumidor = threading.Thread(target=bridge._consumir, daemon=True)
     consumidor.start()
     now = time.time()
-    bridge.fila.put((3, 8, 10, 5100.0, AGRESSAO_COMPRA, now - 3))
-    bridge.fila.put((3, 8, 4,  5100.5, AGRESSAO_VENDA,  now - 2))
-    bridge.fila.put((3, 8, 7,  5100.5, 1,               now - 1))   # sem agressão
+    bridge.fila.put(("trade", 3, 8, 10, 5100.0, AGRESSAO_COMPRA, now - 3))
+    bridge.fila.put(("trade", 3, 8, 4,  5100.5, AGRESSAO_VENDA,  now - 2))
+    bridge.fila.put(("trade", 3, 8, 7,  5100.5, 1,               now - 1))   # sem agressão
     deadline = time.time() + 3
     while bridge.trades_recebidos < 3 and time.time() < deadline:
         time.sleep(0.05)
@@ -455,6 +455,172 @@ def test_profitdll():
             ok("Fora do Windows, start() falha com erro claro (sem travar)")
         else:
             err("start() deveria falhar fora do Windows")
+
+
+def test_profitdll_tempo_real():
+    print(f"\n{AMARELO}═══ TESTE 9b: ProfitDLL tempo real (horário do negócio + TinyBook) ═══{RESET}")
+
+    from types import SimpleNamespace
+    from datetime import datetime, timezone
+    from profitdll.bridge import (ProfitDLLBridge, data_b3_para_epoch, systemtime_para_epoch,
+                                  horario_negocio, topo_para_niveis,
+                                  AGRESSAO_COMPRA, AGRESSAO_VENDA, TINYBOOK_BID, TINYBOOK_ASK)
+
+    # 14/10/2026 10:00:00.125 em Brasília = 13:00:00.125 UTC
+    esperado = datetime(2026, 10, 14, 13, 0, 0, tzinfo=timezone.utc).timestamp() + 0.125
+
+    st = SimpleNamespace(wYear=2026, wMonth=10, wDayOfWeek=3, wDay=14, wHour=10,
+                         wMinute=0, wSecond=0, wMilliseconds=125)
+    ts = systemtime_para_epoch(st)
+    if ts is not None and abs(ts - esperado) < 1e-6:
+        ok(f"SYSTEMTIME → epoch com UTC-3 e ms ({ts:.3f})")
+    else:
+        err(f"SYSTEMTIME convertido errado: {ts} (esperado {esperado:.3f})")
+
+    ts = data_b3_para_epoch("14/10/2026 10:00:00.125")
+    if ts is not None and abs(ts - esperado) < 1e-6:
+        ok("Texto 'DD/MM/YYYY HH:mm:SS.ZZZ' → mesmo epoch")
+    else:
+        err(f"Texto convertido errado: {ts}")
+    ts = data_b3_para_epoch("14/10/2026 10:00:00")
+    if ts is not None and abs(ts - (esperado - 0.125)) < 1e-6:
+        ok("Texto sem milissegundos aceito")
+    else:
+        err(f"Texto sem ms convertido errado: {ts}")
+
+    # O epoch gravado no CSV (--gravar) volta igual na leitura do replay
+    from replay.csv_ticks import _timestamp
+    if abs(_timestamp(f"{esperado:.3f}") - esperado) < 1e-6:
+        ok("Epoch é consistente com o formato do CSV de replay")
+    else:
+        err("Epoch não sobrevive ao CSV de replay")
+
+    zerado = SimpleNamespace(wYear=0, wMonth=0, wDay=0, wHour=0, wMinute=0,
+                             wSecond=0, wMilliseconds=0)
+    invalido = SimpleNamespace(wYear=2026, wMonth=13, wDay=40, wHour=0, wMinute=0,
+                               wSecond=0, wMilliseconds=0)
+    falhas = [horario_negocio(None), horario_negocio(zerado), horario_negocio(invalido),
+              horario_negocio(""), horario_negocio("lixo"), horario_negocio(12345)]
+    if all(f is None for f in falhas):
+        ok("Zerado / inválido / vazio / desconhecido → None (fallback)")
+    else:
+        err(f"Esperado None em todos: {falhas}")
+    if horario_negocio(st) == systemtime_para_epoch(st) and \
+       horario_negocio("14/10/2026 10:00:00.125") == data_b3_para_epoch("14/10/2026 10:00:00.125"):
+        ok("horario_negocio aceita SYSTEMTIME e texto")
+    else:
+        err("horario_negocio não despachou corretamente")
+
+    niveis = topo_para_niveis((5100.0, 30), None, 1000.0)
+    if len(niveis) == 1 and niveis[0].side == Side.BUY and niveis[0].broker == "":
+        ok("Topo do livro com só um lado gera um nível sem corretora")
+    else:
+        err(f"topo_para_niveis incorreto: {niveis}")
+
+    # Sequência intercalada trade/book processada direto (sem thread, sem DLL)
+    engine = FlowEngine("WDOFUT", EngineConfig(tick_size=0.5, delta_window_sec=60.0))
+    bridge = ProfitDLLBridge("WDOFUT")
+    bridge.on_tick = engine.add_tick
+    bridge.on_book = engine.update_book
+    t0 = esperado
+    chegada_local = t0 + 5000.0     # relógio local bem adiantado: não pode contaminar o engine
+    eventos = [
+        ("book",  TINYBOOK_BID, 5100.0, 20, chegada_local),   # antes de qualquer negócio
+        ("trade", 3, 8, 10, 5100.5, AGRESSAO_COMPRA, t0),
+        ("book",  TINYBOOK_ASK, 5101.0, 15, chegada_local),
+        ("book",  TINYBOOK_BID, 5100.5, 12, chegada_local),
+        ("trade", 3, 8, 4,  5100.5, AGRESSAO_VENDA,  t0 + 0.250),
+        ("trade", 3, 8, 7,  5100.5, 1,               t0 + 0.300),   # sem agressão
+        ("trade", 3, 8, 2,  5101.0, AGRESSAO_COMPRA, None),         # sem horário → fallback
+        ("book",  TINYBOOK_ASK, 0.0, 0, chegada_local),              # lado vazio
+        ("book",  7, 1.0, 1, chegada_local),                         # lado desconhecido
+    ]
+    engine_ts = []
+    for ev in eventos[:6]:
+        bridge._processar_evento(ev)
+        engine_ts.append(engine._clock)
+
+    if engine._book_buy and max(engine._book_buy) == 5100.5 and \
+       engine._book_sell and min(engine._book_sell) == 5101.0:
+        ok("Engine recebeu o topo do livro: bid 5100.5 / ask 5101.0")
+    else:
+        err(f"Book incorreto: bid {list(engine._book_buy)} ask {list(engine._book_sell)}")
+    if all(b >= a for a, b in zip(engine_ts, engine_ts[1:])):
+        ok("Relógio do engine nunca andou para trás")
+    else:
+        err(f"Relógio voltou: {engine_ts}")
+    nivel = engine._book_buy[5100.5]
+    if nivel.broker == "" and nivel.timestamp == t0:
+        ok("Book usa o horário do último negócio (não o relógio local)")
+    else:
+        err(f"Nível do book: broker={nivel.broker!r} ts={nivel.timestamp}")
+    if not engine._best_bid_log and not engine._best_ask_log and \
+       not engine.get_state()["best_bid_brokers"]:
+        ok("Book sem corretora não gera falso player no Best Offer")
+    else:
+        err(f"Best offer contaminado: {dict(engine._best_bid_log)}")
+
+    antes = time.time()
+    for ev in eventos[6:]:
+        bridge._processar_evento(ev)
+    st_dll = bridge.stats()
+    if st_dll["trades_recebidos"] == 4 and st_dll["trades_ignorados"] == 1 and \
+       st_dll["horarios_fallback"] == 1 and st_dll["book_atualizacoes"] == 4:
+        ok(f"Contadores: {st_dll['trades_recebidos']} trades, {st_dll['trades_ignorados']} ignorado, "
+           f"{st_dll['horarios_fallback']} fallback, {st_dll['book_atualizacoes']} books")
+    else:
+        err(f"Contadores incorretos: {st_dll}")
+    if engine._ticks[-1].timestamp >= antes and engine._ticks[0].timestamp == t0:
+        ok("Negócio sem horário usa o relógio local; os demais, o TradeDate")
+    else:
+        err(f"Timestamps dos ticks: {[t.timestamp for t in engine._ticks]}")
+    if st_dll["ask"] is None and st_dll["bid"] == [5100.5, 12] and not engine._book_sell:
+        ok("Ask zerado remove o lado do book")
+    else:
+        err(f"Topo após ask zerado: bid {st_dll['bid']} ask {st_dll['ask']} / {list(engine._book_sell)}")
+    state = engine.get_state()
+    if state["tick_count"] == 3 and state["delta"]["cumulative"] == 10 - 4 + 2:
+        ok(f"Engine com 3 ticks e delta {state['delta']['cumulative']:+}")
+    else:
+        err(f"Esperado 3 ticks e delta +8: {state['tick_count']} / {state['delta']}")
+
+    # Mesma sequência pela fila + thread consumidora: ordem preservada
+    engine2 = FlowEngine("WDOFUT", EngineConfig(tick_size=0.5, delta_window_sec=60.0))
+    bridge2 = ProfitDLLBridge("WDOFUT")
+    bridge2.on_tick = engine2.add_tick
+    bridge2.on_book = engine2.update_book
+    for ev in eventos:
+        bridge2.fila.put(ev)
+    import threading
+    consumidor = threading.Thread(target=bridge2._consumir, daemon=True)
+    consumidor.start()
+    deadline = time.time() + 3
+    while bridge2.fila.qsize() and time.time() < deadline:
+        time.sleep(0.05)
+    time.sleep(0.1)
+    bridge2._parar.set()
+    consumidor.join(timeout=2)
+    if bridge2.stats() | {"fila_pendente": 0} == st_dll | {"fila_pendente": 0}:
+        ok("Fila única + consumidor chega ao mesmo estado (ordem preservada)")
+    else:
+        err(f"Estado divergente: {bridge2.stats()} vs {st_dll}")
+
+    # GET /state expõe o bloco "dll"
+    import json, urllib.request
+    from api.server import FlowServer
+    server = FlowServer(engine, host="127.0.0.1", port=15556)
+    server.registrar_dll(bridge)
+    server.start()
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:15556/state", timeout=3) as r:
+            estado = json.loads(r.read())
+    finally:
+        server.stop()
+        server.registrar_dll(None)
+    if estado.get("dll", {}).get("book_atualizacoes") == 4 and "rtd" in estado:
+        ok("GET /state traz o bloco \"dll\" com os contadores")
+    else:
+        err(f"Bloco dll ausente/incorreto no /state: {estado.get('dll')}")
 
 
 def test_rtd():
@@ -1143,6 +1309,7 @@ def main():
     test_exaustao_fundo()
     test_sem_exaustao()
     test_profitdll()
+    test_profitdll_tempo_real()
     test_rtd()
     test_api_http()
     test_iceberg_passiva()

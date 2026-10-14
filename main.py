@@ -167,6 +167,7 @@ def setup_dll_mode(engine: FlowEngine, args):
     bridge = ProfitDLLBridge(asset=args.asset, exchange=args.bolsa,
                              agentes_path=args.agentes)
     bridge.on_tick = engine.add_tick
+    bridge.on_book = engine.update_book   # topo do livro (TinyBook)
     return bridge
 
 
@@ -407,6 +408,7 @@ def main():
 
     elif args.modo == "dll":
         data_source = setup_dll_mode(engine, args)
+        server.registrar_dll(data_source)   # contadores no GET /state
         if not data_source.start():
             logger.error("Falha ao iniciar ProfitDLL — veja o log acima")
             data_source = None

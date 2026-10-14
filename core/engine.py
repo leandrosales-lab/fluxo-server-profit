@@ -612,20 +612,26 @@ class FlowEngine:
     # ──────────────────────────────────────────────────────────
 
     def _update_best_offer_log(self):
-        """Registra quem está no 1º nível do book, separando ask (venda) e bid (compra)."""
+        """
+        Registra quem está no 1º nível do book, separando ask (venda) e bid (compra).
+        Nível sem corretora (ex.: TinyBook da DLL) não entra: não há player
+        para atribuir e "" viraria um falso sinal de Best Offer.
+        """
         now = self._now()
 
         # Best ask (venda) → log exclusivo do lado vendedor
         if self._book_sell:
             best_sell_price = min(self._book_sell.keys())
             lvl = self._book_sell[best_sell_price]
-            self._best_ask_log[lvl.broker].append(now)
+            if lvl.broker:
+                self._best_ask_log[lvl.broker].append(now)
 
         # Best bid (compra) → log exclusivo do lado comprador
         if self._book_buy:
             best_buy_price = max(self._book_buy.keys())
             lvl = self._book_buy[best_buy_price]
-            self._best_bid_log[lvl.broker].append(now)
+            if lvl.broker:
+                self._best_bid_log[lvl.broker].append(now)
 
     def _count_best_level_brokers(self, log: dict) -> dict:
         """Conta presenças recentes de cada broker em um nível. {broker: count}"""
