@@ -24,18 +24,18 @@ Attribute VB_Name = "FLUXO_BRIDGE_RTD"
 '   C1 = fPrecoSinal      (preco do sinal)
 '   D1 = fStopSinal       (stop do sinal)
 '   E1 = ULT  (ultimo preco)
-'   F1 = VOL  (QUANTIDADE acumulada no dia — nao pode ser volume financeiro)
+'   F1 = QTT  (QUANTIDADE acumulada no dia; VOL e' volume financeiro em R$)
 '   G1 = ACP  (agente comprador do ultimo negocio)
 '   H1 = AVD  (agente vendedor do ultimo negocio)
 '   I1 = NEG  (numero de negocios acumulado)
-'   J1 = melhor bid   (opcional — configure CAMPO_BID)
-'   K1 = melhor ask   (opcional — configure CAMPO_ASK)
+'   J1 = OCP  (melhor oferta de compra / bid)
+'   K1 = OVD  (melhor oferta de venda / ask)
 '
 ' SETUP:
 '   1. Importe este modulo (Alt+F11 > Arquivo > Importar)
 '   2. No Profit: Ferramentas > Exportar em Tempo Real > RTD
 '   3. Rode InserirFormulasRTD() e confira se E1:I1 mostram valores
-'      (se aparecer #N/D, troque SUFIXO_ACOES / SUFIXO_FUTUROS)
+'      (se aparecer #N/D, confira o codigo do ativo e se o RTD esta ligado)
 '   4. RECOMENDADO — envio a cada atualizacao do RTD: clique duas vezes
 '      na Planilha1 no editor VBA e cole:
 '          Private Sub Worksheet_Calculate()
@@ -52,15 +52,19 @@ Option Explicit
 Private Const PYTHON_URL As String = "http://127.0.0.1:5000"
 Private Const ASSET As String = "PETR4"
 
-' Sufixo do ativo nas formulas RTD. Se as celulas mostrarem #N/D,
-' inverta os dois valores.
-Private Const SUFIXO_ACOES As String = "_F_0"
-Private Const SUFIXO_FUTUROS As String = "_B_0"
+' Sufixo do ativo nas formulas RTD (ajuda da Nelogica, "Significados e
+' sintaxe do RTD"): _B_0 = Bovespa (acoes), _F_0 = BMF (futuros).
+Private Const SUFIXO_ACOES As String = "_B_0"
+Private Const SUFIXO_FUTUROS As String = "_F_0"
 
-' Campos RTD do melhor bid/ask. Deixe "" se o seu Profit nao tiver.
-' Consulte a lista de campos em Exportar em Tempo Real > RTD.
-Private Const CAMPO_BID As String = ""
-Private Const CAMPO_ASK As String = ""
+' Campo RTD da quantidade acumulada no dia. NAO use VOL: no Profit,
+' VOL e' o volume financeiro em R$.
+Private Const CAMPO_QTD As String = "QTT"
+
+' Campos RTD do melhor bid/ask (OCP = oferta de compra, OVD = oferta de
+' venda). Deixe "" para desligar e usar so' a regra do tick.
+Private Const CAMPO_BID As String = "OCP"
+Private Const CAMPO_ASK As String = "OVD"
 
 ' -- Estado interno
 Private mRodando As Boolean
@@ -137,9 +141,7 @@ Public Sub InserirFormulasRTD()
                       "Configurar RTD", ASSET)
     If sAtivo = "" Then Exit Sub
 
-    If UCase(sAtivo) Like "WIN*" Or UCase(sAtivo) Like "DOL*" Or _
-       UCase(sAtivo) Like "IND*" Or UCase(sAtivo) Like "WDO*" Or _
-       UCase(sAtivo) Like "BGI*" Then
+    If EhFuturo(UCase(sAtivo)) Then
         sSufixo = SUFIXO_FUTUROS
     Else
         sSufixo = SUFIXO_ACOES
@@ -151,7 +153,7 @@ Public Sub InserirFormulasRTD()
     Set ws = ThisWorkbook.Sheets(1)
 
     ws.Cells(1, 5).Formula = FormulaRTD(sAtivoRTD, "ULT")
-    ws.Cells(1, 6).Formula = FormulaRTD(sAtivoRTD, "VOL")
+    ws.Cells(1, 6).Formula = FormulaRTD(sAtivoRTD, CAMPO_QTD)
     ws.Cells(1, 7).Formula = FormulaRTD(sAtivoRTD, "ACP")
     ws.Cells(1, 8).Formula = FormulaRTD(sAtivoRTD, "AVD")
     ws.Cells(1, 9).Formula = FormulaRTD(sAtivoRTD, "NEG")
@@ -163,7 +165,7 @@ Public Sub InserirFormulasRTD()
     ws.Cells(2, 3).Value = "Preco"
     ws.Cells(2, 4).Value = "Stop"
     ws.Cells(2, 5).Value = "ULT (RTD)"
-    ws.Cells(2, 6).Value = "VOL (RTD)"
+    ws.Cells(2, 6).Value = CAMPO_QTD & " (RTD)"
     ws.Cells(2, 7).Value = "ACP (RTD)"
     ws.Cells(2, 8).Value = "AVD (RTD)"
     ws.Cells(2, 9).Value = "NEG (RTD)"
@@ -172,8 +174,17 @@ Public Sub InserirFormulasRTD()
 
     MsgBox "Formulas RTD inseridas para " & sAtivoRTD & "!" & vbCrLf & _
            "Verifique se os dados estao chegando nas celulas E1:I1." & vbCrLf & _
-           "Se aparecer #N/D, inverta SUFIXO_ACOES e SUFIXO_FUTUROS.", vbInformation
+           "Se aparecer #N/D, confira o codigo do ativo e se o RTD esta ligado no Profit.", vbInformation
 End Sub
+
+' Futuros da BMF (sufixo _F_0). Ativos fora desta lista usam _B_0.
+Private Function EhFuturo(sAtivo As String) As Boolean
+    Dim p As Variant
+    For Each p In Array("WIN", "WDO", "DOL", "IND", "BGI", "CCM", "ICF", _
+                        "SFI", "DI1", "DDI", "FRC", "BIT", "ETR", "SOL")
+        If Left(sAtivo, 3) = p Then EhFuturo = True: Exit Function
+    Next p
+End Function
 
 Private Function FormulaRTD(sAtivoRTD As String, sCampo As String) As String
     FormulaRTD = "=RTD(""rtdtrading.rtdserver"",,""" & sAtivoRTD & """,""" & sCampo & """)"
