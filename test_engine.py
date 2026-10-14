@@ -566,6 +566,19 @@ def test_api_http():
     except Exception as e:
         err(f"Erro ao enviar tick: {e}")
 
+    info("Testando POST /tick com passive_broker ...")
+    req = urllib.request.Request(
+        "http://127.0.0.1:15555/tick",
+        data=json.dumps({"price": 23.50, "qty": 300, "broker": "XP INC",
+                         "side": "V", "passive_broker": "BTG PACTUAL"}).encode(),
+        headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=3) as r:
+        json.loads(r.read().decode())
+    if engine._ticks[-1].passive_broker == "BTG PACTUAL" and engine._ticks[0].passive_broker == "":
+        ok("POST /tick aceita passive_broker opcional (sem ele fica vazio)")
+    else:
+        err(f"passive_broker não propagado: {engine._ticks[-1]}")
+
     info("Testando POST /tick com side inválido ...")
     req = urllib.request.Request(
         "http://127.0.0.1:15555/tick",
@@ -604,7 +617,8 @@ def test_api_http():
     try:
         with urllib.request.urlopen("http://127.0.0.1:15555/state", timeout=3) as r:
             state = json.loads(r.read().decode())
-            if state.get("asset") == "BBDC4" and state.get("rtd", {}).get("ticks_emitted") == 1:
+            if state.get("asset") == "BBDC4" and state.get("rtd", {}).get("ticks_emitted") == 1 \
+                    and "icebergs_weak_heuristic" in state:
                 ok(f"GET /state OK | ticks: {state['tick_count']} | rtd: {state['rtd']}")
             else:
                 err(f"Ativo incorreto: {state.get('asset')}")
@@ -612,6 +626,251 @@ def test_api_http():
         err(f"Erro ao acessar /state: {e}")
 
     server.stop()
+
+
+def _cfg_iceberg() -> EngineConfig:
+    return EngineConfig(
+        flow_window_sec      = 30.0,
+        flow_pct_threshold   = 60.0,
+        iceberg_min_renewals = 3,
+        iceberg_vol_ratio    = 3.0,
+        iceberg_min_share    = 0.5,
+        tick_size            = 0.01,
+        min_confidence       = 0.50,
+    )
+
+
+def _base_negocios(engine: FlowEngine, inicio: float) -> float:
+    """10 negócios pequenos (lote 100) acima do nível, cada um com outra passiva."""
+    ts = inicio
+    for i in range(10):
+        ts += 0.5
+        engine.add_tick(Tick(ts, round(19.05 + (i % 3) * 0.01, 2), 100, f"AGR{i}",
+                             Side.BUY, passive_broker=f"PAS{i}"))
+    return ts
+
+
+def test_iceberg_passiva():
+    print(f"\n{AMARELO}═══ TESTE 12: Iceberg pela corretora PASSIVA ═══{RESET}")
+
+    engine = FlowEngine("PETR4", _cfg_iceberg())
+    ts = _base_negocios(engine, time.time() - 20)
+
+    info("8 agressões de venda @ 19.04, agressores diferentes, sempre contra JP MORGAN (passiva)...")
+    vendedores = ["BRADESCO", "RICO", "CLEAR", "XP INC", "TORO", "GENIAL", "INTER", "ITAU"]
+    for i, agr in enumerate(vendedores):
+        ts += 1.0
+        engine.add_tick(Tick(ts, 19.04, 150 + (i % 3) * 50, agr, Side.SELL,
+                             passive_broker="JP MORGAN"))
+
+    state  = engine.get_state()
+    signal = engine.get_signal()
+    ics = state["icebergs_confirmed"]
+    info(f"Icebergs: {ics}")
+    info(f"Sinal: {signal.signal.value} | {signal.pattern.value} | conf {signal.confidence:.2f} | {signal.reason}")
+
+    if len(ics) == 1 and ics[0]["passive_broker"] == "JP MORGAN" and ics[0]["side"] == "compra":
+        ok("Iceberg COMPRADOR de JP MORGAN (passiva) confirmado")
+    else:
+        err(f"Esperado 1 iceberg comprador de JP MORGAN: {ics}")
+    ic = ics[0]
+    if ic["role"] == "suporte" and ic["price"] == 19.04 and ic["renewals"] == 8 \
+            and ic["aggressors"] == 8 and not ic["weak_heuristic"]:
+        ok(f"Estado: suporte @ 19.04 | 8 execuções de 8 agressores | não é heurística fraca")
+    else:
+        err(f"Campos do iceberg incorretos: {ic}")
+    if ic["vol_ratio"] >= 3.0 and ic["share"] == 1.0 and 0 < ic["confidence"] <= 0.9:
+        ok(f"Volume {ic['vol_ratio']:.1f}x o lote médio, fatia {ic['share']:.0%}, "
+           f"confiança {ic['confidence']:.2f}")
+    else:
+        err(f"Métricas incorretas: {ic}")
+    if state["icebergs_weak_heuristic"] is False:
+        ok("Estado não sinaliza heurística fraca")
+    else:
+        err("icebergs_weak_heuristic deveria ser False")
+    if signal.signal == Signal.BUY and signal.pattern.value == "Iceberg" \
+            and signal.broker == "JP MORGAN" and signal.stop_price < 19.04:
+        ok(f"Sinal BUY no suporte, stop {signal.stop_price:.2f}")
+    else:
+        err(f"Esperado BUY/Iceberg JP MORGAN com stop abaixo: {signal.to_dict()}")
+
+    info("Venda negociada ABAIXO do nível (19.03): o iceberg acabou...")
+    engine.add_tick(Tick(ts + 1, 19.03, 200, "RICO", Side.SELL, passive_broker="ITAU"))
+    if not engine.get_state()["icebergs_confirmed"]:
+        ok("Preço atravessou o nível → iceberg descartado")
+    else:
+        err("Iceberg deveria ser descartado quando o preço atravessa")
+
+    info("Expiração pelo tempo do TICK (não do relógio local)...")
+    engine2 = FlowEngine("PETR4", _cfg_iceberg())
+    ts = _base_negocios(engine2, 1_000_000.0)   # tempo antigo: só o tick conta
+    for i in range(5):
+        ts += 1.0
+        engine2.add_tick(Tick(ts, 19.04, 300, f"V{i}", Side.SELL, passive_broker="UBS"))
+    antes = len(engine2.get_state()["icebergs_confirmed"])
+    engine2.add_tick(Tick(ts + engine2.cfg.iceberg_timeout_sec + 1, 19.05, 100, "X",
+                          Side.BUY, passive_broker="Y"))
+    depois = len(engine2.get_state()["icebergs_confirmed"])
+    if antes == 1 and depois == 0:
+        ok("Iceberg confirmado com timestamps antigos e expirado pelo tempo dos ticks")
+    else:
+        err(f"Expiração pelo tempo do tick falhou: antes={antes} depois={depois}")
+
+    info("Iceberg VENDEDOR: compras agredindo a mesma passiva → resistência...")
+    engine3 = FlowEngine("VALE3", _cfg_iceberg())
+    ts = time.time() - 20
+    for i in range(10):
+        ts += 0.5
+        engine3.add_tick(Tick(ts, 19.02, 100, f"A{i}", Side.SELL, passive_broker=f"P{i}"))
+    for i in range(6):
+        ts += 1.0
+        engine3.add_tick(Tick(ts, 19.03, 250, f"C{i}", Side.BUY, passive_broker="MORGAN STANLEY"))
+    ics = engine3.get_state()["icebergs_confirmed"]
+    sig = engine3.get_signal()
+    if ics and ics[0]["side"] == "venda" and ics[0]["role"] == "resistência" \
+            and sig.signal == Signal.SELL and sig.stop_price > 19.03:
+        ok(f"Iceberg vendedor (resistência) → SELL, stop {sig.stop_price:.2f}")
+    else:
+        err(f"Iceberg vendedor incorreto: {ics} / {sig.to_dict()}")
+
+
+def test_iceberg_passivas_espalhadas():
+    print(f"\n{AMARELO}═══ TESTE 13: Agressões espalhadas entre várias passivas ═══{RESET}")
+
+    engine = FlowEngine("PETR4", _cfg_iceberg())
+    ts = _base_negocios(engine, time.time() - 30)
+    passivas = ["JP MORGAN", "ITAU", "BTG PACTUAL", "UBS"]
+    info("16 vendas @ 19.04 alternando entre 4 passivas (4 execuções cada)...")
+    for i in range(16):
+        ts += 1.0
+        engine.add_tick(Tick(ts, 19.04, 150, f"V{i}", Side.SELL,
+                             passive_broker=passivas[i % 4]))
+
+    state = engine.get_state()
+    cands = [ic for ic in engine._icebergs.values() if ic.passive]
+    info(f"Candidatos: {[(c.broker, c.renewals, round(c.share, 2)) for c in cands]}")
+    if not state["icebergs_confirmed"]:
+        ok("Nenhum iceberg: nenhuma passiva domina o nível")
+    else:
+        err(f"Agressões espalhadas não deveriam virar iceberg: {state['icebergs_confirmed']}")
+    # A fatia conta o volume do nível desde que cada passiva apareceu (~25-31%)
+    if len(cands) == 4 and all(c.renewals == 4 and c.share < engine.cfg.iceberg_min_share
+                               for c in cands):
+        ok("Cada passiva com 4 execuções e fatia ~25-31% do nível (abaixo de iceberg_min_share)")
+    else:
+        err(f"Candidatos inesperados: {[(c.broker, c.renewals, c.share) for c in cands]}")
+    if engine.get_signal().pattern.value != "Iceberg":
+        ok("Nenhum sinal de iceberg emitido")
+    else:
+        err(f"Sinal de iceberg indevido: {engine.get_signal().to_dict()}")
+
+    info("Mesma passiva, mas volume pequeno vs lote médio → não confirma...")
+    engine2 = FlowEngine("PETR4", _cfg_iceberg())
+    ts = time.time() - 30
+    for i in range(10):
+        ts += 0.5
+        engine2.add_tick(Tick(ts, 19.06, 1000, f"G{i}", Side.BUY, passive_broker=f"P{i}"))
+    for i in range(3):
+        ts += 1.0
+        engine2.add_tick(Tick(ts, 19.04, 100, f"V{i}", Side.SELL, passive_broker="JP MORGAN"))
+    if not engine2.get_state()["icebergs_confirmed"]:
+        ok("3 execuções de 100 com lote médio ~800 não é iceberg (vol_ratio baixo)")
+    else:
+        err("Volume abaixo de iceberg_vol_ratio não deveria confirmar")
+
+
+def test_iceberg_fallback():
+    print(f"\n{AMARELO}═══ TESTE 14: Fallback sem corretora passiva (heurística fraca) ═══{RESET}")
+
+    engine = FlowEngine("PETR4", _cfg_iceberg())
+    now = time.time()
+    # Chamada posicional antiga (sem passive_broker) continua funcionando
+    for i in range(10):
+        engine.add_tick(Tick(now - 12 + i, 19.04, 100 + i * 20, f"V{i}", Side.SELL))
+    for i in range(4):
+        engine.add_tick(Tick(now - 2 + i * 0.5, 19.04, 1000, "JP MORGAN", Side.BUY))
+
+    state = engine.get_state()
+    ics = state["icebergs_confirmed"]
+    info(f"Icebergs: {ics}")
+    if len(ics) == 1 and ics[0]["broker"] == "JP MORGAN" and ics[0]["passive_broker"] == "" \
+            and ics[0]["weak_heuristic"] is True:
+        ok("Fallback por lote repetido detectado e marcado como heurística fraca")
+    else:
+        err(f"Fallback incorreto: {ics}")
+    if state["icebergs_weak_heuristic"] is True:
+        ok("Estado sinaliza icebergs_weak_heuristic = True")
+    else:
+        err("icebergs_weak_heuristic deveria ser True")
+    sig = engine.get_signal()
+    if sig.pattern.value == "Iceberg" and "heurística fraca" in sig.reason:
+        ok(f"Sinal {sig.signal.value} com razão marcada como heurística fraca")
+    else:
+        err(f"Sinal do fallback deveria citar heurística fraca: {sig.to_dict()}")
+
+
+def test_iceberg_rtd_passiva():
+    print(f"\n{AMARELO}═══ TESTE 15: RTD e DLL inferindo a corretora passiva ═══{RESET}")
+
+    from core.rtd import RTDTradeInferer, RTDSnapshot
+    from profitdll.bridge import trade_para_tick, AGRESSAO_COMPRA, AGRESSAO_VENDA
+
+    t0 = time.time() - 30
+    def snap(price, vol, neg, ts, buyer="ITAU", seller="XP INC"):
+        return RTDSnapshot(price=price, volume=vol, trades=neg, buyer=buyer,
+                           seller=seller, timestamp=ts)
+
+    inf = RTDTradeInferer()
+    inf.update(snap(19.50, 1000, 10, t0))
+    t = inf.update(snap(19.51, 1300, 11, t0 + 1))
+    if t and t.side == Side.BUY and t.broker == "ITAU" and t.passive_broker == "XP INC":
+        ok("Compra: agressora = ACP (ITAU), passiva = AVD (XP INC)")
+    else:
+        err(f"Passiva na compra incorreta: {t}")
+    t = inf.update(snap(19.49, 1500, 12, t0 + 2))
+    if t and t.side == Side.SELL and t.broker == "XP INC" and t.passive_broker == "ITAU":
+        ok("Venda: agressora = AVD (XP INC), passiva = ACP (ITAU)")
+    else:
+        err(f"Passiva na venda incorreta: {t}")
+    t = inf.update(snap(19.48, 1600, 13, t0 + 3, buyer=""))
+    if t and t.passive_broker == "":
+        ok("ACP vazio → passive_broker vazio (engine cai no fallback)")
+    else:
+        err(f"Passiva vazia esperada: {t}")
+
+    # DLL: TranslateTrade traz comprador e vendedor
+    nomes = {3: "XP INC", 8: "UBS"}
+    tc = trade_para_tick(3, 8, 500, 5.12, AGRESSAO_COMPRA, 1000.0, nomes)
+    tv = trade_para_tick(3, 8, 500, 5.12, AGRESSAO_VENDA, 1000.0, nomes)
+    if tc.passive_broker == "UBS" and tv.passive_broker == "XP INC":
+        ok("DLL: passiva = vendedor na agressão de compra, comprador na de venda")
+    else:
+        err(f"DLL passiva incorreta: {tc} / {tv}")
+
+    info("RTD → engine: preço trava em 19.40 com BTG PACTUAL comprando de vários vendedores...")
+    engine = FlowEngine("PETR4", _cfg_iceberg())
+    inf = RTDTradeInferer()
+    ts, vol, neg = t0, 10000, 100
+    inf.update(snap(19.45, vol, neg, ts))
+    for i in range(10):   # negócios pequenos subindo e descendo acima do nível
+        ts += 0.5; vol += 100; neg += 1
+        p = 19.45 + (0.01 if i % 2 else 0.0)
+        tick = inf.update(snap(round(p, 2), vol, neg, ts, buyer=f"C{i}", seller=f"V{i}"))
+        if tick:
+            engine.add_tick(tick)
+    vendedores = ["XP INC", "RICO", "CLEAR", "TORO", "GENIAL", "INTER"]
+    for i, v in enumerate(vendedores):
+        ts += 1.0; vol += 400; neg += 1
+        tick = inf.update(snap(19.40, vol, neg, ts, buyer="BTG PACTUAL", seller=v))
+        if tick:
+            engine.add_tick(tick)
+    ics = engine.get_state()["icebergs_confirmed"]
+    info(f"Icebergs: {ics}")
+    if ics and ics[0]["passive_broker"] == "BTG PACTUAL" and ics[0]["side"] == "compra" \
+            and not ics[0]["weak_heuristic"]:
+        ok("Iceberg comprador de BTG PACTUAL (passiva inferida do RTD) confirmado")
+    else:
+        err(f"Iceberg via RTD não detectado: {ics}")
 
 
 def main():
@@ -630,6 +889,10 @@ def main():
     test_profitdll()
     test_rtd()
     test_api_http()
+    test_iceberg_passiva()
+    test_iceberg_passivas_espalhadas()
+    test_iceberg_fallback()
+    test_iceberg_rtd_passiva()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")

@@ -9,7 +9,7 @@ Porta padrão: 5000
 Endpoints:
   GET  /signal          → sinal atual (BUY/SELL/WAIT/CLOSE)
   GET  /state           → estado completo do motor
-  POST /tick            → injetar tick (side obrigatório: C/V)
+  POST /tick            → injetar tick (side obrigatório: C/V; passive_broker opcional)
   POST /rtd             → retrato do RTD do Profit; o servidor infere o tick
   POST /book            → injetar snapshot do book (testes)
   GET  /health          → status do servidor
@@ -169,6 +169,8 @@ function renderPatterns(s) {
         <span class="badge ${cls}">${ic.side === 'compra' ? '▲' : '▼'} ${ic.side.toUpperCase()}</span>
         <b>${ic.broker}</b> @ R$ ${ic.price?.toFixed(2)}
         | ${ic.renewals} renovações | ${ic.total_vol?.toLocaleString()} vol
+        | ${ic.weak_heuristic ? '<span class="badge badge-yellow">heurística fraca</span>'
+                              : `passiva | ${pct(ic.confidence*100)}%`}
       </div>`;
     });
     html += '</div>';
@@ -323,6 +325,8 @@ class FlowHandler(BaseHTTPRequestHandler):
                     qty       = int(body["qty"]),
                     broker    = str(body.get("broker", "DESCONHECIDA")),
                     side      = side,
+                    # Corretora passiva (opcional): habilita o iceberg pela passiva
+                    passive_broker = str(body.get("passive_broker") or "").strip(),
                 )
                 self.engine.add_tick(tick)
                 self._send_json({"ok": True, "signal": self.engine.get_signal().to_dict()})

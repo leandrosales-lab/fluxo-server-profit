@@ -13,7 +13,8 @@ melhor bid/ask). Este módulo reconstrói ticks a partir desses retratos:
          dentro do spread = lado mais próximo)
       2. Regra do tick: preço subiu = compra, caiu = venda,
          igual = mesmo lado do negócio anterior
-  - Corretora: a agressora (ACP se compra, AVD se venda)
+  - Corretora: a agressora (ACP se compra, AVD se venda); a passiva é a
+    outra ponta (AVD numa compra, ACP numa venda)
 
 Limitação: se vários negócios acontecerem entre dois retratos, eles
 viram um único tick agregado (contado em `aggregated_trades`).
@@ -111,13 +112,15 @@ class RTDTradeInferer:
             self.aggregated_trades += new_trades - 1
         self.ticks_emitted += 1
 
-        broker = snap.buyer if side == Side.BUY else snap.seller
+        broker  = snap.buyer if side == Side.BUY else snap.seller
+        passiva = snap.seller if side == Side.BUY else snap.buyer
         return Tick(
             timestamp = snap.timestamp,
             price     = snap.price,
             qty       = qty,
             broker    = broker or "DESCONHECIDA",
             side      = side,
+            passive_broker = passiva,   # "" se o RTD não trouxe o agente
         )
 
     @staticmethod

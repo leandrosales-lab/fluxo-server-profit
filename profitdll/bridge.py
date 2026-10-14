@@ -76,14 +76,15 @@ def trade_para_tick(buy_agent: int, sell_agent: int, qty: int, price: float,
                     nomes: Optional[dict[int, str]] = None) -> Optional[Tick]:
     """
     Converte um negócio da DLL em Tick do engine.
-    O broker do Tick é o AGRESSOR (quem iniciou o negócio).
+    O broker do Tick é o AGRESSOR (quem iniciou o negócio) e o
+    passive_broker é a outra ponta (quem estava apregoado).
     Negócios sem agressão (cross, leilão etc.) retornam None: não
     representam pressão de nenhum lado.
     """
     if trade_type == AGRESSAO_COMPRA:
-        side, agente = Side.BUY, buy_agent
+        side, agente, passivo = Side.BUY, buy_agent, sell_agent
     elif trade_type == AGRESSAO_VENDA:
-        side, agente = Side.SELL, sell_agent
+        side, agente, passivo = Side.SELL, sell_agent, buy_agent
     else:
         return None
     if qty <= 0 or price <= 0:
@@ -95,6 +96,7 @@ def trade_para_tick(buy_agent: int, sell_agent: int, qty: int, price: float,
         qty       = int(qty),
         broker    = nomes.get(agente, str(agente)),
         side      = side,
+        passive_broker = nomes.get(passivo, str(passivo)),
     )
 
 
