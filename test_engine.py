@@ -385,8 +385,80 @@ def test_sem_exaustao():
         err(f"Exaustão falsa: {state['exhaustions']}")
 
 
+def test_profitdll():
+    print(f"\n{AMARELO}═══ TESTE 9: Ponte ProfitDLL (negócios simulados) ═══{RESET}")
+
+    import json, tempfile, threading
+    from profitdll.bridge import (ProfitDLLBridge, trade_para_tick, bolsa_padrao,
+                                  AGRESSAO_COMPRA, AGRESSAO_VENDA)
+
+    # Lado agressor e corretora agressora vêm do TradeType
+    t = trade_para_tick(3, 8, 500, 5.12, AGRESSAO_COMPRA, 1000.0, {3: "XP INC", 8: "UBS"})
+    if t and t.side == Side.BUY and t.broker == "XP INC" and t.qty == 500:
+        ok("Agressão de compra → BUY, corretora compradora")
+    else:
+        err(f"Conversão de agressão de compra incorreta: {t}")
+    t = trade_para_tick(3, 8, 200, 5.11, AGRESSAO_VENDA, 1000.0, {3: "XP INC", 8: "UBS"})
+    if t and t.side == Side.SELL and t.broker == "UBS":
+        ok("Agressão de venda → SELL, corretora vendedora")
+    else:
+        err(f"Conversão de agressão de venda incorreta: {t}")
+    if trade_para_tick(3, 8, 100, 5.11, 1, 1000.0) is None:
+        ok("Negócio sem agressão (cross/leilão) ignorado")
+    else:
+        err("Negócio sem agressão deveria ser ignorado")
+    if trade_para_tick(77, 8, 100, 5.11, AGRESSAO_COMPRA, 1000.0).broker == "77":
+        ok("Corretora sem nome mapeado usa o código")
+    else:
+        err("Corretora sem nome deveria usar o código")
+
+    if (bolsa_padrao("WDOFUT"), bolsa_padrao("WINZ26"), bolsa_padrao("PETR4")) == ("F", "F", "B"):
+        ok("Bolsa inferida: futuros → F, ações → B")
+    else:
+        err("Inferência de bolsa incorreta")
+
+    # Fila → consumidor → engine, com nomes vindos de JSON
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump({"3": "xp inc", "8": "UBS"}, f)
+    engine = FlowEngine("WDOFUT", EngineConfig(delta_window_sec=60.0))
+    bridge = ProfitDLLBridge("WDOFUT", agentes_path=f.name)
+    os.unlink(f.name)
+    bridge.on_tick = engine.add_tick
+    consumidor = threading.Thread(target=bridge._consumir, daemon=True)
+    consumidor.start()
+    now = time.time()
+    bridge.fila.put((3, 8, 10, 5100.0, AGRESSAO_COMPRA, now - 3))
+    bridge.fila.put((3, 8, 4,  5100.5, AGRESSAO_VENDA,  now - 2))
+    bridge.fila.put((3, 8, 7,  5100.5, 1,               now - 1))   # sem agressão
+    deadline = time.time() + 3
+    while bridge.trades_recebidos < 3 and time.time() < deadline:
+        time.sleep(0.05)
+    bridge._parar.set()
+    consumidor.join(timeout=2)
+
+    state = engine.get_state()
+    if state["tick_count"] == 2 and state["delta"]["cumulative"] == 10 - 4:
+        ok(f"Engine recebeu 2 ticks, delta {state['delta']['cumulative']:+}")
+    else:
+        err(f"Esperado 2 ticks e delta +6: {state['tick_count']} / {state['delta']}")
+    if bridge.trades_ignorados == 1:
+        ok("Contagem de negócios ignorados correta")
+    else:
+        err(f"Ignorados: {bridge.trades_ignorados}")
+    if engine._ticks[0].broker == "XP INC":
+        ok("Nome da corretora carregado do JSON")
+    else:
+        err(f"Nome esperado XP INC: {engine._ticks[0].broker}")
+
+    if sys.platform != "win32":
+        if not ProfitDLLBridge("PETR4").start():
+            ok("Fora do Windows, start() falha com erro claro (sem travar)")
+        else:
+            err("start() deveria falhar fora do Windows")
+
+
 def test_api_http():
-    print(f"\n{AMARELO}═══ TESTE 9: API HTTP (servidor embutido) ═══{RESET}")
+    print(f"\n{AMARELO}═══ TESTE 10: API HTTP (servidor embutido) ═══{RESET}")
 
     import threading
     import urllib.request
@@ -459,6 +531,7 @@ def main():
     test_exaustao_topo()
     test_exaustao_fundo()
     test_sem_exaustao()
+    test_profitdll()
     test_api_http()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")

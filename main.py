@@ -8,18 +8,21 @@ USO:
   python main.py --asset PETR4 --modo ocr
   python main.py --asset VALE3 --modo dde
   python main.py --asset PETR4 --modo rtd
+  python main.py --asset WDOFUT --modo dll --tick-size 0.5
   python main.py --asset PETR4 --modo manual --port 5000
 
 MODOS:
   ocr    → Captura tela do Profit via OCR (Tesseract)
   dde    → Lê dados do Profit via DDE (Windows, pywin32) — legado
-  rtd    → Recebe dados via Excel RTD Bridge (recomendado pelo Profit)
+  rtd    → Recebe dados via Excel RTD Bridge
+  dll    → ProfitDLL da Nelogica: cada negócio com lado agressor (recomendado)
   manual → Aguarda dados via POST /tick e /book (testes/integração)
 
 REQUISITOS:
   Python 3.10+
   pip install mss pillow pytesseract opencv-python   (modo ocr)
   pip install pywin32                                 (modo dde, Windows)
+  ProfitDLL.dll + profitTypes.py + variáveis PROFITDLL_* (modo dll, Windows)
 """
 
 import sys
@@ -151,6 +154,20 @@ def setup_dde_mode(engine: FlowEngine, args):
 
 
 # ──────────────────────────────────────────────────────────────
+# MODO PROFITDLL
+# ──────────────────────────────────────────────────────────────
+
+def setup_dll_mode(engine: FlowEngine, args):
+    """Configura integração com a ProfitDLL (Market Data em tempo real)."""
+    from profitdll.bridge import ProfitDLLBridge
+
+    bridge = ProfitDLLBridge(asset=args.asset, exchange=args.bolsa,
+                             agentes_path=args.agentes)
+    bridge.on_tick = engine.add_tick
+    return bridge
+
+
+# ──────────────────────────────────────────────────────────────
 # RESET DIÁRIO (meia-noite)
 # ──────────────────────────────────────────────────────────────
 
@@ -197,7 +214,7 @@ def status_loop(engine: FlowEngine, interval: int = 30):
 def parse_args():
     p = argparse.ArgumentParser(description="Fluxo Server — Leitura de Fluxo B3")
     p.add_argument("--asset",       default="PETR4",   help="Ticker do ativo (ex: PETR4)")
-    p.add_argument("--modo",        default="manual",  choices=["ocr", "dde", "rtd", "manual"],
+    p.add_argument("--modo",        default="manual",  choices=["ocr", "dde", "rtd", "dll", "manual"],
                    help="Modo de captura de dados")
     p.add_argument("--host",        default="127.0.0.1", help="Host do servidor HTTP")
     p.add_argument("--port",        default=5000,      type=int, help="Porta do servidor HTTP")
@@ -207,6 +224,10 @@ def parse_args():
                    help="Região do Book em pixels: left,top,width,height (modo ocr)")
     p.add_argument("--calibrate",   action="store_true",
                    help="Salvar screenshots de calibração e sair (modo ocr)")
+    p.add_argument("--bolsa",       default=None,
+                   help="Bolsa na ProfitDLL: B (Bovespa) ou F (BMF). Padrão: inferido do ticker (modo dll)")
+    p.add_argument("--agentes",     default=None,
+                   help="JSON {codigo: nome} das corretoras (modo dll)")
     # Parâmetros do motor
     p.add_argument("--flow-window",    default=30.0, type=float, help="Janela de fluxo (seg)")
     p.add_argument("--flow-pct",       default=65.0, type=float, help="%% mínimo de fluxo dominante")
@@ -271,6 +292,12 @@ def main():
                 logger.error("Falha ao iniciar DDE")
         else:
             logger.error("DDE não disponível — rodando em modo manual")
+
+    elif args.modo == "dll":
+        data_source = setup_dll_mode(engine, args)
+        if not data_source.start():
+            logger.error("Falha ao iniciar ProfitDLL — veja o log acima")
+            data_source = None
 
     elif args.modo == "rtd":
         logger.info("Modo RTD — dados recebidos via Excel RTD Bridge (POST /tick)")
