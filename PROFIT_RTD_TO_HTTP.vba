@@ -15,14 +15,13 @@
 '   5. Feche o editor VBA
 '   6. No Profit: Ferramentas > Exportar em Tempo Real > RTD
 '   7. Na planilha, insira as formulas RTD:
-'      A1: =RTD("rtdtrading.rtdserver";;"PETR4_F_0";"ULT")  (ultimo preco)
-'      B1: =RTD("rtdtrading.rtdserver";;"PETR4_F_0";"VOL")  (quantidade acumulada)
-'      C1: =RTD("rtdtrading.rtdserver";;"PETR4_F_0";"ACP")  (agente compra)
-'      D1: =RTD("rtdtrading.rtdserver";;"PETR4_F_0";"AVD")  (agente venda)
-'      E1: =RTD("rtdtrading.rtdserver";;"PETR4_F_0";"NEG")  (num negocios)
+'      A1: =RTD("rtdtrading.rtdserver";;"PETR4_B_0";"ULT")  (ultimo preco)
+'      B1: =RTD("rtdtrading.rtdserver";;"PETR4_B_0";"QTT")  (quantidade acumulada; VOL e' R$)
+'      C1: =RTD("rtdtrading.rtdserver";;"PETR4_B_0";"ACP")  (agente compra)
+'      D1: =RTD("rtdtrading.rtdserver";;"PETR4_B_0";"AVD")  (agente venda)
+'      E1: =RTD("rtdtrading.rtdserver";;"PETR4_B_0";"NEG")  (num negocios)
 '
-'   SUFIXOS: _F_0 = Bovespa (acoes) | _B_0 = BMF (futuros)
-'   (se aparecer #N/D, inverta os sufixos)
+'   SUFIXOS: _B_0 = Bovespa (acoes) | _F_0 = BMF (futuros, ex.: WDOFUT_F_0)
 '
 '   8. Rode StartMonitor() (Alt+F8)
 ' ============================================================

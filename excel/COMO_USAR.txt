@@ -36,30 +36,29 @@ OPCAO 1: RTD (RECOMENDADO)
    - As formulas serao inseridas em E1:I1
 
    MANUAL (inserir nas celulas do Excel):
-   E1 = =RTD("rtdtrading.rtdserver";;"PETR4_F_0";"ULT")   (ultimo preco)
-   F1 = =RTD("rtdtrading.rtdserver";;"PETR4_F_0";"VOL")   (quantidade acumulada no dia)
-   G1 = =RTD("rtdtrading.rtdserver";;"PETR4_F_0";"ACP")   (agente comprador)
-   H1 = =RTD("rtdtrading.rtdserver";;"PETR4_F_0";"AVD")   (agente vendedor)
-   I1 = =RTD("rtdtrading.rtdserver";;"PETR4_F_0";"NEG")   (num negocios)
+   E1 = =RTD("rtdtrading.rtdserver";;"PETR4_B_0";"ULT")   (ultimo preco)
+   F1 = =RTD("rtdtrading.rtdserver";;"PETR4_B_0";"QTT")   (quantidade acumulada no dia)
+   G1 = =RTD("rtdtrading.rtdserver";;"PETR4_B_0";"ACP")   (agente comprador)
+   H1 = =RTD("rtdtrading.rtdserver";;"PETR4_B_0";"AVD")   (agente vendedor)
+   I1 = =RTD("rtdtrading.rtdserver";;"PETR4_B_0";"NEG")   (num negocios)
 
    SUFIXOS:
-     _F_0 = Bovespa (acoes: PETR4, VALE3, MGLU3, etc.)
-     _B_0 = BMF (futuros: DOLFUT, WINFUT, INDFUT, etc.)
+     _B_0 = Bovespa (acoes: PETR4, VALE3, MGLU3, etc.)
+     _F_0 = BMF (futuros: DOLFUT, WINFUT, INDFUT, etc.)
 
    Exemplo para mini-dolar:
-   E1 = =RTD("rtdtrading.rtdserver";;"WDOFUT_B_0";"ULT")
+   E1 = =RTD("rtdtrading.rtdserver";;"WDOFUT_F_0";"ULT")
 
-   IMPORTANTE: VOL precisa ser a QUANTIDADE acumulada (acoes/contratos),
-   nao o volume financeiro em R$. O servidor calcula a quantidade de cada
-   negocio pela diferenca de VOL entre duas leituras.
+   IMPORTANTE: use QTT (quantidade acumulada em acoes/contratos), NAO VOL.
+   No Profit, VOL e' o volume financeiro em R$. O servidor calcula a
+   quantidade de cada negocio pela diferenca de QTT entre duas leituras.
 
-   OPCIONAL (melhora o lado agressor): se o seu Profit exporta o melhor
-   bid/ask via RTD, preencha CAMPO_BID e CAMPO_ASK no topo do modulo
-   VBA e rode InserirFormulasRTD de novo (vao para J1 e K1). Sem eles,
-   o lado e' inferido pela variacao do preco (regra do tick).
+   BID/ASK: a macro ja insere OCP (melhor compra) e OVD (melhor venda)
+   em J1 e K1; o servidor usa a cotacao anterior ao negocio para saber
+   o lado agressor. Para desligar, deixe CAMPO_BID e CAMPO_ASK = "".
 
-   Se as celulas mostrarem #N/D, inverta SUFIXO_ACOES e SUFIXO_FUTUROS
-   no topo do modulo VBA.
+   Se as celulas mostrarem #N/D, confira o codigo do ativo e se o RTD
+   esta ligado no Profit.
 
    NOTA: Se usar Excel em portugues, o separador e ";" (ponto-virgula).
          Se usar Excel em ingles, use "," (virgula).
