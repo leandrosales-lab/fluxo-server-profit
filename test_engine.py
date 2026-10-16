@@ -1905,39 +1905,49 @@ def test_api_grafico_tt_book():
         else:
             err(f"Book completo incorreto: {b}")
 
-        # Estáticos: travessia recusada, arquivo inexistente 404
-        for rota in ("/static/../server.py", "/static/..%2Fserver.py", "/static/sub/x.js", "/static/naoexiste.js"):
+        # Estáticos: travessia recusada, subpasta fora de css/js/fonts e inexistente → 404
+        for rota in ("/static/../server.py", "/static/..%2Fserver.py", "/static/sub/x.js",
+                     "/static/js/../server.py", "/static/js/sub/x.js", "/static/.oculto.js",
+                     "/static/naoexiste.js"):
             cod, _, _ = get(rota)
             if cod != 404:
                 err(f"{rota} devolveu {cod} (esperado 404)")
-        ok("/static recusa '..', subpastas e arquivos inexistentes")
+        ok("/static recusa '..', subpastas fora de css/js/fonts e arquivos inexistentes")
 
-        # /dashboard sem o arquivo → 503; com o arquivo → estado injetado com </ escapado
+        # Páginas: sem o arquivo → 503; com os arquivos → HTML puro (estado vem do /state)
         original = srv.STATIC_DIR
         with tempfile.TemporaryDirectory() as tmp:
             srv.STATIC_DIR = tmp
-            cod, corpo, _ = get("/dashboard")
+            cod, _, _ = get("/operar")
             if cod == 503:
-                ok("/dashboard sem api/static/dashboard.html → 503")
+                ok("/operar sem api/static/operar.html → 503")
             else:
-                err(f"/dashboard sem arquivo devolveu {cod}")
-            with open(os.path.join(tmp, "dashboard.html"), "w", encoding="utf-8") as f:
-                f.write("<script>var s = __STATE_JSON__;</script>")
-            with open(os.path.join(tmp, "x.js"), "w", encoding="utf-8") as f:
-                f.write("var x = 1;")
-            post("/tick", {"timestamp": t0 + 40, "price": 37.33, "qty": 100,
-                           "broker": "</script><b>", "side": "C"})
-            cod, corpo, tipo = get("/dashboard")
-            html = corpo.decode()
-            if cod == 200 and "__STATE_JSON__" not in html and "<\\/script><b>" in html and "text/html" in tipo:
-                ok("/dashboard injeta o estado e escapa </ dentro do JSON")
+                err(f"/operar sem arquivo devolveu {cod}")
+            arquivos = {"operar.html": "<p>operar</p>", "conexao.html": "<p>conexao</p>",
+                        "x.js": "var x = 1;", "css/a.css": "body{}",
+                        "js/m.js": "export const m = 1;", "fonts/f.woff2": "wOF2"}
+            for nome, conteudo in arquivos.items():
+                caminho = os.path.join(tmp, *nome.split("/"))
+                os.makedirs(os.path.dirname(caminho), exist_ok=True)
+                with open(caminho, "w", encoding="utf-8") as f:
+                    f.write(conteudo)
+            for rota in ("/", "/dashboard", "/operar"):
+                cod, corpo, tipo = get(rota)
+                if not (cod == 200 and corpo == b"<p>operar</p>" and "text/html" in tipo):
+                    err(f"{rota} não serviu operar.html: {cod} {corpo[:60]}")
+            ok("/, /dashboard e /operar servem operar.html")
+            cod, corpo, _ = get("/conexao")
+            if cod == 200 and corpo == b"<p>conexao</p>":
+                ok("/conexao serve conexao.html")
             else:
-                err(f"/dashboard incorreto: {cod} {html[:200]}")
-            cod, corpo, tipo = get("/static/x.js")
-            if cod == 200 and corpo == b"var x = 1;" and tipo.startswith("application/javascript"):
-                ok("/static serve .js com o content-type certo")
-            else:
-                err(f"/static/x.js: {cod} {tipo}")
+                err(f"/conexao: {cod} {corpo[:60]}")
+            tipos = {"/static/x.js": "application/javascript", "/static/css/a.css": "text/css",
+                     "/static/js/m.js": "application/javascript", "/static/fonts/f.woff2": "font/woff2"}
+            for rota, esperado in tipos.items():
+                cod, _, tipo = get(rota)
+                if cod != 200 or not tipo.startswith(esperado):
+                    err(f"{rota}: {cod} {tipo}")
+            ok("/static serve css/, js/ e fonts/ com o content-type certo")
         srv.STATIC_DIR = original
     finally:
         server.stop()
@@ -2102,6 +2112,32 @@ def test_log_memoria():
         server.stop()
 
 
+def test_api_health_modo():
+    print(f"\n{AMARELO}═══ TESTE 24: /health com modo, fonte e tick ═══{RESET}")
+
+    import json
+    import urllib.request
+    from api.server import FlowServer
+
+    porta = 15574
+    for kwargs, esperado in (({}, ("manual", None)),
+                             ({"modo": "replay", "fonte": "exemplo_wdo.csv"}, ("replay", "exemplo_wdo.csv"))):
+        engine = FlowEngine("WDOFUT", EngineConfig(tick_size=0.5))
+        server = FlowServer(engine, host="127.0.0.1", port=porta, **kwargs)
+        server.start()
+        time.sleep(0.3)
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{porta}/health", timeout=3) as r:
+                h = json.loads(r.read())
+        finally:
+            server.stop()
+        if (h["modo"], h["fonte"]) == esperado and h["tick_size"] == 0.5 and h["asset"] == "WDOFUT":
+            ok(f"/health → modo {h['modo']}, fonte {h['fonte']}, tick {h['tick_size']}")
+        else:
+            err(f"/health: {h}")
+        porta += 1
+
+
 def main():
     print(f"\n{AZUL}╔══════════════════════════════════════════════╗{RESET}")
     print(f"{AZUL}║   FLUXO SERVER — Suite de Testes Automáticos  ║{RESET}")
@@ -2138,6 +2174,7 @@ def main():
     test_api_grafico_tt_book()
     test_resumo_pregao()
     test_log_memoria()
+    test_api_health_modo()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")

@@ -2,7 +2,7 @@
 API HTTP — Servidor de Sinais para o Profit Pro
 ================================================
 Expõe endpoints REST que o robô NTSL consulta via DDE,
-e um dashboard web para monitoramento em tempo real.
+e as telas web Operar e Conexão para acompanhar em tempo real.
 
 Porta padrão: 5000
 
@@ -12,11 +12,12 @@ Endpoints:
   POST /tick            → injetar tick (side obrigatório: C/V; passive_broker opcional)
   POST /rtd             → retrato do RTD do Profit; o servidor infere o tick
   POST /book            → injetar snapshot do book (testes)
-  GET  /health          → status do servidor
-  GET  /dashboard       → interface web (api/static/dashboard.html com o estado inicial)
-  GET  /static/<nome>   → arquivos de api/static/ (ex.: Lightweight Charts)
+  GET  /health          → status do servidor (modo, fonte e tick do ativo)
+  GET  / , /operar      → tela Operar (api/static/operar.html; /dashboard também abre)
+  GET  /conexao         → tela Conexão (api/static/conexao.html)
+  GET  /static/[css|js|fonts/]<nome> → arquivos de api/static/
   GET  /trades?limit=N  → Times & Trades: últimos N negócios (padrão 200, máx. 1000)
-  GET  /candles?tf=S&since=T → candles de S segundos (15, 60 ou 300) a partir de T
+  GET  /candles?tf=S&since=T → candles de S segundos (15, 60, 300, 900 ou 3600) a partir de T
   GET  /signals?since=T → sinais BUY/SELL novos a partir de T
   GET  /book            → último snapshot do book e a profundidade da fonte (none/top/full)
   GET  /log?since=T&nivel=INFO → log do servidor em memória (credenciais mascaradas)
@@ -52,10 +53,10 @@ logger = logging.getLogger("API")
 
 
 # ──────────────────────────────────────────────────────────────
-# ARQUIVOS ESTÁTICOS DO DASHBOARD
+# PÁGINAS E ARQUIVOS ESTÁTICOS DAS TELAS
 # ──────────────────────────────────────────────────────────────
 
-# api/static/dashboard.html: __STATE_JSON__ é trocado pelo estado inicial em GET /dashboard
+# Páginas e arquivos das telas (api/static/). As páginas buscam o estado no GET /state.
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
 _TIPOS = {
@@ -66,16 +67,32 @@ _TIPOS = {
     ".png":   "image/png",
     ".svg":   "image/svg+xml",
     ".woff2": "font/woff2",
+    ".mjs":   "application/javascript; charset=utf-8",
+    ".txt":   "text/plain; charset=utf-8",
 }
+
+_SUBPASTAS = ("css", "js", "fonts")
+
+# Rota → página em STATIC_DIR
+PAGINAS = {"/": "operar.html", "/dashboard": "operar.html", "/operar": "operar.html",
+           "/conexao": "conexao.html"}
 
 
 def caminho_estatico(nome: str):
-    """Caminho de um arquivo direto em STATIC_DIR, ou None (subpasta, '..', tipo não servido)."""
-    if not nome or "/" in nome or "\\" in nome or ".." in nome or nome.startswith("."):
+    """
+    Caminho de um arquivo de STATIC_DIR ou de uma subpasta css/, js/ ou fonts/.
+    None para '..', caminho absoluto, arquivo oculto, outra subpasta, tipo não servido ou inexistente.
+    """
+    if not nome or "\\" in nome or nome.startswith("/"):
+        return None
+    partes = nome.split("/")
+    if len(partes) > 2 or (len(partes) == 2 and partes[0] not in _SUBPASTAS):
+        return None
+    if any(not p or p.startswith(".") or ":" in p for p in partes):
         return None
     if os.path.splitext(nome)[1].lower() not in _TIPOS:
         return None
-    caminho = os.path.join(STATIC_DIR, nome)
+    caminho = os.path.join(STATIC_DIR, *partes)
     return caminho if os.path.isfile(caminho) else None
 
 
@@ -89,6 +106,8 @@ class FlowHandler(BaseHTTPRequestHandler):
     rtd: RTDTradeInferer = None
     dll = None                  # ProfitDLLBridge no modo dll (contadores no /state)
     log: "log_memoria.LogMemoria" = None   # GET /log (tela Conexão)
+    modo = "manual"             # GET /health: modo do main.py
+    fonte = None                # GET /health: nome da fonte (ex.: exemplo_wdo.csv, ProfitDLL)
 
     def log_message(self, fmt, *args):
         logger.debug(f"{self.client_address[0]} — {fmt % args}")
@@ -102,13 +121,6 @@ class FlowHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_html(self, html: str, code: int = 200):
-        body = html.encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", len(body))
-        self.end_headers()
-        self.wfile.write(body)
 
     def _send_bytes(self, body: bytes, content_type: str, cache: str = "no-store", code: int = 200):
         self.send_response(code)
@@ -162,23 +174,22 @@ class FlowHandler(BaseHTTPRequestHandler):
                 "status": "ok",
                 "asset": self.engine.asset,
                 "ticks": tick_count,
-                "time": time.time()
+                "time": time.time(),
+                "modo": self.modo,
+                "fonte": self.fonte,
+                "tick_size": self.engine.cfg.tick_size,
             })
 
-        elif path == "/dashboard":
-            arquivo = os.path.join(STATIC_DIR, "dashboard.html")
+        elif path in PAGINAS:
+            arquivo = os.path.join(STATIC_DIR, PAGINAS[path])
             try:
-                with open(arquivo, encoding="utf-8") as f:
-                    modelo = f.read()
+                with open(arquivo, "rb") as f:
+                    corpo = f.read()
             except OSError:
-                self._send_bytes("Dashboard indisponível: api/static/dashboard.html não encontrado.\n"
+                self._send_bytes(f"Tela indisponível: api/static/{PAGINAS[path]} não encontrado.\n"
                                  .encode(), "text/plain; charset=utf-8", code=503)
                 return
-            # "</" escapado: um nome de corretora não consegue fechar o <script>
-            html = modelo.replace(
-                "__STATE_JSON__",
-                json.dumps(self._estado_completo(), ensure_ascii=False).replace("</", "<\\/"))
-            self._send_html(html)
+            self._send_bytes(corpo, "text/html; charset=utf-8")
 
         elif path.startswith("/static/"):
             caminho = caminho_estatico(path[len("/static/"):])
@@ -188,7 +199,9 @@ class FlowHandler(BaseHTTPRequestHandler):
             ext = os.path.splitext(caminho)[1].lower()
             with open(caminho, "rb") as f:
                 corpo = f.read()
-            self._send_bytes(corpo, _TIPOS[ext], "max-age=3600" if ext == ".js" else "no-cache")
+            # JS/CSS das telas nunca ficam velhos depois de uma atualização; fontes e a biblioteca, sim
+            cache = "max-age=86400" if ext == ".woff2" or "lightweight-charts" in caminho else "no-cache"
+            self._send_bytes(corpo, _TIPOS[ext], cache)
 
         elif path == "/trades":
             try:
@@ -317,7 +330,8 @@ class FlowHandler(BaseHTTPRequestHandler):
 # ──────────────────────────────────────────────────────────────
 
 class FlowServer:
-    def __init__(self, engine: FlowEngine, host: str = "127.0.0.1", port: int = 5000):
+    def __init__(self, engine: FlowEngine, host: str = "127.0.0.1", port: int = 5000,
+                 modo: str = "manual", fonte=None):
         self.engine  = engine
         self.host    = host
         self.port    = port
@@ -328,6 +342,8 @@ class FlowServer:
         FlowHandler.engine = engine
         FlowHandler.rtd    = RTDTradeInferer()
         FlowHandler.dll    = None
+        FlowHandler.modo   = modo
+        FlowHandler.fonte  = fonte
         FlowHandler.log    = log_memoria.instalar()
 
     def registrar_dll(self, bridge):
@@ -339,7 +355,7 @@ class FlowServer:
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         logger.info(f"Servidor HTTP iniciado em http://{self.host}:{self.port}")
-        logger.info(f"Dashboard: http://{self.host}:{self.port}/dashboard")
+        logger.info(f"Telas: http://{self.host}:{self.port}/operar  (F2 = Conexão)")
 
     def stop(self):
         if self._server:

@@ -175,6 +175,13 @@ def setup_dll_mode(engine: FlowEngine, args):
 # MODO REPLAY
 # ──────────────────────────────────────────────────────────────
 
+def fonte_da_captura(args) -> str:
+    """Nome curto da fonte para o cabeçalho das telas (GET /health)."""
+    if args.modo == "replay":
+        return os.path.basename(args.arquivo or "")
+    return {"dll": "ProfitDLL", "rtd": "rtd", "dde": "dde", "ocr": "ocr"}.get(args.modo, "manual")
+
+
 def rodar_modo_replay(engine: FlowEngine, args):
     """Roda o CSV pelo engine, imprime o relatório e (opcional) o grid."""
     from replay.csv_ticks import ler_csv
@@ -212,9 +219,9 @@ def rodar_modo_replay(engine: FlowEngine, args):
 
     server = None
     if not args.sem_servidor:
-        server = FlowServer(engine, host=args.host, port=args.port)
+        server = FlowServer(engine, host=args.host, port=args.port, modo="replay", fonte=fonte_da_captura(args))
         server.start()
-        print(f"  Dashboard do replay: http://{args.host}:{args.port}/dashboard")
+        print(f"  Telas do replay: http://{args.host}:{args.port}/operar  (F2 = Conexão)")
 
     def ao_sinal(s):
         logger.info(f"[REPLAY] {s.sinal} {s.padrao} @ {s.preco:g} stop {s.stop:g} "
@@ -381,7 +388,7 @@ def main():
         return
 
     # ── Iniciar servidor HTTP
-    server = FlowServer(engine, host=args.host, port=args.port)
+    server = FlowServer(engine, host=args.host, port=args.port, modo=args.modo, fonte=fonte_da_captura(args))
     server.start()
 
     # ── Iniciar modo de captura
@@ -431,8 +438,7 @@ def main():
     print(f"  Ativo:    {args.asset}")
     print(f"  Modo:     {args.modo.upper()}")
     print(f"  API:      http://{args.host}:{args.port}/signal")
-    print(f"  Dashboard: http://{args.host}:{args.port}/dashboard")
-    print(f"  Abrir o dashboard no navegador para monitorar")
+    print(f"  Telas:    http://{args.host}:{args.port}/operar  (F2 = Conexão)")
     print("=" * 60)
     print()
 
