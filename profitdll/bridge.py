@@ -381,6 +381,7 @@ class ProfitDLLBridge:
         """
         for evento in self._estado.values():
             evento.clear()
+        self._parar.clear()      # volta a aceitar estados da DLL (ignorados só depois de stop())
         self._falha.clear()
         self.motivo_falha = None
         self._conectado = False
@@ -502,6 +503,10 @@ class ProfitDLLBridge:
         contadores e log. Login/ativação recusados disparam _falha, que
         aborta a espera de _aguardar_conexao na hora.
         """
+        if self._parar.is_set():
+            # stop() já pediu o DLLFinalize: a DLL ainda manda estados ao encerrar, ex. (3,1),
+            # que não são falha de login/ativação
+            return
         if tipo == _LOGIN:
             self.resultado_login = resultado
             if resultado == _LOGIN_CONNECTED:

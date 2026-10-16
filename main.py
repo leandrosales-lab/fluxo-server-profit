@@ -161,11 +161,15 @@ def setup_dde_mode(engine: FlowEngine, args):
 # ──────────────────────────────────────────────────────────────
 
 def setup_dll_mode(engine: FlowEngine, args):
-    """Configura integração com a ProfitDLL (Market Data em tempo real)."""
-    from profitdll.bridge import ProfitDLLBridge
+    """
+    Configura integração com a ProfitDLL (Market Data em tempo real).
+    A DLL roda num processo filho: ela não aceita reinicializar no mesmo processo,
+    e assim o Reconectar da tela Conexão reinicia só o filho, sem perder o engine.
+    """
+    from profitdll.processo import PonteDLLProcesso
 
-    bridge = ProfitDLLBridge(asset=args.asset, exchange=args.bolsa,
-                             agentes_path=args.agentes)
+    bridge = PonteDLLProcesso(asset=args.asset, exchange=args.bolsa,
+                              agentes_path=args.agentes)
     bridge.on_tick = engine.add_tick
     bridge.on_book = engine.update_book   # topo do livro (TinyBook)
     return bridge

@@ -744,6 +744,13 @@ def test_profitdll_reconexao():
         err(f"stats() incompleto: {st}")
     b.stop()
 
+    # Durante o DLLFinalize a DLL manda (3,1): depois do stop() isso não é falha de ativação
+    b._on_estado(3, 1)
+    if b.motivo_falha is None and b.stats()["estados"]["ativacao"] == {"codigo": 0, "nome": "válida"}:
+        ok("Estado recebido depois do stop() é ignorado (sem falsa 'ativação inválida' no log)")
+    else:
+        err(f"estado depois do stop virou falha: {b.motivo_falha} {b.stats()['estados']}")
+
     caminho = mascarar_caminho(r"C:\ProfitDLL\Win64\ProfitDLL.dll")
     if caminho == "C:\\…\\ProfitDLL.dll" and mascarar_caminho("") is None:
         ok("Caminho da DLL mascarado")
@@ -2231,6 +2238,118 @@ def test_api_reconectar():
         server.stop()
 
 
+FILHO_FALSO = r'''
+import sys, json, time, threading
+modo = sys.argv[1]
+def env(m):
+    sys.stdout.write(json.dumps(m) + "\n"); sys.stdout.flush()
+env({"tipo": "log", "nivel": "INFO", "origem": "ProfitDLL", "msg": "filho falso: " + modo})
+if modo == "falha":
+    env({"tipo": "inicio", "ok": False, "motivo": "senha inválida"}); sys.exit(0)
+env({"tipo": "inicio", "ok": True})
+if modo == "morre":
+    time.sleep(0.3); sys.exit(3)
+for i in range(3):
+    env({"tipo": "tick", "ts": 1000.0 + i, "preco": 5078.5, "qtd": 1 + i, "corretora": "XP", "lado": "compra", "passiva": "UBS"})
+env({"tipo": "book", "ts": 1003.0, "niveis": [[5078.0, 10, "compra"], [5078.5, 7, "venda"]]})
+parar = threading.Event()
+threading.Thread(target=lambda: (sys.stdin.readline(), parar.set()), daemon=True).start()
+while not parar.wait(0.1):
+    env({"tipo": "stats", "dados": {"conectado": True, "trades_recebidos": 3, "trades_ignorados": 1,
+                                     "ignorados_por_tipo": {"RLP": 1}, "motivo_falha": None}})
+'''
+
+
+def test_dll_processo_filho():
+    print(f"\n{AMARELO}═══ TESTE 26: ProfitDLL em processo filho ═══{RESET}")
+
+    import logging
+    import tempfile
+    from profitdll.processo import PonteDLLProcesso, tick_para_msg, msg_para_tick, book_para_msg, msg_para_book
+
+    t = Tick(1000.5, 5078.5, 3, "XP", Side.SELL, passive_broker="UBS")
+    t2 = msg_para_tick(tick_para_msg(t))
+    niveis = [BookLevel(5078.0, 10, "", Side.BUY, 1000.0), BookLevel(5078.5, 7, "", Side.SELL, 1000.0)]
+    n2 = msg_para_book(book_para_msg(niveis, 1000.0))
+    if (t2.timestamp, t2.price, t2.qty, t2.broker, t2.side, t2.passive_broker) == \
+            (1000.5, 5078.5, 3, "XP", Side.SELL, "UBS") \
+            and [(n.price, n.qty, n.side) for n in n2] == [(5078.0, 10, Side.BUY), (5078.5, 7, Side.SELL)]:
+        ok("Tick e book vão e voltam pelo JSON do protocolo")
+    else:
+        err(f"ida e volta: {t2} {n2}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        script = os.path.join(tmp, "filho_falso.py")
+        with open(script, "w", encoding="utf-8") as f:
+            f.write(FILHO_FALSO)
+
+        def ponte(modo):
+            p = PonteDLLProcesso("WDOFUT", timeout=5, comando=[sys.executable, script, modo])
+            recebidos, livros = [], []
+            p.on_tick, p.on_book = recebidos.append, livros.append
+            return p, recebidos, livros
+
+        logs = []
+        captura = logging.Handler()
+        captura.emit = lambda r: logs.append(r.getMessage())
+        lg = logging.getLogger("ProfitDLL")
+        lg.addHandler(captura)
+        nivel_antigo = lg.level
+        lg.setLevel(logging.INFO)
+        try:
+            p, recebidos, livros = ponte("ok")
+            if p.start():
+                for _ in range(40):
+                    if len(recebidos) == 3 and livros and p.stats().get("trades_recebidos") == 3:
+                        break
+                    time.sleep(0.05)
+            st = p.stats()
+            if len(recebidos) == 3 and recebidos[2].qty == 3 and len(livros[0]) == 2 and st["conectado"]:
+                ok("start() sobe o filho; ticks, book e stats chegam ao pai")
+            else:
+                err(f"filho ok: {len(recebidos)} ticks, {livros}, {st}")
+            if "filho falso: ok" in logs:
+                ok("Log do filho chega ao logging do pai (e ao /log)")
+            else:
+                err(f"log do filho não chegou: {logs}")
+
+            p.stop()
+            p.start()
+            for _ in range(40):
+                if p.stats().get("trades_recebidos") == 6:
+                    break
+                time.sleep(0.05)
+            st = p.stats()
+            if st["trades_recebidos"] == 6 and st["ignorados_por_tipo"] == {"RLP": 2}:
+                ok("Reiniciar o filho soma os contadores do dia (6 recebidos, RLP 2)")
+            else:
+                err(f"contadores depois do reinício: {st}")
+            p.stop()
+            if not p.stats()["conectado"]:
+                ok("stop() encerra o filho e marca desconectado")
+            else:
+                err("stop() deixou conectado")
+
+            p, _, _ = ponte("falha")
+            if not p.start() and p.motivo_falha == "senha inválida" and not p.stats()["conectado"]:
+                ok("Filho que falha no login: start() False com o motivo")
+            else:
+                err(f"falha: {p.motivo_falha} {p.stats()}")
+
+            p, _, _ = ponte("morre")
+            p.start()
+            time.sleep(1.0)
+            st = p.stats()
+            if not st["conectado"] and "processo da ProfitDLL encerrou" in (st["motivo_falha"] or ""):
+                ok(f"Filho que morre vira desconectado: {st['motivo_falha']}")
+            else:
+                err(f"filho morto: {st}")
+            p.stop()
+        finally:
+            lg.removeHandler(captura)
+            lg.setLevel(nivel_antigo)
+
+
 def main():
     print(f"\n{AZUL}╔══════════════════════════════════════════════╗{RESET}")
     print(f"{AZUL}║   FLUXO SERVER — Suite de Testes Automáticos  ║{RESET}")
@@ -2269,6 +2388,7 @@ def main():
     test_log_memoria()
     test_api_health_modo()
     test_api_reconectar()
+    test_dll_processo_filho()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")
