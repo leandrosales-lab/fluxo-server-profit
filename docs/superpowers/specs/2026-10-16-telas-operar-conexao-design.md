@@ -187,3 +187,20 @@ Calculado no engine, incremental, sem varrer o pregão a cada consulta:
 4. `python main.py --modo replay --arquivo replay/exemplo_wdo.csv` abre direto no Operar novo.
 5. A docstring de `api/server.py` (lista de endpoints), `docs/replay.md` e `docs/PROXIMOS-PASSOS.md` foram atualizados
    com as rotas e os atalhos novos (o repositório não tem README).
+
+## 12. Adendo (16/10/2026): a ProfitDLL roda num processo filho
+
+**Motivo:** testado com a DLL real, um segundo `DLLInitializeMarketLogin` no mesmo processo (depois de `DLLFinalize`)
+dá *Access violation* dentro da `ProfitDLL.dll` (`CreateDataLoader Failed`). Reconectar exige um processo novo.
+O dono escolheu isolar a DLL num processo filho, para o Reconectar não perder o estado do engine.
+
+- `profitdll/processo.py`:
+  - **filho** (`python -m profitdll.processo --asset X [--bolsa B] [--agentes J]`): roda a `ProfitDLLBridge` e escreve
+    no stdout uma linha JSON por evento: `inicio` (ok/motivo), `tick`, `book`, `stats` (a cada 0,5 s) e `log`
+    (os registros de log do filho). Lê `stop` no stdin para encerrar com `DLLFinalize`. Nada mais vai para o stdout.
+  - **pai** (`PonteDLLProcesso`): mesma interface que o `main.py` e o `server.py` usam da ponte (`on_tick`, `on_book`,
+    `start() -> bool`, `stop()`, `stats()`, `motivo_falha`). Repassa ticks e book ao engine, os logs ao `logging`
+    (então aparecem no `/log`, com a máscara de credenciais), e soma os contadores entre processos (eles acumulam no dia).
+  - Se o filho morrer, `stats()` mostra `conectado: false` com o motivo "processo da ProfitDLL encerrou".
+- `main.py --modo dll` usa a `PonteDLLProcesso`. O `POST /dll/reconectar` não muda: `stop()` + `start()` agora reiniciam
+  só o filho. O histórico (`profitdll.historico`) continua usando a ponte direta.

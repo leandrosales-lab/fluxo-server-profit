@@ -2749,3 +2749,13 @@ git commit -m "docs: telas Operar/Conexão no lugar do dashboard; licença da DL
 ```
 
 Não faça push. O dono revisa e autoriza.
+
+---
+
+### Tarefa 10b (adendo de 16/10): ProfitDLL em processo filho
+
+Motivo e decisão no §12 da especificação. Arquivos: criar `profitdll/processo.py`; modificar `main.py`
+(`setup_dll_mode`) e `test_engine.py` (teste 26 com um filho falso que fala o mesmo protocolo).
+Testes: ida e volta tick/book ↔ JSON; start ok entrega ticks e stats; start com falha devolve False com o motivo;
+filho que morre vira `conectado: false`; contadores somam entre reinícios; log do filho chega ao `logging` do pai.
+Conferência manual: modo dll real, Reconectar duas vezes seguidas volta a "Conectado" sem perder o gráfico.
