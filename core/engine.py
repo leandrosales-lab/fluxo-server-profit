@@ -225,7 +225,7 @@ class FlowSignal:
 
 
 # Timeframes dos candles servidos em GET /candles (segundos)
-CANDLE_TFS = (15, 60, 300)
+CANDLE_TFS = (15, 60, 300, 900, 3600)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -373,6 +373,9 @@ class FlowEngine:
         self._signals_log: deque[dict] = deque(maxlen=1000)
         self._last_signal_key: Optional[tuple] = None
 
+        # ── Resumo do pregão (faixa do Operar), incremental: nada aqui varre o pregão
+        self._zerar_resumo()
+
         # ── Book: horário do último snapshot e profundidade já vista (none | top | full)
         self._book_updated: Optional[float] = None
         self._book_depth: str = "none"
@@ -437,6 +440,7 @@ class FlowEngine:
             self._update_zigzag(tick)
             self._trades_log.append(tick)
             self._update_candles(tick)
+            self._atualizar_resumo(tick)
             self._analyze()
             self._registrar_sinal()
 
@@ -1298,7 +1302,7 @@ class FlowEngine:
             c = self._candles[tf].get(inicio)
             if c is None:
                 c = {"time": inicio, "open": tick.price, "high": tick.price, "low": tick.price,
-                     "close": tick.price, "volume": 0, "buy": 0, "sell": 0,
+                     "close": tick.price, "volume": 0, "buy": 0, "sell": 0, "financeiro": 0.0,
                      "_first": tick.timestamp, "_last": tick.timestamp}
                 self._candles[tf][inicio] = c
                 bisect.insort(self._candle_keys[tf], inicio)
@@ -1311,10 +1315,78 @@ class FlowEngine:
                 if tick.timestamp < c["_first"]:
                     c["open"], c["_first"] = tick.price, tick.timestamp
             c["volume"] += tick.qty
+            c["financeiro"] += tick.price * tick.qty
             if tick.side == Side.BUY:
                 c["buy"] += tick.qty
             elif tick.side == Side.SELL:
                 c["sell"] += tick.qty
+
+    JANELA_NEGOCIOS_SEC = 300   # negócios/min = média dos últimos 5 min de horário de negócio
+
+    def _zerar_resumo(self):
+        self._r_abertura: Optional[tuple] = None   # (horário, preço) do 1º negócio pelo horário
+        self._r_ultimo: Optional[tuple] = None     # (horário, preço) do último pelo horário
+        self._r_max: Optional[float] = None
+        self._r_min: Optional[float] = None
+        self._r_qtd = 0
+        self._r_qtd_compra = 0
+        self._r_financeiro = 0.0
+        self._r_recentes: deque = deque()           # horários dos negócios na janela de 5 min
+        self._r_saldo: dict[str, int] = defaultdict(int)
+
+    def _atualizar_resumo(self, tick: Tick):
+        """
+        Atualiza o resumo do dia com um negócio. Regras:
+        - abertura e último seguem o HORÁRIO do negócio (um negócio atrasado não vira "último");
+        - volume financeiro = Σ preço × quantidade (sem multiplicador de contrato);
+        - saldo da corretora = compras − vendas em quantidade, contando a ponta agressora e,
+          quando a fonte informa, a passiva (agressão de compra: agressora +q, passiva −q).
+        """
+        p, q, ts = tick.price, tick.qty, tick.timestamp
+        if self._r_abertura is None or ts < self._r_abertura[0]:
+            self._r_abertura = (ts, p)
+        if self._r_ultimo is None or ts >= self._r_ultimo[0]:
+            self._r_ultimo = (ts, p)
+        self._r_max = p if self._r_max is None else max(self._r_max, p)
+        self._r_min = p if self._r_min is None else min(self._r_min, p)
+        self._r_qtd += q
+        self._r_financeiro += p * q
+        if tick.side == Side.BUY:
+            self._r_qtd_compra += q
+        self._r_recentes.append(ts)
+        limite = self._r_ultimo[0] - self.JANELA_NEGOCIOS_SEC
+        while self._r_recentes and self._r_recentes[0] <= limite:
+            self._r_recentes.popleft()
+        sinal = 1 if tick.side == Side.BUY else -1 if tick.side == Side.SELL else 0
+        if sinal:
+            self._r_saldo[tick.broker] += sinal * q
+            if tick.passive_broker:
+                self._r_saldo[tick.passive_broker] -= sinal * q
+
+    def get_resumo(self) -> dict:
+        """Resumo do pregão para GET /state (bloco "resumo"). Sem negócios, tudo None."""
+        with self._lock:
+            if not self._r_qtd:
+                return {"abertura": None, "maxima": None, "minima": None, "ultimo": None,
+                        "volume_financeiro": None, "vwap": None, "agressao_compra_pct": None,
+                        "negocios_por_min": None, "saldo_corretoras": []}
+            # janela real: até 5 min, mas nunca menos de 1 min (começo do pregão)
+            janela = min(self.JANELA_NEGOCIOS_SEC, max(60.0, self._r_ultimo[0] - self._r_abertura[0]))
+            saldo = sorted(((b, s) for b, s in self._r_saldo.items() if b),
+                           key=lambda x: x[1], reverse=True)
+            if len(saldo) > 10:
+                saldo = saldo[:5] + saldo[-5:]
+            return {
+                "abertura":            self._r_abertura[1],
+                "maxima":              self._r_max,
+                "minima":              self._r_min,
+                "ultimo":              self._r_ultimo[1],
+                "volume_financeiro":   round(self._r_financeiro, 2),
+                "vwap":                round(self._r_financeiro / self._r_qtd, 6),
+                "agressao_compra_pct": round(100.0 * self._r_qtd_compra / self._r_qtd, 1),
+                "negocios_por_min":    round(len(self._r_recentes) / (janela / 60.0), 1),
+                "saldo_corretoras":    [[b, s] for b, s in saldo],
+            }
 
     def _registrar_sinal(self):
         """Guarda cada sinal BUY/SELL novo (chave sinal + padrão + stop; WAIT zera a chave)."""
@@ -1347,7 +1419,7 @@ class FlowEngine:
         """Candles do timeframe `tf` (segundos, um de CANDLE_TFS), a partir de `since` se informado."""
         if tf not in CANDLE_TFS:
             raise ValueError(f"timeframe inválido: {tf} (use um de {list(CANDLE_TFS)})")
-        campos = ("time", "open", "high", "low", "close", "volume", "buy", "sell")
+        campos = ("time", "open", "high", "low", "close", "volume", "buy", "sell", "financeiro")
         with self._lock:
             chaves = self._candle_keys[tf]
             i = bisect.bisect_left(chaves, since) if since is not None else 0
@@ -1411,6 +1483,7 @@ class FlowEngine:
                 "best_bid_brokers":   list(self._get_best_bid_brokers().keys()),
                 # 10 últimos negócios, do mais antigo ao mais novo (fita do dashboard)
                 "recent_trades":      [self._trade_dict(t) for t in list(self._ticks)[-10:]],
+                "resumo":             self.get_resumo(),
                 "signal":             self._current_signal.to_dict(),
             }
 
@@ -1438,6 +1511,7 @@ class FlowEngine:
                 self._candles[tf].clear()
                 self._candle_keys[tf].clear()
             self._signals_log.clear()
+            self._zerar_resumo()
             self._last_signal_key = None
             self._book_updated = None
             self._book_depth = "none"

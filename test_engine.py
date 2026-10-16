@@ -600,7 +600,9 @@ def test_profitdll_tempo_real():
     time.sleep(0.1)
     bridge2._parar.set()
     consumidor.join(timeout=2)
-    if bridge2.stats() | {"fila_pendente": 0} == st_dll | {"fila_pendente": 0}:
+    # latencia_ms depende do relógio no momento do processamento: fora da comparação de ordem
+    neutro = {"fila_pendente": 0, "latencia_ms": None}
+    if bridge2.stats() | neutro == st_dll | neutro:
         ok("Fila única + consumidor chega ao mesmo estado (ordem preservada)")
     else:
         err(f"Estado divergente: {bridge2.stats()} vs {st_dll}")
@@ -1969,6 +1971,61 @@ def test_api_grafico_tt_book():
         err("reset não limpou os registros da API")
 
 
+def test_resumo_pregao():
+    print(f"\n{AMARELO}═══ TESTE 22: Resumo do pregão (faixa do Operar) ═══{RESET}")
+
+    e = FlowEngine("PETR4", EngineConfig())
+    r0 = e.get_state()["resumo"]
+    if r0["ultimo"] is None and r0["saldo_corretoras"] == [] and r0["negocios_por_min"] is None:
+        ok("Sem negócios: resumo vazio (a tela mostra —)")
+    else:
+        err(f"resumo inicial: {r0}")
+
+    e.add_tick(Tick(1000, 10.0, 100, "A", Side.BUY, passive_broker="B"))
+    e.add_tick(Tick(1060, 12.0, 300, "B", Side.SELL, passive_broker="C"))
+    e.add_tick(Tick(1030, 9.0, 100, "C", Side.BUY))            # chega fora de ordem, sem passiva
+    r = e.get_state()["resumo"]
+    esperado = {"abertura": 10.0, "maxima": 12.0, "minima": 9.0, "ultimo": 12.0,
+                "volume_financeiro": 5500.0, "vwap": 11.0, "agressao_compra_pct": 40.0,
+                "negocios_por_min": 3.0}
+    if all(r[k] == v for k, v in esperado.items()):
+        ok("Abertura/último pelo horário do negócio; máx, mín, financeiro, VWAP e agressão certos")
+    else:
+        err(f"resumo: {r}")
+    if r["saldo_corretoras"] == [["C", 400], ["A", 100], ["B", -400]]:
+        ok("Saldo soma a ponta agressora e a passiva, do maior ao menor")
+    else:
+        err(f"saldo: {r['saldo_corretoras']}")
+
+    e.add_tick(Tick(1500, 11.0, 100, "D", Side.BUY))
+    if e.get_resumo()["negocios_por_min"] == 0.2:
+        ok("Negócios/min = últimos 5 min de horário de negócio")
+    else:
+        err(f"negocios_por_min: {e.get_resumo()['negocios_por_min']}")
+
+    for i in range(12):
+        e.add_tick(Tick(1501 + i, 11.0, 10 * (i + 1), f"X{i}", Side.BUY if i % 2 else Side.SELL))
+    s = e.get_resumo()["saldo_corretoras"]
+    valores = [v for _, v in s]
+    if len(s) == 10 and valores == sorted(valores, reverse=True):
+        ok("Com mais de 10 corretoras: as 5 maiores e as 5 menores")
+    else:
+        err(f"saldo com muitas corretoras: {s}")
+
+    c900, c3600 = e.get_candles(900), e.get_candles(3600)
+    if [c["time"] for c in c900] == [900] and [c["time"] for c in c3600] == [0] \
+            and c900[0]["volume"] == 1380 and c900[0]["financeiro"] == 15180.0:
+        ok("Candles de 15 e 60 min, com financeiro para a VWAP")
+    else:
+        err(f"candles 900/3600: {c900} {c3600}")
+
+    e.reset()
+    if e.get_resumo()["ultimo"] is None and e.get_resumo()["saldo_corretoras"] == []:
+        ok("reset zera o resumo")
+    else:
+        err(f"resumo depois do reset: {e.get_resumo()}")
+
+
 def main():
     print(f"\n{AZUL}╔══════════════════════════════════════════════╗{RESET}")
     print(f"{AZUL}║   FLUXO SERVER — Suite de Testes Automáticos  ║{RESET}")
@@ -2003,6 +2060,7 @@ def main():
     test_argumentos_cli()
     test_desempenho_estado()
     test_api_grafico_tt_book()
+    test_resumo_pregao()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")
