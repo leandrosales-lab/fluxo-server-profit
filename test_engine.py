@@ -2026,6 +2026,82 @@ def test_resumo_pregao():
         err(f"resumo depois do reset: {e.get_resumo()}")
 
 
+def test_log_memoria():
+    print(f"\n{AMARELO}═══ TESTE 23: Log em memória (GET /log) ═══{RESET}")
+
+    import json
+    import logging
+    import urllib.error
+    import urllib.request
+    from api.log_memoria import LogMemoria
+    from api.server import FlowServer
+
+    h = LogMemoria(capacidade=3)
+    lg = logging.getLogger("TesteLog")
+    lg.propagate = False
+    lg.setLevel(logging.INFO)
+    lg.addHandler(h)
+    antigo = os.environ.get("PROFITDLL_PASS")
+    os.environ["PROFITDLL_PASS"] = "s3nh@Teste"
+    try:
+        lg.info("primeiro")
+        lg.warning("login falhou com s3nh@Teste")
+        t_meio = time.time()
+        time.sleep(0.01)
+        lg.error("market caiu")
+        lg.info("quarto")                         # capacidade 3: "primeiro" sai
+    finally:
+        if antigo is None:
+            os.environ.pop("PROFITDLL_PASS", None)
+        else:
+            os.environ["PROFITDLL_PASS"] = antigo
+        lg.removeHandler(h)
+
+    regs = h.registros()
+    if [r["msg"] for r in regs] == ["login falhou com •••", "market caiu", "quarto"] \
+            and regs[0]["nivel"] == "WARNING" and regs[0]["origem"] == "TesteLog":
+        ok("Guarda os últimos N registros e mascara a senha")
+    else:
+        err(f"registros: {regs}")
+    if [r["msg"] for r in h.registros(since=t_meio)] == ["market caiu", "quarto"]:
+        ok("since devolve só os registros posteriores")
+    else:
+        err(f"since: {h.registros(since=t_meio)}")
+    if [r["msg"] for r in h.registros(nivel="ERROR")] == ["market caiu"]:
+        ok("nivel=ERROR filtra do nível pedido para cima")
+    else:
+        err(f"nivel: {h.registros(nivel='ERROR')}")
+    try:
+        h.registros(nivel="XYZ")
+        err("nível inválido aceito")
+    except ValueError:
+        ok("Nível inválido → ValueError")
+
+    porta = 15573
+    base = f"http://127.0.0.1:{porta}"
+    server = FlowServer(FlowEngine("PETR4", EngineConfig()), host="127.0.0.1", port=porta)
+    server.start()
+    time.sleep(0.3)
+    try:
+        logging.getLogger("API").warning("aviso para a tela")
+        with urllib.request.urlopen(base + "/log?nivel=WARNING", timeout=3) as r:
+            corpo = json.loads(r.read())
+        if any(x["msg"] == "aviso para a tela" and x["origem"] == "API" for x in corpo["registros"]):
+            ok("GET /log devolve o log do servidor")
+        else:
+            err(f"/log: {corpo}")
+        for rota in ("/log?nivel=XYZ", "/log?since=abc"):
+            try:
+                urllib.request.urlopen(base + rota, timeout=3)
+                err(f"{rota} aceito")
+            except urllib.error.HTTPError as e:
+                if e.code != 400:
+                    err(f"{rota} devolveu {e.code}")
+        ok("/log com nivel ou since inválidos → 400")
+    finally:
+        server.stop()
+
+
 def main():
     print(f"\n{AZUL}╔══════════════════════════════════════════════╗{RESET}")
     print(f"{AZUL}║   FLUXO SERVER — Suite de Testes Automáticos  ║{RESET}")
@@ -2061,6 +2137,7 @@ def main():
     test_desempenho_estado()
     test_api_grafico_tt_book()
     test_resumo_pregao()
+    test_log_memoria()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")

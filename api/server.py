@@ -19,6 +19,7 @@ Endpoints:
   GET  /candles?tf=S&since=T → candles de S segundos (15, 60 ou 300) a partir de T
   GET  /signals?since=T → sinais BUY/SELL novos a partir de T
   GET  /book            → último snapshot do book e a profundidade da fonte (none/top/full)
+  GET  /log?since=T&nivel=INFO → log do servidor em memória (credenciais mascaradas)
   POST /config          → atualizar configurações em tempo real
   POST /reset           → reset do motor (início de dia)
 """
@@ -35,6 +36,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from core.engine import FlowEngine, Tick, BookLevel, Side, EngineConfig
 from core.rtd import RTDTradeInferer, RTDSnapshot
+from api import log_memoria
 
 
 def _parse_side(value) -> Side:
@@ -86,6 +88,7 @@ class FlowHandler(BaseHTTPRequestHandler):
     engine: FlowEngine = None   # referência estática, preenchida no start
     rtd: RTDTradeInferer = None
     dll = None                  # ProfitDLLBridge no modo dll (contadores no /state)
+    log: "log_memoria.LogMemoria" = None   # GET /log (tela Conexão)
 
     def log_message(self, fmt, *args):
         logger.debug(f"{self.client_address[0]} — {fmt % args}")
@@ -214,6 +217,15 @@ class FlowHandler(BaseHTTPRequestHandler):
         elif path == "/book":
             self._send_json(self.engine.get_book())
 
+        elif path == "/log":
+            try:
+                since = num("since")
+                registros = self.log.registros(since, qs.get("nivel", ["INFO"])[0])
+            except ValueError as e:
+                self._send_json({"error": str(e)}, 400)
+                return
+            self._send_json({"registros": registros})
+
         else:
             self._send_json({"error": "endpoint não encontrado"}, 404)
 
@@ -316,6 +328,7 @@ class FlowServer:
         FlowHandler.engine = engine
         FlowHandler.rtd    = RTDTradeInferer()
         FlowHandler.dll    = None
+        FlowHandler.log    = log_memoria.instalar()
 
     def registrar_dll(self, bridge):
         """Expõe os contadores da ProfitDLL no GET /state (bloco "dll")."""
