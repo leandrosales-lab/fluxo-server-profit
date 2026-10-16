@@ -66,6 +66,9 @@ th:last-child, td:last-child { padding-right: 16px; }
 tr.lote-compra { background: var(--lote-buy); font-weight: 600; }
 tr.lote-venda { background: var(--lote-sell); font-weight: 600; }
 tr.destaque { background: var(--raise); }
+/* A Lightweight Charts monta o gráfico numa <table> própria: as regras acima não valem lá dentro */
+.grafico table { width: auto; table-layout: auto; font: inherit; }
+.grafico td, .grafico th { padding: 0; overflow: visible; white-space: normal; border: 0; }
 .rolagem { flex: 1; min-height: 0; overflow-y: auto; }
 .barra { display: block; height: 3px; }
 .barra.compra { background: var(--vol-buy); }

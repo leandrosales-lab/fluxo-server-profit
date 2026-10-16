@@ -1,0 +1,25 @@
+/* Ajustes da tela Operar (layout de docs/design/v3/operar-escuro.png). */
+.faixa .ativo .valor { font-size: 20px; font-weight: 600; }
+.faixa .sem-fio { border-left: 0; padding-left: 4px; }
+#tfs { display: flex; gap: 14px; }
+.grafico { flex: 1; min-height: 0; }
+
+.secao.direita { display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.manchete { margin: 2px 0 8px; padding: 4px 16px 8px 14px; border-left: 2px solid var(--rule); }
+.manchete.compra-dir { border-left-color: var(--buy); }
+.manchete.venda-dir { border-left-color: var(--sell); }
+.manchete h1 { font: 600 38px/44px "IBM Plex Sans", sans-serif; }
+.manchete.vazia h1 { font: 400 15px/22px "IBM Plex Sans", sans-serif; color: var(--muted); }
+.manchete.vazia .m-topo { display: none; }
+.m-preco { font: 400 38px/44px "IBM Plex Sans", sans-serif; }
+.m-frase { font: 400 15px/22px "IBM Plex Sans", sans-serif; color: var(--muted); margin-top: 6px; }
+.m-det { font-size: 12px; color: var(--faint); margin-top: 6px; }
+.m-det b { color: var(--text); font-weight: 500; margin: 0 14px 0 6px; }
+.anteriores td { line-height: 23px; }
+.anteriores td:nth-child(5) { font-family: "IBM Plex Sans", sans-serif; color: var(--muted); }
+
+.bloco-baixo { display: grid; grid-template-columns: 380px 360px; min-height: 0; border-top: 1px solid var(--rule); }
+.bloco-baixo > .secao:first-child { border-left: 0; }
+.bloco-baixo td { line-height: 21px; }
+tr.spread td { color: var(--faint); font-size: 12px; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+td.barra-cel span { display: block; height: 3px; }

@@ -64,6 +64,25 @@ verificacoes.push(["barra e atalhos", async (page) => {
   checar(await page.evaluate(() => document.documentElement.dataset.tema) === depois, "tema persiste ao recarregar");
 }]);
 
+verificacoes.push(["operar: faixa e gráfico", async (page) => {
+  await page.goto(`${BASE}/operar`);
+  await page.waitForFunction(() => document.getElementById("f-ultimo")?.textContent !== "—", null, { timeout: 30000 });
+  checar(/\d/.test(await page.textContent("#f-ultimo")), `faixa mostra o último preço (${await page.textContent("#f-ultimo")})`);
+  checar(/mi|mil|R\$/.test(await page.textContent("#f-fin")), "volume financeiro formatado");
+  checar(await page.locator("#grafico canvas").count() > 0, "gráfico desenhado");
+  await page.click('#tfs [data-tf="300"]');
+  checar(await page.getAttribute('#tfs [data-tf="300"]', "aria-pressed") === "true", "timeframe de 5 min selecionado");
+  await page.click('#tfs [data-tf="60"]');
+  for (const tema of ["escuro", "claro"]) {
+    await page.evaluate((t) => localStorage.setItem("fluxo.tema", t), tema);
+    await page.reload();
+    await page.waitForFunction(() => document.getElementById("f-ultimo").textContent !== "—");
+    await esperar(1500);
+    await page.screenshot({ path: path.join(SAIDA, `operar-${tema}.png`) });
+  }
+  checar(true, "capturas operar-escuro.png e operar-claro.png salvas");
+}]);
+
 // ── as tarefas 8, 9 e 10 acrescentam verificações acima desta linha ──
 
 async function main() {
