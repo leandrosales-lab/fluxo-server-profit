@@ -23,6 +23,7 @@ Endpoints:
   GET  /log?since=T&nivel=INFO → log do servidor em memória (credenciais mascaradas)
   POST /config          → atualizar configurações em tempo real
   POST /reset           → reset do motor (início de dia)
+  POST /dll/reconectar  → stop()+start() da ProfitDLL numa thread (202; 409 se já reconectando; 404 fora do modo dll)
 """
 
 import json
@@ -109,6 +110,24 @@ class FlowHandler(BaseHTTPRequestHandler):
     modo = "manual"             # GET /health: modo do main.py
     fonte = None                # GET /health: nome da fonte (ex.: exemplo_wdo.csv, ProfitDLL)
 
+    # Reconexão da ProfitDLL pedida pela tela Conexão (uma de cada vez)
+    reconexao = {"em_andamento": False, "ultima": None, "resultado": None}
+    _trava_reconexao = threading.Lock()
+
+    @staticmethod
+    def _reconectar(bridge):
+        """Roda numa thread: stop() + start() na MESMA ponte (o engine continua ligado em on_tick)."""
+        logger.info("ProfitDLL: reconectando (pedido pela tela Conexão)")
+        try:
+            bridge.stop()
+            ok = bridge.start()
+            resultado = "ok" if ok else f"falhou: {bridge.motivo_falha or 'veja o log'}"
+        except Exception as e:
+            resultado = f"falhou: {e}"
+        with FlowHandler._trava_reconexao:
+            FlowHandler.reconexao = {"em_andamento": False, "ultima": time.time(), "resultado": resultado}
+        (logger.info if resultado == "ok" else logger.error)(f"ProfitDLL: reconexão {resultado}")
+
     def log_message(self, fmt, *args):
         logger.debug(f"{self.client_address[0]} — {fmt % args}")
 
@@ -135,6 +154,7 @@ class FlowHandler(BaseHTTPRequestHandler):
         state["rtd"] = self.rtd.stats()
         if self.dll is not None:
             state["dll"] = self.dll.stats()
+            state["dll"]["reconexao"] = dict(FlowHandler.reconexao)
         return state
 
     def _read_body(self) -> dict:
@@ -321,6 +341,19 @@ class FlowHandler(BaseHTTPRequestHandler):
             self.rtd.reset()
             self._send_json({"ok": True, "message": "Motor resetado"})
 
+        elif path == "/dll/reconectar":
+            self._read_body()   # lê o corpo (vazio) antes de responder: senão o cliente vê a conexão anulada
+            if self.dll is None:
+                self._send_json({"error": "reconectar só existe no modo dll"}, 404)
+                return
+            with FlowHandler._trava_reconexao:
+                if FlowHandler.reconexao["em_andamento"]:
+                    self._send_json({"error": "reconexão já em andamento"}, 409)
+                    return
+                FlowHandler.reconexao = {"em_andamento": True, "ultima": time.time(), "resultado": None}
+            threading.Thread(target=FlowHandler._reconectar, args=(self.dll,), daemon=True).start()
+            self._send_json({"ok": True, "reconexao": dict(FlowHandler.reconexao)}, 202)
+
         else:
             self._send_json({"error": "endpoint não encontrado"}, 404)
 
@@ -344,6 +377,7 @@ class FlowServer:
         FlowHandler.dll    = None
         FlowHandler.modo   = modo
         FlowHandler.fonte  = fonte
+        FlowHandler.reconexao = {"em_andamento": False, "ultima": None, "resultado": None}
         FlowHandler.log    = log_memoria.instalar()
 
     def registrar_dll(self, bridge):

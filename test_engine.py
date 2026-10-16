@@ -2138,6 +2138,99 @@ def test_api_health_modo():
         porta += 1
 
 
+def test_api_reconectar():
+    print(f"\n{AMARELO}═══ TESTE 25: POST /dll/reconectar ═══{RESET}")
+
+    import json
+    import threading
+    import urllib.error
+    import urllib.request
+    from api.server import FlowServer
+
+    class PonteFalsa:
+        def __init__(self):
+            self.ok, self.motivo_falha, self.chamadas = True, None, []
+            self.liberar = threading.Event()
+
+        def stop(self):
+            self.chamadas.append("stop")
+
+        def start(self):
+            self.chamadas.append("start")
+            self.liberar.wait(3)
+            if not self.ok:
+                self.motivo_falha = "senha inválida"
+            return self.ok
+
+        def stats(self):
+            return {"conectado": self.ok}
+
+    porta = 15576
+    base = f"http://127.0.0.1:{porta}"
+
+    def post(rota):
+        req = urllib.request.Request(base + rota, data=b"{}", method="POST",
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=3) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def reconexao():
+        with urllib.request.urlopen(base + "/state", timeout=3) as r:
+            return json.loads(r.read())["dll"]["reconexao"]
+
+    def esperar_fim():
+        for _ in range(80):
+            rec = reconexao()
+            if not rec["em_andamento"]:
+                return rec
+            time.sleep(0.05)
+        err("reconexão não terminou")
+
+    server = FlowServer(FlowEngine("WDOFUT", EngineConfig(tick_size=0.5)),
+                        host="127.0.0.1", port=porta, modo="dll", fonte="ProfitDLL")
+    server.start()
+    time.sleep(0.3)
+    try:
+        cod, _ = post("/dll/reconectar")
+        if cod == 404:
+            ok("Sem ponte registrada → 404")
+        else:
+            err(f"sem ponte devolveu {cod}")
+
+        ponte = PonteFalsa()
+        server.registrar_dll(ponte)
+        cod, corpo = post("/dll/reconectar")
+        cod2, _ = post("/dll/reconectar")
+        if cod == 202 and corpo["reconexao"]["em_andamento"] and cod2 == 409:
+            ok("202 ao pedir; 409 enquanto a reconexão anterior roda")
+        else:
+            err(f"reconectar: {cod} {cod2} {corpo}")
+        if reconexao()["em_andamento"]:
+            ok("/state mostra a reconexão em andamento")
+        else:
+            err("/state não mostrou em_andamento")
+
+        ponte.liberar.set()
+        rec = esperar_fim()
+        if rec["resultado"] == "ok" and ponte.chamadas == ["stop", "start"] and rec["ultima"]:
+            ok("Reconexão chama stop() e start() na mesma ponte; resultado ok")
+        else:
+            err(f"reconexão: {rec} {ponte.chamadas}")
+
+        ponte.ok = False
+        post("/dll/reconectar")
+        rec = esperar_fim()
+        if rec["resultado"] == "falhou: senha inválida":
+            ok("Falha aparece com o motivo vindo de motivo_falha")
+        else:
+            err(f"falha: {rec}")
+    finally:
+        server.stop()
+
+
 def main():
     print(f"\n{AZUL}╔══════════════════════════════════════════════╗{RESET}")
     print(f"{AZUL}║   FLUXO SERVER — Suite de Testes Automáticos  ║{RESET}")
@@ -2175,6 +2268,7 @@ def main():
     test_resumo_pregao()
     test_log_memoria()
     test_api_health_modo()
+    test_api_reconectar()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")
