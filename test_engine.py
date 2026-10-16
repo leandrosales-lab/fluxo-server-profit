@@ -673,6 +673,99 @@ def test_profitdll_nomes_e_descartes():
         err("Sem DLL deveria devolver o código")
 
 
+def test_profitdll_reconexao():
+    print(f"\n{AMARELO}═══ TESTE 9e: ProfitDLL — start() depois de stop() e stats da tela Conexão ═══{RESET}")
+
+    import json as _json
+    from profitdll.bridge import ProfitDLLBridge, AGRESSAO_COMPRA, mascarar_caminho
+
+    class DLLFalsa:
+        def SubscribeTicker(self, *a): return 0
+        def UnsubscribeTicker(self, *a): return 0
+        def DLLFinalize(self): return 0
+
+    b = ProfitDLLBridge("WDOFUT", timeout=0.5)
+    falhar = {"login": False}
+
+    def conectar_falso():
+        if falhar["login"]:
+            b._on_estado(0, 2)                    # (0,2) senha inválida
+        else:
+            b._on_estado(0, 0); b._on_estado(3, 0); b._on_estado(2, 4)
+        b.dll = DLLFalsa()
+        b._aguardar_conexao()
+
+    b._conectar = conectar_falso
+    if b.start() and b.stats()["conectado"]:
+        ok("start() conecta com login, ativação e market OK")
+    else:
+        err(f"start() inicial falhou: {b.stats()}")
+    b.stop()
+    if b.stats()["conectado"] is False:
+        ok("stop() marca conectado = False no /state")
+    else:
+        err("stop() deixou conectado = True")
+
+    # Uma falha antiga não pode abortar a próxima tentativa
+    b._registrar_falha("senha inválida")
+    if b.start() and b.motivo_falha is None:
+        ok("start() depois de stop() limpa a falha antiga e reconecta")
+    else:
+        err(f"falha antiga travou a reconexão: {b.motivo_falha}")
+    b.stop()
+
+    # O estado antigo não pode declarar "conectada" antes de a DLL responder
+    b._resetar_conexao()
+    if not b._conectado_agora() and all(not e.is_set() for e in b._estado.values()):
+        ok("_resetar_conexao() zera login, ativação e market")
+    else:
+        err("estado antigo sobreviveu ao reset")
+
+    # Falha nova: start() devolve False com motivo e código legíveis
+    falhar["login"] = True
+    if not b.start() and b.motivo_falha == "senha inválida" \
+            and b.stats()["estados"]["login"] == {"codigo": 2, "nome": "senha inválida"}:
+        ok("Falha na reconexão devolve False com motivo e código do login")
+    else:
+        err(f"falha não reportada: {b.motivo_falha} {b.stats()['estados']}")
+
+    # Latência e campos da tela Conexão
+    falhar["login"] = False
+    b.start()
+    b._processar_evento(("trade", 3, 8, 1, 5078.5, AGRESSAO_COMPRA, time.time() - 0.05))
+    st = b.stats()
+    if st["latencia_ms"] is not None and 30 <= st["latencia_ms"] < 2000 \
+            and st["estados"]["market"] == {"codigo": 4, "nome": "conectado"} \
+            and st["ativo"] == "WDOFUT" and st["bolsa"] == "F":
+        ok(f"stats() com latência ({st['latencia_ms']} ms), estados com nome, ativo e bolsa")
+    else:
+        err(f"stats() incompleto: {st}")
+    b.stop()
+
+    caminho = mascarar_caminho(r"C:\ProfitDLL\Win64\ProfitDLL.dll")
+    if caminho == "C:\\…\\ProfitDLL.dll" and mascarar_caminho("") is None:
+        ok("Caminho da DLL mascarado")
+    else:
+        err(f"máscara do caminho: {caminho}")
+
+    segredos = {"PROFITDLL_KEY": "chave-secreta-123", "PROFITDLL_USER": "eu@exemplo.com",
+                "PROFITDLL_PASS": "s3nh@Forte"}
+    antigos = {k: os.environ.get(k) for k in segredos}
+    os.environ.update(segredos)
+    try:
+        texto = _json.dumps(b.stats(), ensure_ascii=False)
+        if not any(v in texto for v in segredos.values()):
+            ok("stats() nunca contém chave, usuário ou senha")
+        else:
+            err("stats() vazou credencial")
+    finally:
+        for k, v in antigos.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 def test_profitdll_correcoes():
     print(f"\n{AMARELO}═══ TESTE 9c: ProfitDLL — edição de negócio e estados de conexão ═══{RESET}")
 
@@ -1893,6 +1986,7 @@ def main():
     test_profitdll_tempo_real()
     test_profitdll_correcoes()
     test_profitdll_nomes_e_descartes()
+    test_profitdll_reconexao()
     test_rtd()
     test_api_http()
     test_iceberg_passiva()

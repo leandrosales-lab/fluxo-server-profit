@@ -36,6 +36,7 @@ Requisitos (Windows):
 """
 
 import os
+import ntpath
 import sys
 import json
 import time
@@ -78,6 +79,26 @@ _FALHAS_LOGIN = {1: "login inválido", 2: "senha inválida", 3: "senha bloqueada
 NOMES_MARKET = {0: "desconectado", 1: "conectando", 2: "aguardando conexão",
                 3: "não logado", 4: "conectado", 5: "conectado (aviso de desempenho)",
                 6: "parcialmente conectado"}
+NOMES_LOGIN    = {0: "conectado", **_FALHAS_LOGIN}
+NOMES_ATIVACAO = {0: "válida", 1: "inválida"}
+
+CAMINHO_PADRAO_DLL = r"C:\ProfitDLL\Win64\ProfitDLL.dll"
+
+
+def mascarar_caminho(caminho: Optional[str]) -> Optional[str]:
+    """C:\\ProfitDLL\\Win64\\ProfitDLL.dll → C:\\…\\ProfitDLL.dll (a tela não mostra a pasta inteira)."""
+    if not caminho:
+        return None
+    drive, _ = ntpath.splitdrive(caminho)
+    nome = ntpath.basename(caminho)
+    return f"{drive}\\…\\{nome}" if drive else f"…\\{nome}"
+
+
+def _estado_nomeado(codigo: Optional[int], nomes: dict) -> Optional[dict]:
+    """(código, nome) de um estado do TStateCallback, ou None se ainda não chegou."""
+    if codigo is None:
+        return None
+    return {"codigo": codigo, "nome": nomes.get(codigo, f"código {codigo}")}
 
 # Lado do TinyBook (TTinyBookCallback)
 TINYBOOK_BID = 0
@@ -259,6 +280,9 @@ class ProfitDLLBridge:
         self.motivo_falha: Optional[str] = None
         self._conectado = False                  # True depois que os três estados ficaram OK
         self.resultado_market: Optional[int] = None
+        self.resultado_login: Optional[int] = None
+        self.resultado_ativacao: Optional[int] = None
+        self.latencia_ms: Optional[int] = None   # chegada ao consumidor − horário do negócio
         # Contadores (stats())
         self.trades_recebidos  = 0
         self.trades_editados   = 0    # flag TC_IS_EDIT: edição de negócio já enviado (descartada)
@@ -291,6 +315,16 @@ class ProfitDLLBridge:
             "fila_pendente":     self.fila.qsize(),
             "bid":               list(self.bid) if self.bid else None,
             "ask":               list(self.ask) if self.ask else None,
+            "motivo_falha":      self.motivo_falha,
+            "estados": {
+                "login":    _estado_nomeado(self.resultado_login, NOMES_LOGIN),
+                "ativacao": _estado_nomeado(self.resultado_ativacao, NOMES_ATIVACAO),
+                "market":   _estado_nomeado(self.resultado_market, NOMES_MARKET),
+            },
+            "latencia_ms":       self.latencia_ms,
+            "ativo":             self.asset,
+            "bolsa":             self.exchange,
+            "dll_path":          mascarar_caminho(os.getenv("PROFITDLL_PATH", CAMINHO_PADRAO_DLL)),
         }
 
     # ──────────────────────────────────────────────────────────
@@ -298,9 +332,11 @@ class ProfitDLLBridge:
     # ──────────────────────────────────────────────────────────
 
     def start(self) -> bool:
+        self._resetar_conexao()
         try:
             self._conectar()
         except Exception as e:
+            self.motivo_falha = self.motivo_falha or str(e)
             logger.error(f"Falha ao conectar na ProfitDLL: {e}")
             self.stop()
             return False
@@ -319,6 +355,7 @@ class ProfitDLLBridge:
 
     def stop(self):
         self._parar.set()
+        self._conectado = False
         if self._consumidor:
             self._consumidor.join(timeout=2)
         if self.dll is not None:
@@ -330,10 +367,30 @@ class ProfitDLLBridge:
             except Exception as e:
                 logger.warning(f"Erro ao finalizar ProfitDLL: {e}")
             self.dll = None
+        self._consumidor = None
         logger.info(f"ProfitDLL encerrada | trades: {self.trades_recebidos} "
                     f"| ignorados (sem agressão): {self.trades_ignorados} "
                     f"| horário local (fallback): {self.horarios_fallback} "
                     f"| book: {self.book_atualizacoes}")
+
+    def _resetar_conexao(self):
+        """
+        Zera o estado de CONEXÃO antes de cada start(): eventos de login/ativação/market,
+        falha anterior, topo do livro e a fila antiga. Os contadores continuam acumulando
+        (a tela Conexão mostra o dia inteiro, com as reconexões).
+        """
+        for evento in self._estado.values():
+            evento.clear()
+        self._falha.clear()
+        self.motivo_falha = None
+        self._conectado = False
+        self.resultado_market = self.resultado_login = self.resultado_ativacao = None
+        self.bid = self.ask = None
+        while True:
+            try:
+                self.fila.get_nowait()
+            except Empty:
+                break
 
     # ──────────────────────────────────────────────────────────
     # CONEXÃO (específico da DLL / Windows)
@@ -351,7 +408,7 @@ class ProfitDLLBridge:
         if faltando:
             raise RuntimeError("variáveis de ambiente não definidas: " + ", ".join(faltando))
 
-        dll_path  = os.getenv("PROFITDLL_PATH", r"C:\ProfitDLL\Win64\ProfitDLL.dll")
+        dll_path  = os.getenv("PROFITDLL_PATH", CAMINHO_PADRAO_DLL)
         types_dir = os.getenv("PROFITDLL_TYPES_DIR")
         if types_dir and types_dir not in sys.path:
             sys.path.insert(0, types_dir)
@@ -446,12 +503,14 @@ class ProfitDLLBridge:
         aborta a espera de _aguardar_conexao na hora.
         """
         if tipo == _LOGIN:
+            self.resultado_login = resultado
             if resultado == _LOGIN_CONNECTED:
                 self._estado["login"].set()
             else:
                 self._estado["login"].clear()
                 self._registrar_falha(_FALHAS_LOGIN.get(resultado, f"login recusado (código {resultado})"))
         elif tipo == _ATIVACAO:
+            self.resultado_ativacao = resultado
             if resultado == _ATIVACAO_VALIDA:
                 self._estado["ativacao"].set()
             elif resultado == _ATIVACAO_INVALIDA:
@@ -572,6 +631,8 @@ class ProfitDLLBridge:
         if ts is None:
             self.horarios_fallback += 1
             ts = time.time()
+        else:
+            self.latencia_ms = max(0, round((time.time() - ts) * 1000))
         tick = trade_para_tick(buy, sell, qty, price, ttype, ts, self._nomes_para(buy, sell))
         if tick is None:
             self.trades_ignorados += 1
