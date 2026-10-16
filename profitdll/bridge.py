@@ -53,6 +53,12 @@ logger = logging.getLogger("ProfitDLL")
 # TradeType da ProfitDLL
 AGRESSAO_COMPRA = 2
 AGRESSAO_VENDA  = 3
+NOMES_TRADE_TYPE = {1: "cross", 2: "agressão de compra", 3: "agressão de venda", 4: "leilão",
+                    5: "surveillance", 6: "expit", 7: "exercício de opções", 8: "balcão",
+                    9: "termo", 10: "índice", 11: "BTC", 12: "on behalf", 13: "RLP",
+                    14: "BBT", 15: "RFQ", 16: "MPT", 17: "TAC", 18: "TAA",
+                    32: "desconhecido", 33: "update", 34: "mid", 35: "off exchange"}
+CM_IS_SHORT_NAME = 1   # GetAgentName: nome abreviado da corretora
 
 # Flag do TTradeCallback V2: o negócio é uma EDIÇÃO de um negócio já enviado
 # (manual p.35). Não deve entrar no engine como negócio novo.
@@ -261,6 +267,8 @@ class ProfitDLLBridge:
         self.trades_ignorados  = 0    # sem agressão (cross, leilão) ou inválidos
         self.horarios_fallback = 0    # TradeDate ausente/inválido → relógio local
         self.book_atualizacoes = 0
+        self.ignorados_por_tipo: dict[int, int] = {}   # TradeType → quantidade descartada
+        self._nomes_dll: dict[int, str] = {}           # cache código → nome abreviado da DLL
         # Topo do livro atual: (preço, quantidade) ou None
         self.bid: Optional[tuple] = None
         self.ask: Optional[tuple] = None
@@ -276,6 +284,8 @@ class ProfitDLLBridge:
             "trades_recebidos":  self.trades_recebidos,
             "trades_editados":   self.trades_editados,
             "trades_ignorados":  self.trades_ignorados,
+            "ignorados_por_tipo": {NOMES_TRADE_TYPE.get(t, str(t)): n
+                                   for t, n in sorted(self.ignorados_por_tipo.items())},
             "horarios_fallback": self.horarios_fallback,
             "book_atualizacoes": self.book_atualizacoes,
             "fila_pendente":     self.fila.qsize(),
@@ -378,6 +388,10 @@ class ProfitDLLBridge:
         dll.SetTradeCallbackV2.restype = c_int
         dll.TranslateTrade.argtypes = [c_size_t, POINTER(TConnectorTrade)]
         dll.TranslateTrade.restype = c_int
+        dll.GetAgentNameLength.argtypes = [c_int, c_uint]
+        dll.GetAgentNameLength.restype = c_int
+        dll.GetAgentName.argtypes = [c_int, c_int, c_wchar_p, c_uint]
+        dll.GetAgentName.restype = c_int
 
         def on_estado(tipo, resultado):
             self._on_estado(tipo, resultado)
@@ -520,6 +534,33 @@ class ProfitDLLBridge:
         except Exception as e:
             logger.error(f"Erro ao processar evento da DLL: {e}")
 
+    def _nomes_para(self, *codigos: int) -> dict[int, str]:
+        """Nomes das corretoras do negócio: JSON (--agentes) vence; senão a DLL."""
+        return {c: self.nomes.get(c) or self._nome_agente(c) for c in codigos}
+
+    def _nome_agente(self, codigo: int) -> str:
+        """
+        Nome abreviado da corretora pela DLL (GetAgentName), em cache.
+        Roda na thread consumidora, nunca dentro de callback da DLL.
+        Sem DLL ou sem nome, devolve o próprio código (sem cache: tenta de novo).
+        """
+        if codigo in self._nomes_dll:
+            return self._nomes_dll[codigo]
+        nome = str(codigo)
+        dll = self.dll
+        if dll is not None and codigo > 0:
+            try:
+                from ctypes import create_unicode_buffer
+                tam = dll.GetAgentNameLength(codigo, CM_IS_SHORT_NAME)
+                if tam > 0:
+                    buf = create_unicode_buffer(tam + 1)   # +1: terminador
+                    if dll.GetAgentName(tam + 1, codigo, buf, CM_IS_SHORT_NAME) >= 0 and buf.value.strip():
+                        nome = buf.value.strip().upper()
+                        self._nomes_dll[codigo] = nome   # só guarda acerto: a lista pode chegar depois
+            except Exception as e:
+                logger.warning(f"GetAgentName({codigo}) falhou: {e}")
+        return nome
+
     def _processar_trade(self, buy, sell, qty, price, ttype, ts, flags=0, numero=None):
         if flags & TC_IS_EDIT:
             # Edição de um negócio já enviado. O manual não diz como casar com o
@@ -531,9 +572,10 @@ class ProfitDLLBridge:
         if ts is None:
             self.horarios_fallback += 1
             ts = time.time()
-        tick = trade_para_tick(buy, sell, qty, price, ttype, ts, self.nomes)
+        tick = trade_para_tick(buy, sell, qty, price, ttype, ts, self._nomes_para(buy, sell))
         if tick is None:
             self.trades_ignorados += 1
+            self.ignorados_por_tipo[ttype] = self.ignorados_por_tipo.get(ttype, 0) + 1
             return
         self._ultimo_ts_negocio = tick.timestamp
         if self.on_tick:

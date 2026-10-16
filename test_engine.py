@@ -623,6 +623,56 @@ def test_profitdll_tempo_real():
         err(f"Bloco dll ausente/incorreto no /state: {estado.get('dll')}")
 
 
+def test_profitdll_nomes_e_descartes():
+    print(f"\n{AMARELO}═══ TESTE 9d: ProfitDLL — nome da corretora e descartes por tipo ═══{RESET}")
+
+    from profitdll.bridge import ProfitDLLBridge, AGRESSAO_COMPRA, AGRESSAO_VENDA
+
+    class DLLFalsa:
+        NOMES = {8: "UBS", 107: "Terra"}
+        def __init__(self): self.chamadas = 0
+        def GetAgentNameLength(self, codigo, curto):
+            self.chamadas += 1
+            return len(self.NOMES.get(codigo, ""))
+        def GetAgentName(self, tam, codigo, buf, curto):
+            buf.value = self.NOMES[codigo][:tam - 1]
+            return 0
+
+    engine = FlowEngine("WDOFUT", EngineConfig(tick_size=0.5))
+    b = ProfitDLLBridge("WDOFUT", agentes_path=None)
+    b.nomes = {107: "TERRA (JSON)"}          # o JSON vence a DLL
+    b.dll = DLLFalsa()
+    b.on_tick = engine.add_tick
+    t0 = 1_800_000_000.0
+    b._processar_evento(("trade", 107, 8, 1, 5078.5, AGRESSAO_COMPRA, t0))
+    b._processar_evento(("trade", 8, 1618, 2, 5078.5, AGRESSAO_VENDA, t0 + 1))
+    b._processar_evento(("trade", 8, 107, 3, 5078.5, AGRESSAO_COMPRA, t0 + 2))
+    b._processar_evento(("trade", 8, 107, 5, 5078.5, 1, t0 + 3))    # cross
+    b._processar_evento(("trade", 8, 107, 5, 5078.5, 1, t0 + 4))    # cross
+    b._processar_evento(("trade", 8, 107, 5, 5078.5, 4, t0 + 5))    # leilão
+    recentes = engine.get_state()["recent_trades"]
+    pares = [(t["broker"], t["passive_broker"]) for t in recentes[-3:]]
+    if pares == [("TERRA (JSON)", "UBS"), ("1618", "UBS"), ("UBS", "TERRA (JSON)")]:
+        ok(f"Nomes da DLL em maiúsculas, JSON vence, código sem nome fica como código: {pares}")
+    else:
+        err(f"Nomes errados: {pares}")
+    if 8 in b._nomes_dll and 1618 not in b._nomes_dll:
+        ok("Cache guarda só nomes resolvidos (código sem nome tenta de novo)")
+    else:
+        err(f"Cache inesperado: {b._nomes_dll}")
+    st = b.stats()
+    if st["ignorados_por_tipo"] == {"cross": 2, "leilão": 1} and st["trades_ignorados"] == 3:
+        ok(f"Descartes contados por tipo: {st['ignorados_por_tipo']}")
+    else:
+        err(f"Descartes por tipo errados: {st['ignorados_por_tipo']}")
+
+    sem_dll = ProfitDLLBridge("WDOFUT")
+    if sem_dll._nome_agente(8) == "8":
+        ok("Sem DLL o broker continua sendo o código")
+    else:
+        err("Sem DLL deveria devolver o código")
+
+
 def test_profitdll_correcoes():
     print(f"\n{AMARELO}═══ TESTE 9c: ProfitDLL — edição de negócio e estados de conexão ═══{RESET}")
 
@@ -1842,6 +1892,7 @@ def main():
     test_profitdll()
     test_profitdll_tempo_real()
     test_profitdll_correcoes()
+    test_profitdll_nomes_e_descartes()
     test_rtd()
     test_api_http()
     test_iceberg_passiva()
