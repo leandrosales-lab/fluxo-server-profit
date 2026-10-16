@@ -405,7 +405,8 @@ class BaixadorHistorico:
                 logger.error(f"{dia.strftime('%d/%m/%Y')}: desistindo — {erro}")
                 continue
 
-            res = converter_trades(trades, self.nomes, dia)
+            codigos = {int(c) for tr in trades for c in (tr[5], tr[6])}
+            res = converter_trades(trades, self.bridge._nomes_para(*codigos), dia)
             logger.info(resumo_dia(dia, res))
             if not res.ticks:
                 logger.info(f"{dia.strftime('%d/%m/%Y')}: sem negócios (feriado?) — "
