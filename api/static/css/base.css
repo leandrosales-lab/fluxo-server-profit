@@ -1,0 +1,78 @@
+/* Base comum às telas: grade 32/80/corpo/28, fios de 1px, tipografia Plex, tabelas e botões retos. */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; background: var(--bg); color: var(--text); }
+body { font: 400 13px/18px "IBM Plex Sans", system-ui, sans-serif; font-variant-numeric: tabular-nums; overflow: hidden; }
+button { font: inherit; }
+.mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+
+.tela { display: grid; grid-template-rows: 32px 80px minmax(0, 1fr) 28px; height: 100vh; min-width: 1280px; }
+
+/* Barra de 32px */
+.topo { display: flex; align-items: stretch; padding: 0 16px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+.topo .marca { display: flex; align-items: center; font-weight: 600; padding-right: 16px; margin-right: 4px; border-right: 1px solid var(--rule); }
+.topo nav { display: flex; }
+.aba { display: flex; align-items: center; padding: 0 12px; color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent; }
+.aba[aria-current="page"] { color: var(--text); border-bottom-color: var(--accent); }
+.aba[aria-disabled="true"] { color: var(--faint); cursor: default; }
+.topo .direita { margin-left: auto; display: flex; align-items: center; gap: 24px; }
+.modo b { font-weight: 500; padding: 7px 0; border-bottom: 2px solid var(--accent); }
+.status { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.status.alerta { color: var(--accent); }
+.quadrado { width: 7px; height: 7px; background: var(--accent); }
+.quadrado.vazio { background: transparent; box-shadow: inset 0 0 0 1px var(--accent); }
+.relogio { font: 500 15px/20px "IBM Plex Mono", monospace; }
+.tema { color: var(--muted); }
+.tema button { background: none; border: 0; color: var(--muted); cursor: pointer; padding: 0 4px; }
+.tema button[aria-pressed="true"] { color: var(--text); font-weight: 500; }
+.aviso { color: var(--accent); }
+
+/* Rodapé de 28px */
+.rodape { display: flex; align-items: center; padding: 0 16px; border-top: 1px solid var(--rule); color: var(--faint); font-size: 12px; }
+.rodape .atalhos { margin: 0 auto; display: flex; gap: 20px; font-family: "IBM Plex Mono", monospace; }
+
+/* Faixa de 80px: rótulo 12px + valor, separados por fio vertical */
+.faixa { display: flex; align-items: stretch; padding: 0 16px; border-bottom: 1px solid var(--rule); overflow: hidden; }
+.metrica { display: flex; flex-direction: column; justify-content: center; gap: 2px; padding: 0 20px; margin: 12px 0; border-left: 1px solid var(--rule); white-space: nowrap; }
+.metrica:first-child { border-left: 0; padding-left: 0; }
+.metrica .rotulo { font-size: 12px; color: var(--muted); }
+.metrica .valor { font: 500 23px/28px "IBM Plex Sans", sans-serif; }
+.metrica .valor small { font: 400 12px/16px "IBM Plex Sans", sans-serif; color: var(--muted); margin-left: 8px; }
+.heroi { font: 500 56px/60px "IBM Plex Sans", sans-serif; }
+
+.compra { color: var(--buy); }
+.venda { color: var(--sell); }
+.muted { color: var(--muted); }
+.faint { color: var(--faint); }
+.ambar { color: var(--accent); }
+
+/* Corpo: conteúdo principal | coluna de apoio de 740px (x = 1180 em 1920) */
+.corpo { display: grid; grid-template-columns: minmax(0, 1fr) 740px; min-height: 0; }
+.secao { display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--rule); }
+.corpo > .secao:first-child { border-left: 0; }
+.cab { display: flex; align-items: baseline; gap: 16px; height: 36px; padding: 9px 16px 0; flex: 0 0 auto; }
+.cab h2 { font: 600 13px/18px "IBM Plex Sans", sans-serif; }
+.meta { font-size: 12px; color: var(--faint); }
+.cab .acoes { margin-left: auto; display: flex; gap: 16px; }
+.seletor { background: none; border: 0; border-bottom: 2px solid transparent; color: var(--muted); cursor: pointer; padding: 0 0 2px; }
+.seletor[aria-pressed="true"] { color: var(--text); border-bottom-color: var(--accent); }
+
+/* Tabelas densas: Mono 13, números à direita */
+table { border-collapse: collapse; width: 100%; table-layout: fixed; font: 400 13px/21px "IBM Plex Mono", monospace; }
+th { font: 400 12px/20px "IBM Plex Sans", sans-serif; color: var(--muted); text-align: left; padding: 0 8px; border-bottom: 1px solid var(--rule); }
+td { padding: 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+th:first-child, td:first-child { padding-left: 16px; }
+th:last-child, td:last-child { padding-right: 16px; }
+.num { text-align: right; }
+tr.lote-compra { background: var(--lote-buy); font-weight: 600; }
+tr.lote-venda { background: var(--lote-sell); font-weight: 600; }
+tr.destaque { background: var(--raise); }
+.rolagem { flex: 1; min-height: 0; overflow-y: auto; }
+.barra { display: block; height: 3px; }
+.barra.compra { background: var(--vol-buy); }
+.barra.venda { background: var(--vol-sell); }
+
+/* Botões retos: primário (um por área), secundário e desabilitado */
+.botao { font: 500 13px/18px "IBM Plex Sans", sans-serif; color: var(--text); background: none; border: 1px solid var(--faint); border-radius: 0; padding: 6px 14px; cursor: pointer; }
+.botao.primario { background: var(--text); color: var(--inv); border-color: var(--text); }
+.botao:disabled { background: none; color: var(--faint); border-color: var(--rule); cursor: default; }
+.vazio-msg { color: var(--muted); padding: 16px; }

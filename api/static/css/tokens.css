@@ -1,0 +1,27 @@
+/* Tokens do design v3 "Terminal + manchete" — valores de docs/design/v3/tokens-v3.md.
+   Não alterar sem refazer a tabela de contraste. O tema vem de data-tema no <html>. */
+@font-face { font-family: "IBM Plex Sans"; font-weight: 400; font-display: swap; src: url("../fonts/IBMPlexSans-Regular.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Sans"; font-weight: 500; font-display: swap; src: url("../fonts/IBMPlexSans-Medium.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Sans"; font-weight: 600; font-display: swap; src: url("../fonts/IBMPlexSans-SemiBold.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-weight: 400; font-display: swap; src: url("../fonts/IBMPlexMono-Regular.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-weight: 500; font-display: swap; src: url("../fonts/IBMPlexMono-Medium.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-weight: 600; font-display: swap; src: url("../fonts/IBMPlexMono-SemiBold.woff2") format("woff2"); }
+
+:root, :root[data-tema="escuro"] {
+  --bg: #0F0F0D; --raise: #1A1915; --rule: #2C2A25; --grid: #1C1B18;
+  --text: #ECE7DC; --muted: #A39D90; --faint: #928C80;
+  --accent: #E3A33B; --buy: #4FBF7F; --sell: #E8604C;
+  --vol-buy: #357951; --vol-sell: #A74839; --inv: #0F0F0D;
+  --lote-buy: rgba(79, 191, 127, 0.13); --lote-sell: rgba(232, 96, 76, 0.13);
+  --faixa-26: rgba(227, 163, 59, 0.22);
+  color-scheme: dark;
+}
+:root[data-tema="claro"] {
+  --bg: #F3F0E8; --raise: #E8E3D7; --rule: #D2CBBC; --grid: #E5E0D4;
+  --text: #1C1B18; --muted: #57534A; --faint: #66615A;
+  --accent: #8A5000; --buy: #176C40; --sell: #B0352A;
+  --vol-buy: #50936E; --vol-sell: #C46D63; --inv: #F3F0E8;
+  --lote-buy: rgba(23, 108, 64, 0.10); --lote-sell: rgba(176, 53, 42, 0.10);
+  --faixa-26: rgba(138, 80, 0, 0.18);
+  color-scheme: light;
+}
