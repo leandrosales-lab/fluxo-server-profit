@@ -83,6 +83,31 @@ verificacoes.push(["operar: faixa e gráfico", async (page) => {
   checar(true, "capturas operar-escuro.png e operar-claro.png salvas");
 }]);
 
+verificacoes.push(["operar: painéis", async (page) => {
+  await page.goto(`${BASE}/operar`);
+  await page.waitForFunction(() => document.getElementById("m-titulo").textContent !== "Nenhum sinal ainda hoje",
+    null, { timeout: 60000 });
+  const titulo = await page.textContent("#m-titulo");
+  checar(/(compradora?|vendedora?|comprador|vendedor)$/.test(titulo), `manchete do sinal: ${titulo}`);
+  checar((await page.textContent("#m-preco")).startsWith("em "), "manchete mostra \"em {preço}\"");
+  const n1 = await page.locator("#tt tr").count();
+  await esperar(2000);
+  const n2 = await page.locator("#tt tr").count();
+  checar(n2 > 0 && n2 >= n1, `Times & Trades com ${n2} linhas`);
+  checar((await page.textContent("#livro-nota")).length > 0, `livro: ${await page.textContent("#livro-nota")}`);
+  checar(await page.locator("#saldo tr").count() > 0, "saldo das corretoras preenchido");
+  await page.screenshot({ path: path.join(SAIDA, "operar-com-sinal.png") });
+}]);
+
+verificacoes.push(["operar: reset com a tela aberta", async (page) => {
+  await esperarFimReplay();
+  await page.goto(`${BASE}/operar`);
+  await page.waitForFunction(() => document.getElementById("f-ultimo").textContent !== "—");
+  await page.evaluate(() => fetch("/reset", { method: "POST" }));
+  await page.waitForFunction(() => document.getElementById("f-ultimo").textContent === "—", null, { timeout: 5000 });
+  checar(await page.textContent("#m-titulo") === "Nenhum sinal ainda hoje", "reset limpa faixa e manchete sem recarregar");
+}]);
+
 // ── as tarefas 8, 9 e 10 acrescentam verificações acima desta linha ──
 
 async function main() {

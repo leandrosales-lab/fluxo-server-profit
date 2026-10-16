@@ -23,3 +23,4 @@
 .bloco-baixo td { line-height: 21px; }
 tr.spread td { color: var(--faint); font-size: 12px; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
 td.barra-cel span { display: block; height: 3px; }
+.anteriores td:nth-child(2) { font-family: "IBM Plex Sans", sans-serif; }

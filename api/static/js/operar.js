@@ -2,6 +2,7 @@
 import { getJSON, laco } from "./api.js";
 import { montarShell } from "./shell.js";
 import { criarGrafico } from "./operar-grafico.js";
+import { criarPaineis } from "./operar-paineis.js";
 import { casasDoTick, preco, comSinal, inteiro, financeiro, pct } from "./formato.js";
 
 const $ = (id) => document.getElementById(id);
@@ -10,6 +11,7 @@ const CHAVE_TF = "fluxo.tf";
 let casas = 2;
 let tickAplicado = null;
 const grafico = criarGrafico($("grafico"), casas);
+const paineis = criarPaineis();
 
 let sinais = [];
 let vistos = new Set();
@@ -91,7 +93,12 @@ async function passo() {
     ultimoSinalTs = sinais[sinais.length - 1].timestamp;
     grafico.definirSinais(sinais);
   }
-  return estado;
+
+  const [tr, book] = await Promise.all([getJSON("/trades?limit=40"), getJSON("/book")]);
+  // "agora": no replay é a hora do último negócio; ao vivo, o relógio
+  const ultimo = estado.recent_trades?.at(-1);
+  const agora = shell.saude.modo === "replay" && ultimo ? ultimo.timestamp : Date.now() / 1000;
+  paineis.atualizar({ estado, sinais, trades: tr.trades, book, casas, agora, tf: grafico.tf });
 }
 
 laco(passo, 500);

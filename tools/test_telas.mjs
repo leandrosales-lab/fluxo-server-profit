@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import * as f from "../api/static/js/formato.js";
 import { textoStatus } from "../api/static/js/shell.js";
+import { tituloSinal, loteGrandePadrao } from "../api/static/js/operar-paineis.js";
 
 assert.equal(f.preco(38.47), "38,47");
 assert.equal(f.preco(5078.5, 1), "5.078,5");
@@ -32,5 +33,11 @@ assert.deepEqual(textoStatus({ conectado: false, motivo_falha: "senha inválida"
   ["desconectado — senha inválida", true]);
 assert.deepEqual(textoStatus({ ...ok, reconexao: { em_andamento: true } }, "ProfitDLL"), ["reconectando…", true]);
 assert.deepEqual(textoStatus(undefined, "exemplo_wdo.csv"), ["fonte: exemplo_wdo.csv", false]);
+
+assert.equal(tituloSinal({ signal: "BUY", pattern: "Absorção" }), "Absorção compradora");
+assert.equal(tituloSinal({ signal: "SELL", pattern: "Iceberg" }), "Iceberg vendedor");
+assert.equal(tituloSinal({ signal: "SELL", pattern: "BestOffer" }), "Melhor oferta vendedora");
+assert.equal(loteGrandePadrao("WDOFUT"), 50);
+assert.equal(loteGrandePadrao("PETR4"), 5000);
 
 console.log("test_telas.mjs: tudo certo");
