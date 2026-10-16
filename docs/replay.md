@@ -69,16 +69,16 @@ python main.py --asset WDOFUT --modo replay --arquivo replay/exemplo_wdo.csv --t
 | `--arquivo` | O CSV do pregão (obrigatório) |
 | `--tick-size` | Tamanho do tick do ativo (WDO = 0.5, WIN = 5, ações = 0.01). **Importante:** os resultados são medidos em ticks |
 | `--velocidade` | `0` = o mais rápido possível (padrão). `1` = tempo real. `10` = 10 vezes mais rápido |
-| `--sem-servidor` | Roda direto, sem abrir o servidor/dashboard (modo lote) |
+| `--sem-servidor` | Roda direto, sem abrir o servidor/telas (modo lote) |
 | `--alvo-ticks` | Quantos ticks a favor contam como acerto (padrão 4) |
 | `--horizonte` | Por quantos segundos depois do sinal o resultado é medido (padrão 300) |
 | `--saida` | Salva a lista de sinais num CSV |
 
 Os outros parâmetros do engine (`--flow-window`, `--flow-pct`, `--min-confidence` etc.) funcionam igual ao modo ao vivo.
 
-### Assistir no dashboard
+### Assistir nas telas
 
-Sem `--sem-servidor`, o servidor sobe normalmente e dá para acompanhar em `http://127.0.0.1:5000/dashboard`. Use uma velocidade maior que zero para ver o pregão andar:
+Sem `--sem-servidor`, o servidor sobe normalmente e as telas ficam em `http://127.0.0.1:5000/operar` (F2 abre a Conexão, T alterna o tema escuro/claro). Use uma velocidade maior que zero para ver o pregão andar:
 
 ```
 python main.py --asset WDOFUT --modo replay --arquivo wdo_2026-10-14.csv --tick-size 0.5 --velocidade 20

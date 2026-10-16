@@ -1,6 +1,6 @@
 # Bibliotecas de terceiros embutidas
 
-O dashboard funciona sem internet, então as bibliotecas ficam dentro do repositório.
+As telas funcionam sem internet, então as bibliotecas ficam dentro do repositório.
 
 ## TradingView Lightweight Charts
 
@@ -15,10 +15,10 @@ O dashboard funciona sem internet, então as bibliotecas ficam dentro do reposit
 
 O cabeçalho do arquivo mantém o aviso de copyright e a licença. A Apache 2.0 pede que o aviso
 de atribuição ("TradingView Lightweight Charts™, Copyright TradingView, Inc.") continue visível
-na distribuição; o dashboard mostra o logo/atribuição padrão da biblioteca (`attributionLogo`).
+na distribuição; as telas mostram o logo/atribuição padrão da biblioteca (`attributionLogo`).
 
 Para atualizar: baixar a nova versão exata do unpkg, conferir o cabeçalho, recalcular o sha256
-e revisar a API usada em `dashboard.html` (v5: `chart.addSeries(CandlestickSeries, …)`,
+e revisar a API usada em `js/operar-grafico.js` e `js/conexao.js` (v5: `chart.addSeries(CandlestickSeries, …)`,
 `createSeriesMarkers`).
 
 ## IBM Plex Sans e IBM Plex Mono

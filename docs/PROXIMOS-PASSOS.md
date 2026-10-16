@@ -1,11 +1,13 @@
 # Próximos passos — onde paramos
 
-Última atualização: 14/10/2026. Este arquivo serve para continuar o trabalho de outro computador.
+Última atualização: 16/10/2026. Este arquivo serve para continuar o trabalho de outro computador.
 
 ## Prioridade
 
-1. **Fluxo em ações, começando pela PETR4.** Bolsa `B`, sufixo RTD `_B_0`, tick de R$ 0,01. Os valores padrão do `EngineConfig` já são de ação.
-2. Depois, **mini índice (WIN)**. Bolsa `F`, sufixo RTD `_F_0`, tick de 5 pontos (`--tick-size 5`). Vai precisar de uma calibração própria.
+1. **WDO e WIN pela ProfitDLL.** A licença atual só libera BMF (ver abaixo). Gravar pregões com `--gravar` e calibrar o
+   engine no replay. Tick do WDO 0,5 (`--tick-size 0.5`), do WIN 5 (`--tick-size 5`).
+2. **Ações (PETR4, BBAS3)** dependem de incluir a Bovespa na licença da DLL (suportecorp@nelogica.com.br). Até lá, ações
+   só pelo RTD do Profit. Bolsa `B`, sufixo RTD `_B_0`, tick de R$ 0,01.
 
 ## O que já está pronto (no `main`)
 
@@ -16,10 +18,16 @@
   - O bid/ask vem de `OCP`/`OVD`.
   - O servidor deduz a quantidade e o lado agressor de cada negócio.
 - **Modo replay:** `--gravar`, `--modo replay` e `--grid`. Ver [replay.md](replay.md).
-- **ProfitDLL:**
-  - Em tempo real, usa o horário do negócio (`TradeDate`) e o topo do livro (TinyBook).
-  - Baixa o histórico com `python -m profitdll.historico`.
-  - **Nada disso foi testado com a DLL real**, porque o produto ainda não foi contratado.
+- **ProfitDLL (testada com a DLL real em 16/10/2026):**
+  - Conecta em ~4 s; negócios com agressor, topo do livro (TinyBook), nome da corretora pela DLL e horário da B3.
+  - **A licença atual só libera BMF** (log da DLL: `Exchanges=E,1,0;F,1,0`). Ações (bolsa `B`) são recusadas em
+    silêncio: o histórico fica em 0% para sempre.
+  - **A DLL não reinicializa no mesmo processo** (Access violation em `CreateDataLoader`): no modo dll ela roda num
+    processo filho (`profitdll/processo.py`) e o Reconectar reinicia só o filho.
+  - Credenciais: `tools\configurar_profitdll.ps1`; subir: `tools\rodar_dll.ps1 -Asset WDOFUT -TickSize 0.5`.
+  - Histórico: `python -m profitdll.historico` (ainda não confirmado com dados reais de BMF).
+- **Telas (design v3):** `http://127.0.0.1:5000/operar` (F1) e `/conexao` (F2), tema escuro/claro (T), Reconectar
+  da DLL na Conexão. Testes: `node tools/test_telas.mjs` e `node tools/qa_telas.js` (QA no navegador com Playwright).
 
 O detalhe do que foi feito está em [registro-2026-10-14.md](registro-2026-10-14.md).
 

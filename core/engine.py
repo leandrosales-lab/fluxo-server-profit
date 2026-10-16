@@ -1292,7 +1292,7 @@ class FlowEngine:
         )
 
     # ──────────────────────────────────────────────────────────
-    # GRÁFICO, TIMES & TRADES E BOOK (alimentam a API do dashboard)
+    # GRÁFICO, TIMES & TRADES E BOOK (alimentam a API das telas)
     # ──────────────────────────────────────────────────────────
 
     def _update_candles(self, tick: Tick):
@@ -1451,7 +1451,7 @@ class FlowEngine:
             return self._current_signal
 
     def get_state(self) -> dict:
-        """Retorna estado completo do motor para debug/dashboard."""
+        """Retorna estado completo do motor para debug e para as telas."""
         with self._lock:
             pct_buy, pct_sell = self._calc_flow_pressure()
             confirmed = [ic.to_dict() for ic in self._icebergs.values() if ic.confirmed]
@@ -1481,7 +1481,7 @@ class FlowEngine:
                 "urgent_brokers":     urgent,
                 "best_ask_brokers":   list(self._get_best_ask_brokers().keys()),
                 "best_bid_brokers":   list(self._get_best_bid_brokers().keys()),
-                # 10 últimos negócios, do mais antigo ao mais novo (fita do dashboard)
+                # 10 últimos negócios, do mais antigo ao mais novo (status e relógio das telas)
                 "recent_trades":      [self._trade_dict(t) for t in list(self._ticks)[-10:]],
                 "resumo":             self.get_resumo(),
                 "signal":             self._current_signal.to_dict(),
