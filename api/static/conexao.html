@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fluxo Server · Conexão</title>
+<script>/* tema antes da 1ª pintura (sem piscar) */ try { var t = localStorage.getItem("fluxo.tema"); } catch (e) {} document.documentElement.dataset.tema = (t === "claro" || t === "escuro") ? t : (matchMedia("(prefers-color-scheme: light)").matches ? "claro" : "escuro");</script>
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/base.css">
+</head>
+<body>
+<div class="tela">
+  <header id="topo"></header>
+  <section class="faixa" id="faixa"></section>
+  <main class="corpo"><section class="secao"></section><section class="secao"></section></main>
+  <footer id="rodape"></footer>
+</div>
+<script type="module">
+  import { montarShell } from "/static/js/shell.js";
+  import { getJSON, laco } from "/static/js/api.js";
+  const shell = montarShell("conexao");
+  laco(async () => shell.atualizarStatus(await getJSON("/state")));
+</script>
+</body>
+</html>

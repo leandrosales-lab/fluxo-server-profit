@@ -43,3 +43,6 @@ desktop.ini
 
 # Histórico baixado pela ProfitDLL (python -m profitdll.historico)
 historico/
+
+# Capturas do QA no navegador (node tools/qa_telas.js)
+qa-telas/
