@@ -104,8 +104,34 @@ verificacoes.push(["operar: reset com a tela aberta", async (page) => {
   await page.goto(`${BASE}/operar`);
   await page.waitForFunction(() => document.getElementById("f-ultimo").textContent !== "—");
   await page.evaluate(() => fetch("/reset", { method: "POST" }));
-  await page.waitForFunction(() => document.getElementById("f-ultimo").textContent === "—", null, { timeout: 5000 });
-  checar(await page.textContent("#m-titulo") === "Nenhum sinal ainda hoje", "reset limpa faixa e manchete sem recarregar");
+  // a faixa e a manchete se atualizam no mesmo ciclo, mas a manchete só depois das consultas de T&T e livro
+  await page.waitForFunction(() => document.getElementById("f-ultimo").textContent === "—"
+    && document.getElementById("m-titulo").textContent === "Nenhum sinal ainda hoje", null, { timeout: 5000 });
+  checar(true, "reset limpa faixa e manchete sem recarregar");
+}]);
+
+verificacoes.push(["conexão", async (page) => {
+  await page.goto(`${BASE}/conexao`);
+  await page.waitForFunction(() => document.querySelectorAll("#log tr").length > 0, null, { timeout: 10000 });
+  checar(true, `log com ${await page.locator("#log tr").count()} eventos`);
+  checar(await page.isHidden("#reconectar"), "sem botão Reconectar fora do modo dll");
+  checar((await page.textContent("#c-agregado")).includes("Sem ProfitDLL"), "faixa explica a fonte sem DLL");
+  // o replay de exemplo só gera INFO: o filtro "info" é o que tem linhas para provar a filtragem
+  await page.click('#log-filtros [data-nivel="info"]');
+  await esperar(700);
+  const niveis = await page.locator("#log tr td:nth-child(2)").allTextContents();
+  checar(niveis.length > 0 && niveis.every((n) => n === "info"), `filtro "info" mostra só info (${niveis.length})`);
+  await page.click('#log-filtros [data-nivel="erro"]');
+  await esperar(700);
+  checar(await page.locator("#log tr").count() === 0, "filtro \"erro\" esconde as linhas de info");
+  await page.click('#log-filtros [data-nivel="todos"]');
+  for (const tema of ["escuro", "claro"]) {
+    await page.evaluate((t) => localStorage.setItem("fluxo.tema", t), tema);
+    await page.reload();
+    await page.waitForFunction(() => document.querySelectorAll("#log tr").length > 0);
+    await page.screenshot({ path: path.join(SAIDA, `conexao-${tema}.png`) });
+  }
+  checar(true, "capturas conexao-escuro.png e conexao-claro.png salvas");
 }]);
 
 // ── as tarefas 8, 9 e 10 acrescentam verificações acima desta linha ──

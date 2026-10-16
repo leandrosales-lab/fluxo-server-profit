@@ -21,6 +21,12 @@ export function aplicarTema(tema, salvar = false) {
   window.dispatchEvent(new CustomEvent("tema", { detail: tema }));
 }
 
+/**
+ * Latência = chegada − horário do negócio. Acima de 1 min não é atraso de rede: é um negócio antigo
+ * (fora do pregão a DLL entrega o último do dia ao assinar), então não se mostra como latência.
+ */
+export function latenciaValida(ms) { return ms != null && ms < 60000; }
+
 /** Texto do status da ProfitDLL (ou da fonte fora do modo dll) e se é alerta (âmbar vazado). */
 export function textoStatus(dll, fonte) {
   if (!dll) return [`fonte: ${fonte || "—"}`, false];
@@ -28,7 +34,7 @@ export function textoStatus(dll, fonte) {
   const market = dll.estados?.market;
   if (dll.conectado && market?.codigo === 6) return ["ProfitDLL conectado (2,6) · callbacks atrasados", true];
   if (dll.conectado) {
-    const lat = dll.latencia_ms != null ? ` · ${dll.latencia_ms} ms` : "";
+    const lat = latenciaValida(dll.latencia_ms) ? ` · ${dll.latencia_ms} ms` : "";
     return [`ProfitDLL conectado (2,${market?.codigo ?? 4})${lat}`, false];
   }
   if (dll.motivo_falha) return [`desconectado — ${dll.motivo_falha}`, true];

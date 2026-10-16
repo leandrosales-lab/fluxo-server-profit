@@ -1,0 +1,12 @@
+/* Ajustes da tela Conexão (layout de docs/design/v3/conexao-escuro.png). */
+.faixa .primeira { min-width: 260px; }
+.faixa .grande { font: 500 30px/36px "IBM Plex Sans", sans-serif; }
+.faixa .acao { margin-left: auto; border-left: 0; flex-direction: row; align-items: center; gap: 16px; }
+.metrica .valor small.mono { font-family: "IBM Plex Mono", monospace; }
+.grafico { flex: 1; min-height: 0; }
+.aviso-26 { color: var(--accent); font-size: 12px; padding: 0 16px 6px; }
+.secao.direita { overflow: hidden; }
+.chave-valor td:first-child { font-family: "IBM Plex Sans", sans-serif; color: var(--muted); }
+.chave-valor td { line-height: 24px; }
+.edicao { margin: 8px 0 4px; padding: 10px 16px; border-left: 2px solid var(--accent); background: var(--raise); font-weight: 600; }
+.log td { font-size: 12px; line-height: 26px; }

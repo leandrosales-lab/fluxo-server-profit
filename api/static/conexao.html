@@ -7,19 +7,42 @@
 <script>/* tema antes da 1ª pintura (sem piscar) */ try { var t = localStorage.getItem("fluxo.tema"); } catch (e) {} document.documentElement.dataset.tema = (t === "claro" || t === "escuro") ? t : (matchMedia("(prefers-color-scheme: light)").matches ? "claro" : "escuro");</script>
 <link rel="stylesheet" href="/static/css/tokens.css">
 <link rel="stylesheet" href="/static/css/base.css">
+<link rel="stylesheet" href="/static/css/conexao.css">
+<script src="/static/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
 <div class="tela">
   <header id="topo"></header>
-  <section class="faixa" id="faixa"></section>
-  <main class="corpo"><section class="secao"></section><section class="secao"></section></main>
+  <section class="faixa">
+    <div class="metrica primeira"><span class="rotulo">ProfitDLL</span><span class="valor grande" id="c-agregado">—</span><span class="rotulo" id="c-agregado-det"></span></div>
+    <div class="metrica"><span class="rotulo">Login</span><span class="valor"><span id="c-login">—</span><small class="mono" id="c-login-cod"></small></span></div>
+    <div class="metrica"><span class="rotulo">Ativação</span><span class="valor"><span id="c-ativacao">—</span><small class="mono" id="c-ativacao-cod"></small></span></div>
+    <div class="metrica"><span class="rotulo">Market Data</span><span class="valor"><span id="c-market">—</span><small class="mono" id="c-market-cod"></small></span></div>
+    <div class="metrica"><span class="rotulo">Roteamento</span><span class="valor faint">não usado<small class="mono">(1,—)</small></span></div>
+    <div class="metrica"><span class="rotulo">Latência</span><span class="valor" id="c-latencia">—</span></div>
+    <div class="metrica acao"><span class="ambar" id="reconectar-msg"></span><button class="botao primario" id="reconectar" hidden>Reconectar</button></div>
+  </section>
+  <main class="corpo">
+    <section class="secao">
+      <div class="cab"><h2>Negócios por segundo</h2><span class="meta" id="nps-meta">últimos 15 min · diferença de negócios recebidos a cada segundo</span></div>
+      <div class="aviso-26 mono" id="faixa-26" hidden></div>
+      <div class="grafico" id="grafico-nps"></div>
+      <p class="vazio-msg" id="nps-vazio" hidden>Sem ProfitDLL nesta fonte: negócios por segundo só existem no modo dll.</p>
+    </section>
+    <section class="secao direita">
+      <div class="cab"><h2>Contadores</h2><span class="meta" id="contadores-meta"></span></div>
+      <table class="chave-valor"><colgroup><col style="width:300px"><col style="width:110px"><col></colgroup><tbody id="contadores"></tbody></table>
+      <div class="edicao" id="edicao" hidden></div>
+      <div class="cab"><h2>Configuração</h2><span class="meta">chave, usuário e senha nunca saem do servidor</span></div>
+      <table class="chave-valor"><colgroup><col style="width:300px"><col></colgroup><tbody id="config"></tbody></table>
+      <div class="cab"><h2>Log de eventos</h2><span class="acoes" id="log-filtros"><button class="seletor" data-nivel="todos" aria-pressed="true">todos</button><button class="seletor" data-nivel="info">info</button><button class="seletor" data-nivel="aviso">aviso</button><button class="seletor" data-nivel="erro">erro</button></span></div>
+      <table><colgroup><col style="width:92px"><col style="width:64px"><col style="width:150px"><col></colgroup><thead><tr><th>Hora</th><th>Nível</th><th>Origem</th><th>Mensagem</th></tr></thead></table>
+      <div class="rolagem"><table class="log"><colgroup><col style="width:92px"><col style="width:64px"><col style="width:150px"><col></colgroup><tbody id="log"></tbody></table></div>
+      <div class="cab"><span class="meta" id="log-meta"></span></div>
+    </section>
+  </main>
   <footer id="rodape"></footer>
 </div>
-<script type="module">
-  import { montarShell } from "/static/js/shell.js";
-  import { getJSON, laco } from "/static/js/api.js";
-  const shell = montarShell("conexao");
-  laco(async () => shell.atualizarStatus(await getJSON("/state")));
-</script>
+<script type="module" src="/static/js/conexao.js"></script>
 </body>
 </html>

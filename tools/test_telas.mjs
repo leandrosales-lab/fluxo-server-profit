@@ -33,6 +33,8 @@ assert.deepEqual(textoStatus({ conectado: false, motivo_falha: "senha inválida"
   ["desconectado — senha inválida", true]);
 assert.deepEqual(textoStatus({ ...ok, reconexao: { em_andamento: true } }, "ProfitDLL"), ["reconectando…", true]);
 assert.deepEqual(textoStatus(undefined, "exemplo_wdo.csv"), ["fonte: exemplo_wdo.csv", false]);
+// fora do pregão a DLL entrega o último negócio do dia: "latência" de 1 h não é latência, não aparece
+assert.deepEqual(textoStatus({ ...ok, latencia_ms: 3631402 }, "ProfitDLL"), ["ProfitDLL conectado (2,4)", false]);
 
 assert.equal(tituloSinal({ signal: "BUY", pattern: "Absorção" }), "Absorção compradora");
 assert.equal(tituloSinal({ signal: "SELL", pattern: "Iceberg" }), "Iceberg vendedor");
