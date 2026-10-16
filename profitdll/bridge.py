@@ -54,11 +54,24 @@ logger = logging.getLogger("ProfitDLL")
 AGRESSAO_COMPRA = 2
 AGRESSAO_VENDA  = 3
 
-# Estados de conexão (nConnStateType, nResult) do TStateCallback
+# Flag do TTradeCallback V2: o negócio é uma EDIÇÃO de um negócio já enviado
+# (manual p.35). Não deve entrar no engine como negócio novo.
+TC_IS_EDIT = 1
+
+# Estados de conexão (nConnStateType, nResult) do TStateCallback (manual p.15-16, p.58)
 _LOGIN, _MARKET, _ATIVACAO = 0, 2, 3
 _LOGIN_CONNECTED   = 0
 _MARKET_CONNECTED  = 4
 _ATIVACAO_VALIDA   = 0
+_ATIVACAO_INVALIDA = 1
+_MARKET_PERFORMANCE_WARNING = 5
+_MARKET_PARTIAL_CONNECTED   = 6   # callbacks atrasados/perdidos: o programa não está consumindo
+
+_FALHAS_LOGIN = {1: "login inválido", 2: "senha inválida", 3: "senha bloqueada",
+                 4: "senha expirada", 200: "erro interno de login"}
+NOMES_MARKET = {0: "desconectado", 1: "conectando", 2: "aguardando conexão",
+                3: "não logado", 4: "conectado", 5: "conectado (aviso de desempenho)",
+                6: "parcialmente conectado"}
 
 # Lado do TinyBook (TTinyBookCallback)
 TINYBOOK_BID = 0
@@ -216,7 +229,8 @@ class ProfitDLLBridge:
     Os callbacks da DLL só extraem e enfileiram tipos Python; uma thread
     consumidora converte e entrega ao engine, para nunca bloquear a thread
     da DLL. Eventos na fila (uma só, para manter a ordem de chegada):
-      ("trade", buy_agent, sell_agent, qty, price, trade_type, epoch_ou_None)
+      ("trade", buy_agent, sell_agent, qty, price, trade_type, epoch_ou_None, flags, trade_number)
+        (flags e trade_number são opcionais; flags com TC_IS_EDIT = edição, descartada)
       ("book",  lado (0 bid / 1 ask), price, qty, time.time() da chegada)
     """
 
@@ -235,8 +249,15 @@ class ProfitDLLBridge:
         self._parar = threading.Event()
         self._consumidor: Optional[threading.Thread] = None
         self._estado = {k: threading.Event() for k in ("login", "market", "ativacao")}
+        self._falha = threading.Event()          # login/ativação recusados: aborta a espera
+        self.motivo_falha: Optional[str] = None
+        self._conectado = False                  # True depois que os três estados ficaram OK
+        self.resultado_market: Optional[int] = None
         # Contadores (stats())
         self.trades_recebidos  = 0
+        self.trades_editados   = 0    # flag TC_IS_EDIT: edição de negócio já enviado (descartada)
+        self.quedas_market     = 0    # market data saiu de "conectado" depois do start
+        self.avisos_partial    = 0    # estado (2,6): callbacks atrasados ou perdidos
         self.trades_ignorados  = 0    # sem agressão (cross, leilão) ou inválidos
         self.horarios_fallback = 0    # TradeDate ausente/inválido → relógio local
         self.book_atualizacoes = 0
@@ -248,7 +269,12 @@ class ProfitDLLBridge:
     def stats(self) -> dict:
         """Contadores da ponte (bloco "dll" do GET /state)."""
         return {
+            "conectado":         self._conectado,
+            "estado_market":     NOMES_MARKET.get(self.resultado_market, self.resultado_market),
+            "quedas_market":     self.quedas_market,
+            "avisos_partial":    self.avisos_partial,
             "trades_recebidos":  self.trades_recebidos,
+            "trades_editados":   self.trades_editados,
             "trades_ignorados":  self.trades_ignorados,
             "horarios_fallback": self.horarios_fallback,
             "book_atualizacoes": self.book_atualizacoes,
@@ -354,12 +380,7 @@ class ProfitDLLBridge:
         dll.TranslateTrade.restype = c_int
 
         def on_estado(tipo, resultado):
-            if tipo == _LOGIN and resultado == _LOGIN_CONNECTED:
-                self._estado["login"].set()
-            elif tipo == _MARKET and resultado == _MARKET_CONNECTED:
-                self._estado["market"].set()
-            elif tipo == _ATIVACAO and resultado == _ATIVACAO_VALIDA:
-                self._estado["ativacao"].set()
+            self._on_estado(tipo, resultado)
 
         def on_trade(asset, p_trade, flags):
             # Só extrai e enfileira — roda na thread interna da DLL
@@ -370,7 +391,8 @@ class ProfitDLLBridge:
             # Horário convertido aqui mesmo (barato): a struct não sobrevive ao callback
             self.fila.put(("trade", int(trade.BuyAgent), int(trade.SellAgent),
                            int(trade.Quantity), float(trade.Price),
-                           int(trade.TradeType), horario_negocio(trade.TradeDate)))
+                           int(trade.TradeType), horario_negocio(trade.TradeDate),
+                           int(flags), int(trade.TradeNumber)))
 
         def on_tiny_book(asset, price, qty, side):
             # Só enfileira — o TinyBook não traz horário, marca a chegada
@@ -397,10 +419,82 @@ class ProfitDLLBridge:
         self.dll = dll
 
         dll.SetTradeCallbackV2(cb_trade)
-        for nome in ("login", "market", "ativacao"):
-            if not self._estado[nome].wait(self.timeout):
-                raise TimeoutError(f"conexão não completou em {self.timeout}s (faltou: {nome})")
-        logger.info("ProfitDLL conectada (login, market data e ativação OK)")
+        self._aguardar_conexao()
+
+    # ──────────────────────────────────────────────────────────
+    # ESTADO DA CONEXÃO (sem DLL, testável)
+    # ──────────────────────────────────────────────────────────
+
+    def _on_estado(self, tipo: int, resultado: int):
+        """
+        Trata o TStateCallback. Roda na thread da DLL: só atualiza flags,
+        contadores e log. Login/ativação recusados disparam _falha, que
+        aborta a espera de _aguardar_conexao na hora.
+        """
+        if tipo == _LOGIN:
+            if resultado == _LOGIN_CONNECTED:
+                self._estado["login"].set()
+            else:
+                self._estado["login"].clear()
+                self._registrar_falha(_FALHAS_LOGIN.get(resultado, f"login recusado (código {resultado})"))
+        elif tipo == _ATIVACAO:
+            if resultado == _ATIVACAO_VALIDA:
+                self._estado["ativacao"].set()
+            elif resultado == _ATIVACAO_INVALIDA:
+                self._estado["ativacao"].clear()
+                self._registrar_falha("ativação inválida (confira PROFITDLL_KEY)")
+        elif tipo == _MARKET:
+            self.resultado_market = resultado
+            if resultado == _MARKET_CONNECTED:
+                if not self._estado["market"].is_set() and self.quedas_market:
+                    logger.info("ProfitDLL: market data reconectado")
+                self._estado["market"].set()
+            elif resultado == _MARKET_PERFORMANCE_WARNING:
+                logger.warning("ProfitDLL: aviso de desempenho do market data (2,5)")
+            elif resultado == _MARKET_PARTIAL_CONNECTED:
+                self.avisos_partial += 1
+                logger.critical("ProfitDLL: estado (2,6) — callbacks atrasados ou perdidos; "
+                                "o programa não está consumindo os dados a tempo")
+            else:
+                if self._conectado and self._estado["market"].is_set():
+                    self.quedas_market += 1
+                    logger.error(f"ProfitDLL: market data caiu — "
+                                 f"{NOMES_MARKET.get(resultado, resultado)} (2,{resultado})")
+                self._estado["market"].clear()
+        self._conectado_agora()
+
+    def _conectado_agora(self) -> bool:
+        tudo_ok = all(e.is_set() for e in self._estado.values())
+        if tudo_ok:
+            self._conectado = True
+        elif self._conectado and not self._estado["market"].is_set():
+            self._conectado = False
+        return tudo_ok
+
+    def _registrar_falha(self, motivo: str):
+        self.motivo_falha = motivo
+        self._conectado = False
+        self._falha.set()
+        logger.error(f"ProfitDLL: {motivo}")
+
+    def _aguardar_conexao(self):
+        """
+        Espera login, market data e ativação. Falha de login/ativação aborta
+        na hora (RuntimeError com o motivo); sem resposta, TimeoutError
+        dizendo o que faltou.
+        """
+        limite = time.time() + self.timeout
+        while True:
+            if self._falha.is_set():
+                raise RuntimeError(f"conexão recusada: {self.motivo_falha}")
+            if self._conectado_agora():
+                logger.info("ProfitDLL conectada (login, market data e ativação OK)")
+                return
+            if time.time() >= limite:
+                faltou = [n for n, e in self._estado.items() if not e.is_set()]
+                raise TimeoutError(f"conexão não completou em {self.timeout}s "
+                                   f"(faltou: {', '.join(faltou)})")
+            self._falha.wait(0.05)
 
     # ──────────────────────────────────────────────────────────
     # CONSUMIDOR
@@ -426,7 +520,13 @@ class ProfitDLLBridge:
         except Exception as e:
             logger.error(f"Erro ao processar evento da DLL: {e}")
 
-    def _processar_trade(self, buy, sell, qty, price, ttype, ts):
+    def _processar_trade(self, buy, sell, qty, price, ttype, ts, flags=0, numero=None):
+        if flags & TC_IS_EDIT:
+            # Edição de um negócio já enviado. O manual não diz como casar com o
+            # original no V2; até confirmar no teste real, descarta e conta.
+            self.trades_editados += 1
+            logger.info(f"Edição de negócio #{numero}: {qty} @ {price} (tipo {ttype}) — ignorada")
+            return
         self.trades_recebidos += 1
         if ts is None:
             self.horarios_fallback += 1

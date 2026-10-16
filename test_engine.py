@@ -623,6 +623,81 @@ def test_profitdll_tempo_real():
         err(f"Bloco dll ausente/incorreto no /state: {estado.get('dll')}")
 
 
+def test_profitdll_correcoes():
+    print(f"\n{AMARELO}═══ TESTE 9c: ProfitDLL — edição de negócio e estados de conexão ═══{RESET}")
+
+    from profitdll.bridge import ProfitDLLBridge, AGRESSAO_COMPRA, TC_IS_EDIT
+
+    # P1: negócio editado (flag TC_IS_EDIT) não entra no engine como negócio novo
+    engine = FlowEngine("PETR4", EngineConfig(delta_window_sec=60.0))
+    bridge = ProfitDLLBridge("PETR4")
+    bridge.on_tick = engine.add_tick
+    t0 = 1_800_000_000.0
+    bridge._processar_evento(("trade", 3, 8, 100, 38.47, AGRESSAO_COMPRA, t0, 0, 501))
+    bridge._processar_evento(("trade", 3, 8, 100, 38.47, AGRESSAO_COMPRA, t0 + 0.1, TC_IS_EDIT, 501))
+    bridge._processar_evento(("trade", 3, 8, 200, 38.48, AGRESSAO_COMPRA, t0 + 0.2))  # formato antigo
+    st = bridge.stats()
+    state = engine.get_state()
+    if state["tick_count"] == 2 and state["delta"]["cumulative"] == 300:
+        ok("Edição de negócio não duplica volume nem delta")
+    else:
+        err(f"Edição entrou no engine: {state['tick_count']} ticks, delta {state['delta']}")
+    if st["trades_editados"] == 1 and st["trades_recebidos"] == 2:
+        ok("Edições contadas à parte em stats() (trades_editados)")
+    else:
+        err(f"Contadores com edição incorretos: {st}")
+
+    # P2: login/ativação inválidos abortam a espera na hora, com motivo legível
+    for tipo, resultado, trecho in ((0, 2, "senha inválida"), (0, 1, "login inválido"),
+                                    (0, 3, "senha bloqueada"), (3, 1, "ativação inválida")):
+        b = ProfitDLLBridge("PETR4", timeout=5)
+        b._on_estado(tipo, resultado)
+        inicio = time.time()
+        try:
+            b._aguardar_conexao()
+            err(f"({tipo},{resultado}) não abortou a conexão")
+        except RuntimeError as e:
+            if trecho in str(e).lower() and time.time() - inicio < 1:
+                ok(f"({tipo},{resultado}) aborta na hora: {e}")
+            else:
+                err(f"({tipo},{resultado}) mensagem/tempo errados: {e!r} em {time.time() - inicio:.1f}s")
+
+    b = ProfitDLLBridge("PETR4", timeout=0.3)
+    b._on_estado(0, 0)
+    b._on_estado(3, 0)
+    try:
+        b._aguardar_conexao()
+        err("Timeout sem market data não foi detectado")
+    except TimeoutError as e:
+        if "market" in str(e):
+            ok(f"Timeout aponta o que faltou: {e}")
+        else:
+            err(f"Timeout sem dizer o que faltou: {e}")
+
+    # Conectado → queda do market data, aviso (2,6) e reconexão
+    b = ProfitDLLBridge("PETR4", timeout=1)
+    for tipo, resultado in ((0, 0), (2, 4), (3, 0)):
+        b._on_estado(tipo, resultado)
+    b._aguardar_conexao()
+    if b.stats()["conectado"] and b.stats()["estado_market"] == "conectado":
+        ok("Conexão completa: login, market data e ativação")
+    else:
+        err(f"Estado após conectar: {b.stats()}")
+    b._on_estado(2, 6)
+    b._on_estado(2, 0)
+    st = b.stats()
+    if st["avisos_partial"] == 1 and st["quedas_market"] == 1 and not st["conectado"] \
+            and st["estado_market"] == "desconectado":
+        ok("Aviso (2,6) e queda do market data registrados em stats()")
+    else:
+        err(f"Queda/aviso não registrados: {st}")
+    b._on_estado(2, 4)
+    if b.stats()["conectado"] and b.stats()["quedas_market"] == 1:
+        ok("Market data reconectado volta ao estado conectado")
+    else:
+        err(f"Reconexão não reconhecida: {b.stats()}")
+
+
 def test_rtd():
     print(f"\n{AMARELO}═══ TESTE 10: Inferência de negócios do RTD ═══{RESET}")
 
@@ -1295,6 +1370,50 @@ def test_replay_deterministico():
         err(f"Grid incorreto: {linhas}")
 
 
+def test_historico_limites():
+    print(f"\n{AMARELO}═══ TESTE 16b: Histórico — limite de 30 dias da DLL ═══{RESET}")
+
+    import tempfile
+    from datetime import date
+    from profitdll.historico import (validar_janela_historico, BaixadorHistorico,
+                                     NL_HISTORY_PERIOD_LIMIT, NL_INVALID_ARGS, LIMITE_DIAS_HISTORICO)
+
+    hoje = date(2026, 10, 16)
+    try:
+        validar_janela_historico(date(2026, 9, 16), hoje)
+        ok(f"Início a {LIMITE_DIAS_HISTORICO} dias de hoje é aceito")
+    except ValueError as e:
+        err(f"Limite exato recusado: {e}")
+    try:
+        validar_janela_historico(date(2026, 9, 15), hoje)
+        err("Início com mais de 30 dias não foi recusado")
+    except ValueError as e:
+        if "30 dias" in str(e):
+            ok(f"Início com mais de 30 dias recusado antes de conectar: {e}")
+        else:
+            err(f"Mensagem não cita o limite: {e}")
+
+    class DLLFalsa:
+        def __init__(self, ret):
+            self.ret, self.chamadas = ret, 0
+
+        def GetHistoryTrades(self, *args):
+            self.chamadas += 1
+            return self.ret
+
+    for ret, nome in ((NL_HISTORY_PERIOD_LIMIT, "NL_HISTORY_PERIOD_LIMIT"),
+                      (NL_INVALID_ARGS, "NL_INVALID_ARGS")):
+        baixador = BaixadorHistorico("PETR4", timeout_dia=1)
+        baixador.dll = DLLFalsa(ret)
+        with tempfile.TemporaryDirectory() as pasta:
+            resumo = baixador.baixar_periodo([date(2026, 10, 15)], pasta + "/{data}.csv",
+                                             "09:00", "18:00", tentativas=3)
+        if baixador.dll.chamadas == 1 and resumo["dias_falhos"] == ["2026-10-15"]:
+            ok(f"{nome}: dia marcado como falho sem repetir a tentativa")
+        else:
+            err(f"{nome}: {baixador.dll.chamadas} chamadas, resumo {resumo}")
+
+
 def test_historico_dll():
     print(f"\n{AMARELO}═══ TESTE 16: Histórico pela ProfitDLL → CSV do replay ═══{RESET}")
 
@@ -1722,6 +1841,7 @@ def main():
     test_sem_exaustao()
     test_profitdll()
     test_profitdll_tempo_real()
+    test_profitdll_correcoes()
     test_rtd()
     test_api_http()
     test_iceberg_passiva()
@@ -1733,6 +1853,7 @@ def main():
     test_replay_gravacao()
     test_replay_deterministico()
     test_historico_dll()
+    test_historico_limites()
     test_fuso_csv()
     test_argumentos_cli()
     test_desempenho_estado()

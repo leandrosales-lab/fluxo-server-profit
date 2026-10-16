@@ -11,7 +11,9 @@ com a ProfitDLL":
   - GetHistoryTrades(ticker, bolsa, dataInicial, dataFinal) pede o período;
   - THistoryTradeCallback é chamado uma vez por negócio;
   - TProgressCallback informa o progresso (0–100); 100 = terminou;
-  - no máximo 10 dias por requisição — aqui pedimos DIA A DIA;
+  - a data inicial não pode ter mais de 30 dias (NL_HISTORY_PERIOD_LIMIT) e,
+    só para WIN/WDO, o intervalo não pode chegar a 10 dias (NL_INVALID_ARGS)
+    — aqui pedimos DIA A DIA e validamos os 30 dias antes de conectar;
   - formato de data ESTRITO '%d/%m/%Y %H:%M:%S' (sempre via strftime).
 
 Uso (Windows, mesmas variáveis PROFITDLL_* do modo dll):
@@ -58,10 +60,33 @@ HORA_INICIO_PADRAO = "09:00:00"
 HORA_FIM_PADRAO    = "18:35:00"
 SAIDA_PADRAO       = os.path.join("historico", "{asset}_{data}.csv")
 
+# Limites da DLL (manual p.30): data inicial com mais de 30 dias em relação à
+# data do servidor → NL_HISTORY_PERIOD_LIMIT; WIN/WDO com intervalo de 10 dias
+# ou mais → NL_INVALID_ARGS (como pedimos dia a dia, só o de 30 dias importa).
+LIMITE_DIAS_HISTORICO   = 30
+NL_INVALID_ARGS         = -2147483645
+NL_HISTORY_PERIOD_LIMIT = -2147483602
+_ERROS_DEFINITIVOS = {NL_HISTORY_PERIOD_LIMIT: "NL_HISTORY_PERIOD_LIMIT (data com mais de 30 dias)",
+                      NL_INVALID_ARGS: "NL_INVALID_ARGS (argumentos recusados pela DLL)"}
+
+
+class ErroDefinitivoHistorico(ValueError):
+    """A DLL recusou o pedido de um jeito que tentar de novo não resolve."""
+
 
 # ──────────────────────────────────────────────────────────────
 # FUNÇÕES PURAS (testadas sem a DLL)
 # ──────────────────────────────────────────────────────────────
+
+def validar_janela_historico(inicio: date, hoje: Optional[date] = None):
+    """Recusa (ValueError) um início além do limite de 30 dias da DLL."""
+    hoje = hoje or date.today()
+    mais_antigo = hoje - timedelta(days=LIMITE_DIAS_HISTORICO)
+    if inicio < mais_antigo:
+        raise ValueError(f"a ProfitDLL só entrega histórico dos últimos {LIMITE_DIAS_HISTORICO} dias: "
+                         f"o início mais antigo possível hoje é {mais_antigo:%d/%m/%Y} "
+                         f"(pedido: {inicio:%d/%m/%Y})")
+
 
 def data_b3_para_epoch(txt: str) -> float:
     """
@@ -321,6 +346,8 @@ class BaixadorHistorico:
         self.progresso = 0
 
         ret = self.dll.GetHistoryTrades(self.asset, self.exchange, inicio, fim)
+        if ret in _ERROS_DEFINITIVOS:
+            raise ErroDefinitivoHistorico(f"GetHistoryTrades recusado: {_ERROS_DEFINITIVOS[ret]}")
         if ret != 0:
             raise RuntimeError(f"GetHistoryTrades falhou: código {ret}")
 
@@ -366,6 +393,9 @@ class BaixadorHistorico:
                     logger.info(f"{dia.strftime('%d/%m/%Y')}: download em "
                                 f"{time.time() - t0:.1f}s")
                     break
+                except ErroDefinitivoHistorico as e:
+                    erro = e
+                    break                       # repetir não adianta
                 except (RuntimeError, TimeoutError) as e:
                     erro = e
                     logger.warning(f"{dia.strftime('%d/%m/%Y')}: tentativa "
@@ -427,6 +457,7 @@ def main(argv=None) -> int:
         fim = ler_data(args.fim) if args.fim else inicio
         dias = dias_uteis(inicio, fim)
         janela_do_dia(inicio, args.hora_inicio, args.hora_fim)     # valida as horas
+        validar_janela_historico(inicio)                           # limite de 30 dias da DLL
     except ValueError as e:
         logger.error(str(e))
         return 2
