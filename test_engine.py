@@ -2157,6 +2157,7 @@ def test_api_reconectar():
     class PonteFalsa:
         def __init__(self):
             self.ok, self.motivo_falha, self.chamadas = True, None, []
+            self.ocupado = False
             self.liberar = threading.Event()
 
         def stop(self):
@@ -2227,6 +2228,14 @@ def test_api_reconectar():
         else:
             err(f"reconexão: {rec} {ponte.chamadas}")
 
+        ponte.ocupado = True                     # conexão inicial do main.py ainda em curso
+        cod, corpo = post("/dll/reconectar")
+        ponte.ocupado = False
+        if cod == 409 and "conex" in corpo["error"] and ponte.chamadas == ["stop", "start"]:
+            ok("Ponte ocupada (conexão em curso) → 409, sem mexer no processo")
+        else:
+            err(f"ponte ocupada: {cod} {corpo} {ponte.chamadas}")
+
         ponte.ok = False
         post("/dll/reconectar")
         rec = esperar_fim()
@@ -2246,6 +2255,10 @@ def env(m):
 env({"tipo": "log", "nivel": "INFO", "origem": "ProfitDLL", "msg": "filho falso: " + modo})
 if modo == "falha":
     env({"tipo": "inicio", "ok": False, "motivo": "senha inválida"}); sys.exit(0)
+if modo == "lento":                 # login demorado (a conexão inicial ainda em curso)
+    time.sleep(1.5)
+if modo == "mudo":                  # nunca responde e ignora o "stop"
+    time.sleep(60); sys.exit(0)
 env({"tipo": "inicio", "ok": True})
 if modo == "morre":
     time.sleep(0.3); sys.exit(3)
@@ -2263,9 +2276,13 @@ while not parar.wait(0.1):
 def test_dll_processo_filho():
     print(f"\n{AMARELO}═══ TESTE 26: ProfitDLL em processo filho ═══{RESET}")
 
+    import io
+    import json
     import logging
     import tempfile
-    from profitdll.processo import PonteDLLProcesso, tick_para_msg, msg_para_tick, book_para_msg, msg_para_book
+    import threading
+    from profitdll.processo import (PonteDLLProcesso, main_filho, tick_para_msg, msg_para_tick,
+                                    book_para_msg, msg_para_book)
 
     t = Tick(1000.5, 5078.5, 3, "XP", Side.SELL, passive_broker="UBS")
     t2 = msg_para_tick(tick_para_msg(t))
@@ -2345,6 +2362,62 @@ def test_dll_processo_filho():
             else:
                 err(f"filho morto: {st}")
             p.stop()
+
+            # Filho que nunca responde: start() desiste no prazo e mata o processo sem esperar o "stop"
+            p = PonteDLLProcesso("WDOFUT", timeout=1, folga=0.5, comando=[sys.executable, script, "mudo"])
+            inicio = time.time()
+            conectou = p.start()
+            gasto = time.time() - inicio
+            if not conectou and "não respondeu" in (p.motivo_falha or "") and gasto < 5 \
+                    and not p.stats()["processo"]["vivo"]:
+                ok(f"Filho que não responde: start() desiste em {gasto:.1f} s e mata o processo")
+            else:
+                err(f"filho mudo: {conectou} {p.motivo_falha} {gasto:.1f}s {p.stats()['processo']}")
+
+            # Conexão em curso: ocupado; um stop() concorrente espera o start() e encerra o filho certo
+            p, _, _ = ponte("lento")
+            resultado = {}
+            th = threading.Thread(target=lambda: resultado.update(ok=p.start()))
+            th.start()
+            time.sleep(0.4)
+            ocupado = p.ocupado and p.stats()["ocupado"]
+            p.stop()
+            th.join(10)
+            if ocupado and resultado.get("ok") is True and not p.stats()["processo"]["vivo"] and not p.ocupado:
+                ok("start()/stop() serializados: stop() no meio da conexão espera e encerra o filho certo")
+            else:
+                err(f"concorrência: ocupado={ocupado} {resultado} {p.stats()['processo']}")
+
+            # main_filho com uma ponte falsa: protocolo no stdout, EOF no stdin chama bridge.stop()
+            class PonteFalsaFilho:
+                def __init__(self):
+                    self.motivo_falha, self.parou, self.on_tick, self.on_book = None, False, None, None
+
+                def start(self):
+                    logging.getLogger("ProfitDLL").info("conectada (falsa)")
+                    self.on_tick(Tick(1000.0, 10.0, 1, "XP", Side.BUY))
+                    return True
+
+                def stop(self):
+                    self.parou = True
+
+                def stats(self):
+                    return {"conectado": not self.parou}
+
+            criadas = []
+            saida = io.StringIO()
+            stdout_antes = sys.stdout
+            codigo = main_filho(["--asset", "WDOFUT"], fabrica_ponte=lambda *a, **k: criadas.append(PonteFalsaFilho())
+                                or criadas[-1], entrada=io.StringIO(""), saida=saida)
+            msgs = [json.loads(linha) for linha in saida.getvalue().splitlines()]
+            tipos = [m["tipo"] for m in msgs]
+            if codigo == 0 and sys.stdout is stdout_antes and criadas and criadas[0].parou \
+                    and {"tipo": "inicio", "ok": True, "motivo": None} in msgs and "tick" in tipos \
+                    and any(m["tipo"] == "log" and m["msg"] == "conectada (falsa)" for m in msgs) \
+                    and tipos[-1] == "stats":
+                ok("main_filho: log, inicio, tick e stats no protocolo; EOF no stdin para a ponte")
+            else:
+                err(f"main_filho: código {codigo}, tipos {tipos}, parou {criadas and criadas[0].parou}")
         finally:
             lg.removeHandler(captura)
             lg.setLevel(nivel_antigo)

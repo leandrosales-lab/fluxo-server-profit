@@ -31,6 +31,7 @@ export function latenciaValida(ms) { return ms != null && ms < 60000; }
 export function textoStatus(dll, fonte) {
   if (!dll) return [`fonte: ${fonte || "—"}`, false];
   if (dll.reconexao?.em_andamento) return ["reconectando…", true];
+  if (dll.ocupado) return ["conectando…", true];        // conexão inicial ainda em curso
   const market = dll.estados?.market;
   if (dll.conectado && market?.codigo === 6) return ["ProfitDLL conectado (2,6) · callbacks atrasados", true];
   if (dll.conectado) {

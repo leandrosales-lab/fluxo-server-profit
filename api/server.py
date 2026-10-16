@@ -350,6 +350,9 @@ class FlowHandler(BaseHTTPRequestHandler):
                 if FlowHandler.reconexao["em_andamento"]:
                     self._send_json({"error": "reconexão já em andamento"}, 409)
                     return
+                if getattr(self.dll, "ocupado", False):   # conexão inicial do main.py ainda em curso
+                    self._send_json({"error": "conexão da ProfitDLL em curso"}, 409)
+                    return
                 FlowHandler.reconexao = {"em_andamento": True, "ultima": time.time(), "resultado": None}
             threading.Thread(target=FlowHandler._reconectar, args=(self.dll,), daemon=True).start()
             self._send_json({"ok": True, "reconexao": dict(FlowHandler.reconexao)}, 202)

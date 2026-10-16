@@ -77,10 +77,11 @@ class PonteDLLProcesso:
 
     def __init__(self, asset: str, exchange: Optional[str] = None,
                  agentes_path: Optional[str] = None, timeout: int = 30,
-                 comando: Optional[list] = None):
+                 comando: Optional[list] = None, folga: float = 15.0):
         self.asset = asset
         self.exchange = exchange or bolsa_padrao(asset)
         self.timeout = timeout
+        self.folga = folga                         # além do timeout da DLL: subir o Python e carregar a DLL
         self.on_tick: Optional[Callable[[Tick], None]] = None
         self.on_book: Optional[Callable[[list[BookLevel]], None]] = None
         self.motivo_falha: Optional[str] = None
@@ -96,12 +97,28 @@ class PonteDLLProcesso:
         self._inicio_ok = False
         self._parando = False
         self._trava = threading.Lock()
-        self._ultimo: dict = {}                    # stats mais recentes do filho atual
+        # start()/stop() um de cada vez: a conexão inicial (main.py), o Reconectar e o Ctrl+C
+        # podem chegar de threads diferentes e não podem mexer no mesmo filho ao mesmo tempo
+        self._ciclo = threading.Lock()
+        self._ultimo: dict = {}                   # stats mais recentes do filho atual
         self._base: dict = {k: 0 for k in CONTADORES}
         self._base_tipos: dict[str, int] = {}
 
     # ── ciclo de vida
+    @property
+    def ocupado(self) -> bool:
+        """True enquanto um start()/stop() está em curso (o servidor responde 409 ao Reconectar)."""
+        return self._ciclo.locked()
+
     def start(self) -> bool:
+        with self._ciclo:
+            return self._start()
+
+    def stop(self):
+        with self._ciclo:
+            self._encerrar_filho()
+
+    def _start(self) -> bool:
         self.motivo_falha = None
         self._parando = False
         self._inicio.clear()
@@ -121,18 +138,19 @@ class PonteDLLProcesso:
         self._leitor.start()
         threading.Thread(target=self._ler_erros, args=(self._proc,), daemon=True).start()
 
-        if not self._inicio.wait(self.timeout + 15):
+        if not self._inicio.wait(self.timeout + self.folga):
+            # o filho só lê o "stop" depois que o login termina: esperar por ele seria inútil
             self.motivo_falha = "processo da ProfitDLL não respondeu"
+            self._parando = True
+            self._proc.kill()
         if self._inicio_ok:
+            self.motivo_falha = None
             logger.info(f"ProfitDLL rodando no processo filho (pid {self._proc.pid})")
             return True
         if not self.motivo_falha:
             self.motivo_falha = "falha ao conectar"
         self._encerrar_filho()
         return False
-
-    def stop(self):
-        self._encerrar_filho()
 
     def _encerrar_filho(self):
         proc = self._proc
@@ -212,7 +230,8 @@ class PonteDLLProcesso:
         with self._trava:
             ultimo = dict(self._ultimo)
             base, base_tipos = dict(self._base), dict(self._base_tipos)
-        vivo = self._proc is not None and self._proc.poll() is None
+        proc = self._proc                         # cópia local: o Reconectar pode zerar self._proc
+        vivo = proc is not None and proc.poll() is None
         st = {
             "conectado": False, "estado_market": None, "fila_pendente": 0, "bid": None, "ask": None,
             "estados": {"login": None, "ativacao": None, "market": None}, "latencia_ms": None,
@@ -228,7 +247,8 @@ class PonteDLLProcesso:
         st["ignorados_por_tipo"] = tipos
         st["conectado"] = bool(vivo and ultimo.get("conectado"))
         st["motivo_falha"] = self.motivo_falha or ultimo.get("motivo_falha")
-        st["processo"] = {"pid": self._proc.pid if vivo else None, "vivo": vivo}
+        st["processo"] = {"pid": proc.pid if vivo else None, "vivo": vivo}
+        st["ocupado"] = self.ocupado
         return st
 
 
@@ -236,8 +256,13 @@ class PonteDLLProcesso:
 # FILHO: roda a ProfitDLLBridge e fala o protocolo no stdout
 # ──────────────────────────────────────────────────────────────
 
-def main_filho(argv=None) -> int:
-    from profitdll.bridge import ProfitDLLBridge
+def main_filho(argv=None, fabrica_ponte=None, entrada=None, saida=None) -> int:
+    """
+    Corpo do processo filho. fabrica_ponte, entrada e saida existem para o teste
+    (ponte falsa e streams em memória); no uso real ficam None.
+    """
+    if fabrica_ponte is None:
+        from profitdll.bridge import ProfitDLLBridge as fabrica_ponte
 
     p = argparse.ArgumentParser(description="ProfitDLL em processo filho do Fluxo Server")
     p.add_argument("--asset", required=True)
@@ -246,8 +271,11 @@ def main_filho(argv=None) -> int:
     p.add_argument("--timeout", default=30, type=int)
     args = p.parse_args(argv)
 
-    saida = sys.stdout
-    sys.stdout = sys.stderr            # o stdout real é só do protocolo; print perdido vai para o stderr
+    entrada = entrada or sys.stdin
+    stdout_original = None
+    if saida is None:
+        saida, stdout_original = sys.stdout, sys.stdout
+        sys.stdout = sys.stderr        # o stdout real é só do protocolo; print perdido vai para o stderr
     trava = threading.Lock()
 
     def enviar(m: dict):
@@ -262,23 +290,31 @@ def main_filho(argv=None) -> int:
             except Exception:
                 pass
 
-    logging.basicConfig(level=logging.INFO, handlers=[HandlerProtocolo()])
+    raiz = logging.getLogger()
+    handler = HandlerProtocolo(logging.INFO)
+    raiz.addHandler(handler)
+    if raiz.level > logging.INFO or raiz.level == logging.NOTSET:
+        raiz.setLevel(logging.INFO)
+    try:
+        bridge = fabrica_ponte(args.asset, args.bolsa, args.agentes, timeout=args.timeout)
+        bridge.on_tick = lambda t: enviar(tick_para_msg(t))
+        bridge.on_book = lambda niveis: enviar(book_para_msg(niveis, time.time()))
+        ok = bridge.start()
+        enviar({"tipo": "inicio", "ok": ok, "motivo": bridge.motivo_falha})
+        if not ok:
+            return 1
 
-    bridge = ProfitDLLBridge(args.asset, args.bolsa, args.agentes, timeout=args.timeout)
-    bridge.on_tick = lambda t: enviar(tick_para_msg(t))
-    bridge.on_book = lambda niveis: enviar(book_para_msg(niveis, time.time()))
-    ok = bridge.start()
-    enviar({"tipo": "inicio", "ok": ok, "motivo": bridge.motivo_falha})
-    if not ok:
-        return 1
-
-    parar = threading.Event()
-    threading.Thread(target=lambda: (sys.stdin.readline(), parar.set()), daemon=True).start()
-    while not parar.wait(0.5):
+        parar = threading.Event()        # qualquer linha ou EOF no stdin (pai encerrou) = parar
+        threading.Thread(target=lambda: (entrada.readline(), parar.set()), daemon=True).start()
+        while not parar.wait(0.5):
+            enviar({"tipo": "stats", "dados": bridge.stats()})
+        bridge.stop()
         enviar({"tipo": "stats", "dados": bridge.stats()})
-    bridge.stop()
-    enviar({"tipo": "stats", "dados": bridge.stats()})
-    return 0
+        return 0
+    finally:
+        raiz.removeHandler(handler)
+        if stdout_original is not None:
+            sys.stdout = stdout_original
 
 
 if __name__ == "__main__":

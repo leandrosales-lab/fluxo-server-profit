@@ -1,5 +1,6 @@
 // Gráfico do Operar: candles, VWAP tracejada, volume por lado e delta acumulado (Lightweight Charts 5.2.1).
 import { horaB3, hm, preco, compacto } from "./formato.js";
+import { juntarCandles } from "./candles.js";
 
 const LW = window.LightweightCharts;
 const LETRA = { "Absorção": "A", "Exaustão": "E", "Iceberg": "I", "Urgência": "U", "BestOffer": "O" };
@@ -88,12 +89,10 @@ export function criarGrafico(el, casasIniciais) {
     get tf() { return tf; },
     /** Troca o timeframe: limpa; o próximo /candles sem since recarrega o dia. */
     trocarTf(novo) { tf = novo; candles = []; redesenhar(); },
-    /** Junta candles novos ou alterados (o since repete o último, que ainda pode mudar). */
+    /** Junta candles novos ou alterados (o since volta um candle: negócio atrasado muda o anterior). */
     juntar(novos) {
       if (!novos.length) return;
-      const porTempo = new Map(candles.map((c) => [c.time, c]));
-      for (const c of novos) porTempo.set(c.time, c);
-      candles = [...porTempo.values()].sort((a, b) => a.time - b.time);
+      candles = juntarCandles(candles, novos);
       redesenhar();
     },
     limpar() { candles = []; sinais = []; redesenhar(); },

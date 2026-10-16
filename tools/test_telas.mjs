@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import * as f from "../api/static/js/formato.js";
 import { textoStatus } from "../api/static/js/shell.js";
 import { tituloSinal, loteGrandePadrao } from "../api/static/js/operar-paineis.js";
+import { sinceCandles, juntarCandles } from "../api/static/js/candles.js";
 
 assert.equal(f.preco(38.47), "38,47");
 assert.equal(f.preco(5078.5, 1), "5.078,5");
@@ -41,5 +42,16 @@ assert.equal(tituloSinal({ signal: "SELL", pattern: "Iceberg" }), "Iceberg vende
 assert.equal(tituloSinal({ signal: "SELL", pattern: "BestOffer" }), "Melhor oferta vendedora");
 assert.equal(loteGrandePadrao("WDOFUT"), 50);
 assert.equal(loteGrandePadrao("PETR4"), 5000);
+
+// conexão inicial ainda em curso (ponte ocupada): alerta, não "desconectado"
+assert.deepEqual(textoStatus({ conectado: false, ocupado: true, estados: {}, reconexao: {} }, "ProfitDLL"),
+  ["conectando…", true]);
+
+// negócio atrasado muda o candle anterior: o since volta um candle e o juntar substitui por time
+assert.equal(sinceCandles(1020, 60), 960);
+assert.equal(sinceCandles(null, 60), null);
+const juntos = juntarCandles([{ time: 960, volume: 5 }, { time: 1020, volume: 1 }],
+                             [{ time: 960, volume: 7 }, { time: 1020, volume: 2 }, { time: 1080, volume: 1 }]);
+assert.deepEqual(juntos.map((c) => [c.time, c.volume]), [[960, 7], [1020, 2], [1080, 1]]);
 
 console.log("test_telas.mjs: tudo certo");

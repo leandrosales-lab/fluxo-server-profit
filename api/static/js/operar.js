@@ -3,6 +3,7 @@ import { getJSON, laco } from "./api.js";
 import { montarShell } from "./shell.js";
 import { criarGrafico } from "./operar-grafico.js";
 import { criarPaineis } from "./operar-paineis.js";
+import { sinceCandles } from "./candles.js";
 import { casasDoTick, preco, comSinal, inteiro, financeiro, pct } from "./formato.js";
 
 const $ = (id) => document.getElementById(id);
@@ -79,7 +80,7 @@ async function passo() {
   atualizarFaixa(estado);
 
   const tfPedido = grafico.tf;
-  const since = grafico.ultimoTempo();
+  const since = sinceCandles(grafico.ultimoTempo(), tfPedido);
   const c = await getJSON(`/candles?tf=${tfPedido}${since != null ? `&since=${since}` : ""}`);
   if (tfPedido === grafico.tf) grafico.juntar(c.candles);   // troca de tf no meio do pedido: descarta
   const u = grafico.ultimoCandle();

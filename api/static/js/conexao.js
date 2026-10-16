@@ -55,8 +55,11 @@ function registrarAmostra(dll) {
 
 // ── Faixa de estados e Reconectar
 function faixaEstados(dll) {
-  const rec = dll.reconexao || {};
-  const [texto, detalhe] = rec.em_andamento ? ["Reconectando…", "aguardando login, ativação e market data"]
+  const rec = { ...(dll.reconexao || {}) };
+  const reconectando = !!rec.em_andamento;
+  if (dll.ocupado) rec.em_andamento = true;        // conexão inicial em curso: botão desabilitado também
+  const [texto, detalhe] = rec.em_andamento
+    ? [reconectando ? "Reconectando…" : "Conectando…", "aguardando login, ativação e market data"]
     : dll.conectado ? ["Conectado", `${dll.ativo} · bolsa ${dll.bolsa}`]
     : ["Desconectado", dll.motivo_falha || "sem conexão com a ProfitDLL"];
   $("c-agregado").textContent = texto;
