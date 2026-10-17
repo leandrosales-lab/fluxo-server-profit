@@ -124,6 +124,29 @@ verificacoes.push(["operar: reset com a tela aberta", async (page) => {
   checar(true, "reset limpa faixa e manchete sem recarregar");
 }]);
 
+// Notebook 15,6" Full HD com o Windows em 125% / 150% → área útil de 1536×864 / 1280×720
+verificacoes.push(["telas cabem no notebook", async (page) => {
+  for (const [w, h] of [[1536, 864], [1280, 720]]) {
+    await page.setViewportSize({ width: w, height: h });
+    for (const rota of ["operar", "conexao"]) {
+      await page.goto(`${BASE}/${rota}`);
+      await esperar(2500);
+      const m = await page.evaluate(() => {
+        const d = document.documentElement, f = document.querySelector(".faixa");
+        const cortados = [...document.querySelectorAll(".secao")].filter((s) =>
+          getComputedStyle(s).overflowY !== "auto" && s.scrollHeight > s.clientHeight + 1).length;
+        return { sw: d.scrollWidth, sh: d.scrollHeight, w: innerWidth, h: innerHeight,
+                 faixa: f.scrollWidth - f.clientWidth, cortados };
+      });
+      checar(m.sw <= m.w && m.sh <= m.h, `${rota} ${w}×${h}: sem rolagem (${m.sw}×${m.sh})`);
+      checar(m.faixa <= 1, `${rota} ${w}×${h}: faixa de números inteira (sobra ${m.faixa}px)`);
+      checar(m.cortados === 0, `${rota} ${w}×${h}: nenhuma seção com conteúdo escondido (${m.cortados})`);
+      await page.screenshot({ path: path.join(SAIDA, `${rota}-${w}x${h}.png`) });
+    }
+  }
+  await page.setViewportSize({ width: 1920, height: 1080 });
+}]);
+
 verificacoes.push(["conexão", async (page) => {
   await page.goto(`${BASE}/conexao`);
   await page.waitForFunction(() => document.querySelectorAll("#log tr").length > 0, null, { timeout: 10000 });

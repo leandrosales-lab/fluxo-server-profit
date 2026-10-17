@@ -22,8 +22,8 @@
     <div class="metrica"><span class="rotulo">VWAP</span><span class="valor"><span id="f-vwap">—</span><small id="f-vwap-dist"></small></span></div>
     <div class="metrica"><span class="rotulo">Agressão compra × venda</span><span class="valor" id="f-agr">—</span></div>
     <div class="metrica"><span class="rotulo">Negócios</span><span class="valor" id="f-npm">—</span></div>
-    <div class="metrica"><span class="rotulo">Máxima · mínima</span><span class="valor" id="f-maxmin">—</span></div>
-    <div class="metrica"><span class="rotulo">Abertura · ajuste ant.</span><span class="valor" id="f-abert">—</span></div>
+    <div class="metrica opcional"><span class="rotulo">Máxima · mínima</span><span class="valor" id="f-maxmin">—</span></div>
+    <div class="metrica opcional"><span class="rotulo">Abertura · ajuste ant.</span><span class="valor" id="f-abert">—</span></div>
   </section>
   <main class="corpo">
     <section class="secao">
@@ -51,17 +51,17 @@
       <div class="bloco-baixo">
         <section class="secao">
           <div class="cab"><h2>Times &amp; Trades</h2><span class="acoes meta" id="tt-meta"></span></div>
-          <table class="fita"><colgroup><col style="width:84px"><col style="width:58px"><col style="width:56px"><col style="width:26px"><col><col></colgroup>
+          <table class="fita tt"><colgroup><col><col><col><col><col><col></colgroup>
             <thead><tr><th>Hora</th><th class="num">Preço</th><th class="num">Qtd</th><th>Ag</th><th>Compra</th><th>Venda</th></tr></thead></table>
-          <div class="rolagem"><table class="fita"><colgroup><col style="width:84px"><col style="width:58px"><col style="width:56px"><col style="width:26px"><col><col></colgroup><tbody id="tt"></tbody></table></div>
+          <div class="rolagem"><table class="fita tt"><colgroup><col><col><col><col><col><col></colgroup><tbody id="tt"></tbody></table></div>
         </section>
         <section class="secao">
           <div class="cab"><h2>Defesas</h2><span class="meta" id="defesas-nota"></span></div>
           <table><tbody><tr class="spread"><td id="spread">—</td></tr></tbody></table>
-          <table class="defesas"><colgroup><col style="width:120px"><col><col style="width:58px"><col style="width:68px"></colgroup>
+          <table class="defesas def"><colgroup><col><col><col><col></colgroup>
             <thead><tr><th>Tipo</th><th>Corretora</th><th class="num">Preço</th><th class="num">Há</th></tr></thead>
             <tbody id="defesas"></tbody></table>
-          <table class="eventos"><colgroup><col style="width:92px"><col></colgroup><tbody id="defesas-eventos"></tbody></table>
+          <table class="eventos"><colgroup><col><col></colgroup><tbody id="defesas-eventos"></tbody></table>
           <div class="cab"><h2>Saldo das corretoras</h2><span class="acoes meta">ações, dia</span></div>
           <div class="rolagem"><table><colgroup><col><col style="width:90px"><col style="width:96px"></colgroup><tbody id="saldo"></tbody></table></div>
         </section>

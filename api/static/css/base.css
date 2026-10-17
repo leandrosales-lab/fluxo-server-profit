@@ -5,7 +5,7 @@ body { font: 400 13px/18px "IBM Plex Sans", system-ui, sans-serif; font-variant-
 button { font: inherit; }
 .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
 
-.tela { display: grid; grid-template-rows: 32px 80px minmax(0, 1fr) 28px; height: 100vh; min-width: 1280px; }
+.tela { display: grid; grid-template-rows: 32px 80px minmax(0, 1fr) 28px; height: 100vh; min-width: 1180px; }
 
 /* Barra de 32px */
 .topo { display: flex; align-items: stretch; padding: 0 16px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
@@ -45,8 +45,8 @@ button { font: inherit; }
 .faint { color: var(--faint); }
 .ambar { color: var(--accent); }
 
-/* Corpo: conteúdo principal | coluna de apoio de 800px (x = 1120 em 1920) */
-.corpo { display: grid; grid-template-columns: minmax(0, 1fr) 800px; min-height: 0; }
+/* Corpo: conteúdo principal | coluna de apoio (800px em 1920; encolhe no notebook) */
+.corpo { display: grid; grid-template-columns: minmax(0, 1fr) clamp(560px, 42vw, 800px); min-height: 0; }
 .secao { display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--rule); }
 .corpo > .secao:first-child { border-left: 0; }
 .cab { display: flex; align-items: baseline; gap: 16px; height: 36px; padding: 9px 16px 0; flex: 0 0 auto; }
@@ -79,3 +79,16 @@ tr.destaque { background: var(--raise); }
 .botao.primario { background: var(--text); color: var(--inv); border-color: var(--text); }
 .botao:disabled { background: none; color: var(--faint); border-color: var(--rule); cursor: default; }
 .vazio-msg { color: var(--muted); padding: 16px; }
+
+/* Notebook 15,6" (125% → 1536px, 150% → 1280px): faixa e topo mais compactos; números de apoio somem por último */
+@media (max-width: 1700px) {
+  .metrica { padding: 0 12px; }
+  .metrica .valor { font-size: 19px; line-height: 24px; }
+  .heroi { font-size: 44px; line-height: 48px; }
+  .topo .direita { gap: 16px; }
+}
+@media (max-width: 1450px) {
+  .faixa .opcional { display: none; }
+  .metrica { padding: 0 10px; }
+  .metrica .valor small { display: none; }
+}
