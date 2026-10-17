@@ -155,8 +155,15 @@ class DefesaDetector:
     def ativas(self) -> list:
         return list(self._confirmadas.values())
 
-    def icebergs_ativos(self) -> list:
-        return list(self._icebergs.values())
+    def vigiadas(self) -> list:
+        """Sniper e fantasma confirmados."""
+        return list(self._vigiadas.values())
+
+    def icebergs_ativos(self, nivel: Optional[int] = None, raio: int = 0) -> list:
+        """Icebergs confirmados; com `nivel`, só os a até `raio` ticks dele."""
+        if nivel is None:
+            return list(self._icebergs.values())
+        return [d for d in self._icebergs.values() if abs(d.nivel - nivel) <= raio]
 
     def mais_proximas(self, preco: float, n: int) -> list:
         """As n defesas confirmadas mais próximas de `preco` (ordem: distância, depois entrada)."""

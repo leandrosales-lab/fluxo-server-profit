@@ -414,6 +414,7 @@ class FlowEngine:
 
         # ── Defesas (iceberg pela passiva, sniper, fantasma, E2): core/defesas.py
         self._defesas = DefesaDetector(self.cfg)
+        self._avg_lot_cache = None        # (último tick, relógio, valor) de _iceberg_avg_lot
         self._fonte_com_passiva = False   # vira True no 1º tick com passive_broker; reset() não zera (mesma fonte)
 
         # ── Histórico de best ask/bid por broker (logs separados para evitar sinal invertido)
@@ -553,6 +554,10 @@ class FlowEngine:
 
     def _iceberg_avg_lot(self, now: float) -> float:
         """Lote médio agredido na janela iceberg_window_sec (tempo dos ticks)."""
+        ultimo = self._ticks[-1] if self._ticks else None
+        c = self._avg_lot_cache
+        if c is not None and c[0] is ultimo and c[1] == now:
+            return c[2]   # mesmo negócio e mesmo relógio: a janela não mudou
         cutoff = now - self.cfg.iceberg_window_sec
         vol = n = 0
         for t in reversed(self._ticks):
@@ -560,7 +565,9 @@ class FlowEngine:
                 break
             vol += t.qty
             n += 1
-        return vol / n if n else 0.0
+        r = vol / n if n else 0.0
+        self._avg_lot_cache = (ultimo, now, r)
+        return r
 
     def _confianca_iceberg(self, ic: IcebergCandidate) -> float:
         """Força do iceberg só para ordenar sinais (fórmula que o motor já usava; não é regra do curso)."""
@@ -573,9 +580,10 @@ class FlowEngine:
             conf += 0.05   # vários agressores diferentes batendo na mesma passiva
         return min(0.90, conf)
 
-    def _icebergs_das_defesas(self) -> list[IcebergCandidate]:
-        """Icebergs confirmados pelo módulo de defesas, no formato antigo (sinal, estado, confluência)."""
-        ativos = self._defesas.icebergs_ativos()
+    def _icebergs_das_defesas(self, nivel: Optional[int] = None, raio: int = 0) -> list[IcebergCandidate]:
+        """Icebergs confirmados pelo módulo de defesas, no formato antigo (sinal, estado, confluência).
+        Com `nivel`, só os até `raio` ticks dele (o sinal só vale com o preço no nível do iceberg)."""
+        ativos = self._defesas.icebergs_ativos(nivel, raio)
         if not ativos:
             return []
         avg_lot = self._iceberg_avg_lot(self._now())
@@ -600,8 +608,8 @@ class FlowEngine:
 
     def _defesas_opostas_perto(self, lado: str, preco: float, tol: float) -> list:
         """Sniper/fantasma confirmados do lado `lado` perto de `preco` (confluência da exaustão)."""
-        return [d for d in self._defesas.ativas()
-                if d.tipo in ("sniper", "fantasma") and d.lado == lado and abs(d.preco - preco) <= tol]
+        return [d for d in self._defesas.vigiadas()
+                if d.lado == lado and abs(d.preco - preco) <= tol]
 
     def _update_iceberg_fallback(self, tick: Tick):
         """Comportamento antigo: mesmo agressor, mesmo lado, mesmo preço, lote próximo."""
@@ -985,9 +993,9 @@ class FlowEngine:
         flow_strength = max(pct_buy, pct_sell)
 
         # ── 1. Verificar Icebergs confirmados
-        confirmed_icebergs = ([ic for ic in self._icebergs.values() if ic.confirmed]
-                              + self._icebergs_das_defesas())
         nivel_atual = self._defesas.nivel(self._ticks[-1].price)
+        fallback_icebergs = [ic for ic in self._icebergs.values() if ic.confirmed]
+        confirmed_icebergs = fallback_icebergs + self._icebergs_das_defesas(nivel_atual)
 
         # ── 2. Verificar Best Offer passivo (ask e bid separados)
         best_ask_brokers = self._get_best_ask_brokers()
@@ -1157,7 +1165,8 @@ class FlowEngine:
             conf = ev.confidence
             extras = []
             opposite = Side.SELL if ev.direction == Side.BUY else Side.BUY
-            near_ics = [ic for ic in confirmed_icebergs
+            near_ics = [ic for ic in fallback_icebergs + self._icebergs_das_defesas(
+                            self._defesas.nivel(ev.extreme_price), self.cfg.exhaustion_confluence_ticks + 1)
                         if ic.side == opposite and abs(ic.price - ev.extreme_price) <= tol]
             if any(ic.passive for ic in near_ics):
                 conf += 0.10
