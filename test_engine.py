@@ -3066,11 +3066,16 @@ def test_defesas_aulas():
 
     # Icebergs da aula 9393840: nenhum negócio além do nível → nenhum rompimento
     for nome in ("iceberg_9393840_0403.csv", "iceberg_9393840_0845.csv"):
-        evs = rodar(nome)
-        if not [e for e in evs if e.evento == "rompida"]:
-            ok(f"{nome}: nenhum rompimento (a passiva não aparece na tela; só o nível é verificável)")
+        ticks = ler_ticks(os.path.join(pasta, nome))
+        engine = FlowEngine("PETR4", EngineConfig())
+        for t in ticks:
+            engine.add_tick(t)
+        evs = engine._defesas.eventos(200)
+        recebidos = engine.get_state()["tick_count"]
+        if ticks and recebidos == len(ticks) and not [e for e in evs if e.evento == "rompida"]:
+            ok(f"{nome}: {recebidos} negócios, nenhum rompimento (a passiva não aparece na tela; só o nível é verificável)")
         else:
-            err(f"{nome}: rompimento indevido {[e.to_dict() for e in evs if e.evento == 'rompida']}")
+            err(f"{nome}: {recebidos}/{len(ticks)} negócios; rompimentos {[e.to_dict() for e in evs if e.evento == 'rompida']}")
 
 
 def main():
