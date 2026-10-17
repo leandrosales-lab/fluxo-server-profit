@@ -85,6 +85,7 @@ verificacoes.push(["operar: faixa e gráfico", async (page) => {
 
 verificacoes.push(["operar: reset com o replay rodando (mercado aberto)", async (page) => {
   await page.goto(`${BASE}/operar`);
+  await page.click('#filtros [data-filtro="todos"]');   // o padrão é só iceberg; aqui vale qualquer sinal
   // precisa já haver sinal na tela: senão "0 hoje" seria verdade antes do reset e o teste não provaria nada
   await page.waitForFunction(() => /^[1-9]\d* hoje$/.test(document.getElementById("sinais-meta").textContent),
     null, { timeout: 60000 });
@@ -98,6 +99,8 @@ verificacoes.push(["operar: reset com o replay rodando (mercado aberto)", async 
 
 verificacoes.push(["operar: painéis", async (page) => {
   await page.goto(`${BASE}/operar`);
+  checar(await page.getAttribute('#filtros [data-filtro="Iceberg"]', "aria-pressed") === "true", "filtro padrão é só iceberg");
+  await page.click('#filtros [data-filtro="todos"]');
   await page.waitForFunction(() => document.getElementById("m-titulo").textContent !== "Nenhum sinal ainda hoje",
     null, { timeout: 60000 });
   const titulo = await page.textContent("#m-titulo");

@@ -57,7 +57,8 @@ function loteGrande() {
 }
 
 export function criarPaineis() {
-  let filtro = "todos";
+  // Padrão: só iceberg — o único com resultado positivo na calibração de 42 pregões (17/10/2026)
+  let filtro = "Iceberg";
   document.querySelectorAll("#filtros [data-filtro]").forEach((b) => b.addEventListener("click", () => {
     filtro = b.dataset.filtro;
     document.querySelectorAll("#filtros [data-filtro]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
@@ -144,7 +145,7 @@ export function criarPaineis() {
   return {
     atualizar({ estado, sinais, trades, book, casas, agora, tf }) {
       const filtrados = filtro === "todos" ? sinais : sinais.filter((s) => s.pattern === filtro);
-      $("sinais-meta").textContent = `${sinais.length} hoje`;
+      $("sinais-meta").textContent = `${filtrados.length} hoje`;
       manchete(filtrados[filtrados.length - 1], estado.resumo?.vwap, casas, agora, tf);
       anteriores(filtrados.slice(-5, -1).reverse(), casas);
       fita(trades, estado.asset, casas);
