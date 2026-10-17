@@ -11,7 +11,7 @@
 2. **PETR4 ao vivo pela DLL** (primeiro pregão após a liberação): conferir assinatura, histórico (`profitdll.historico`)
    e gravar pregões com `--gravar` para calibrar no replay.
 3. **Estratégias do curso — subprojeto 2 (escora × rompimento)**: sinais a partir das defesas, com gatilho e stop por
-   tipo. Depois: 3 (condução e saída) e 4 (players e algoritmos).
+   tipo. Depois: subprojetos 3 (condução e saída) e 4 (players e algoritmos).
 
 ## O que já está pronto (no `main`)
 

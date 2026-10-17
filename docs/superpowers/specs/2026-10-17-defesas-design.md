@@ -61,8 +61,8 @@ Unidade: uma **candidata** por (corretora, lado defendido, preço). Lado defendi
 ### 5.2 Sniper
 - **Assinatura:** a corretora defende o preço como passiva **e** agride do mesmo lado no mesmo preço contra quem tenta
   formar fila (aula-02 12:20–13:12; aula 9393841 11:39 "absorve e boleta de volta"). Reação medida: 0–30 ms entre a
-  agressão contrária e a agressão do sniper (aula 9393841, 21,17 / 21,19 / 21,30 / 21,34).
-- Também vira sniper a candidata que **continua defendendo o preço depois de negócios além do nível** (aula-02 16:01).
+  agressão contrária e a agressão do sniper (aula 9393841, 21,17 / 21,19 / 21,30 / 21,34). (ver §9, item 9: só por reação)
+- Também vira sniper a candidata que **continua defendendo o preço depois de negócios além do nível** (aula-02 16:01). (ver §9, item 9: só quem já era defesa)
 - **Agressão do mesmo lado:** a mesma corretora agredindo o lado oposto são clientes diferentes e não conta
   (aula-02 09:18; aula 9393831 07:18).
 - **Tolera negócios além:** até 3 ticks além com o sniper ativo (máximo observado: 1–2 ticks em aula-02, 9393834 e
@@ -89,7 +89,7 @@ Unidade: uma **candidata** por (corretora, lado defendido, preço). Lado defendi
 ### 5.4 E2
 - Duas defesas confirmadas (iceberg, sniper ou fantasma) de **corretoras diferentes**, do mesmo lado, no mesmo preço
   (0 tick) ou a 1 tick (Ágora 1.500 + Tullett 1.000 no 22,05, aula 9393845; Morgan iceberg 44,00 + Merrill sniper
-  44,01, aula 9393844).
+  44,01, aula 9393844). (ver §9, item 5: uma confirmada + outra ao menos em alerta)
 - Eventos: `e2_formado`; `e2_uma_acabou` quando uma das duas termina e a outra continua (regra dita em 9393845
   07:00–07:35 e 9393844 12:32–14:18; sem exemplo com horário).
 - O E2 substitui a regra de fatia mínima: duas passivas repetindo no mesmo preço não se anulam mais.
@@ -152,7 +152,7 @@ Unidade: uma **candidata** por (corretora, lado defendido, preço). Lado defendi
 | Sequência | O motor tem de |
 |---|---|
 | `sniper_9393841_1113` | marcar sniper MORGAN no 21,17 pela agressão do mesmo lado no mesmo preço |
-| `sniper_9393841_1327` | manter o sniper no recuo 21,30 → 21,28 → 21,30 |
+| `sniper_9393841_1327` | mudança de nível 21,19 → 21,30 (o recuo virou teste unitário, ver §9 item 6) |
 | `sniper_9393841_1429` | `defensor_ausente` no negócio de 10:14:14,10 (4 ticks além), não antes |
 | `sniper_9393841_0545` | não encerrar o sniper com negócios 1–2 ticks além |
 | `fantasma_9393842_*` | marcar fantasma TULLETT no 22,40 na 3ª agressão; terminar após 11:09:03,57 |
@@ -179,6 +179,7 @@ Sinais de escora × rompimento (subprojeto 2), condução e saída (3), saldo po
 (4), book completo, market maker, lotão.
 
 ## 9. Decisões tomadas no plano (17/10/2026)
+Estas decisões prevalecem sobre §5, §6 e §7 onde divergirem (as seções anteriores trazem "ver §9" nesses pontos).
 
 1. Sem tempo de expiração (decisão do dono): defesa só termina por acontecimento; o sinal de iceberg só sai com o
    último negócio no próprio nível.
@@ -195,6 +196,6 @@ Sinais de escora × rompimento (subprojeto 2), condução e saída (3), saldo po
 9. Sniper só por reação ("absorve e boleta de volta" em ≤ defesa_reacao_ms, com a passiva da agressão contrária igual
    à corretora ou vazia); "continua defendendo depois de negócio além" só para quem já era defesa (alerta, confirmada
    ou rompida). Passiva + agressão espaçadas não fazem sniper.
-10. Fila formada só se decide no negócio contra a fila (agressão do lado da defesa, no próprio preço); outros negócios
+10. Fila formada (sniper e fantasma) só se decide no negócio contra a fila (agressão do lado da defesa, no próprio preço); outros negócios
     não encerram a defesa.
 11. Reclassificação para sniper também funde o sniper antigo da mesma corretora e lado (uma defesa só).
