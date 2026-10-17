@@ -107,7 +107,8 @@ verificacoes.push(["operar: painéis", async (page) => {
   await esperar(2000);
   const n2 = await page.locator("#tt tr").count();
   checar(n2 > 0 && n2 >= n1, `Times & Trades com ${n2} linhas`);
-  checar((await page.textContent("#livro-nota")).length > 0, `livro: ${await page.textContent("#livro-nota")}`);
+  checar((await page.textContent("#defesas-nota")).length > 0, `defesas: ${await page.textContent("#defesas-nota")}`);
+  checar((await page.textContent("#spread")).length > 0, `topo do livro: ${await page.textContent("#spread")}`);
   checar(await page.locator("#saldo tr").count() > 0, "saldo das corretoras preenchido");
   await page.screenshot({ path: path.join(SAIDA, "operar-com-sinal.png") });
 }]);

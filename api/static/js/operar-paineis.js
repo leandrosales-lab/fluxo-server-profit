@@ -1,10 +1,36 @@
-// Painéis da coluna direita do Operar: manchete do sinal, 4 anteriores, Times & Trades, livro e saldo.
+// Painéis da coluna direita do Operar: manchete do sinal, 4 anteriores, Times & Trades, defesas e saldo.
 import { atualizarLinhas } from "./tabela.js";
 import { preco, inteiro, compacto, horaB3, hm, pct } from "./formato.js";
 
 const NOME = { "Absorção": ["Absorção", "f"], "Exaustão": ["Exaustão", "f"], "Iceberg": ["Iceberg", "m"],
                "Urgência": ["Urgência", "f"], "BestOffer": ["Melhor oferta", "f"] };
 const SEGUNDOS_NOVO = 60;
+const TIPO = { iceberg: "Iceberg", sniper: "Sniper", fantasma: "Fantasma" };
+const EVENTOS_NA_TELA = 8;
+
+/** "45 s", "3 min", "2 h": há quanto tempo a defesa está ativa. */
+export function duracao(seg) {
+  const s = Math.max(0, Math.round(seg));
+  return s < 60 ? `${s} s` : s < 3600 ? `${Math.floor(s / 60)} min` : `${Math.floor(s / 3600)} h`;
+}
+
+/** Texto de um evento de defesa (estado.defesas.eventos). */
+export function textoEvento(ev, casas = 2) {
+  const quem = `${TIPO[ev.tipo] || "Defesa"} ${ev.corretora}`;
+  const p = preco(ev.preco, casas);
+  switch (ev.evento) {
+    case "confirmada": return `${quem} segurando a ${ev.lado} @ ${p}`;
+    case "mudou_nivel": return `${quem} ${ev.lado === "compra" ? "subiu" : "desceu"} ${ev.detalhe}`;
+    case "rompida": return `${quem} rompido @ ${p}`;
+    case "fila_formada": return `${quem}: fila formada @ ${p}`;
+    case "defensor_ausente": return `${quem} sumiu (${ev.detalhe})`;
+    case "reclassificada": return `${quem} reclassificado: ${ev.detalhe}`;
+    case "e2_formado": return `E2: ${ev.corretora} + ${ev.parceiro} @ ${p}`;
+    case "e2_uma_acabou": return `E2 desfeito: ${ev.parceiro} acabou, ${ev.corretora} continua`;
+    case "alerta": return `Alerta: ${ev.corretora} @ ${p}`;
+    default: return `${quem}: ${ev.evento}`;
+  }
+}
 const $ = (id) => document.getElementById(id);
 
 /** "Absorção compradora", "Iceberg vendedor": padrão + direção, com o gênero do nome. */
@@ -79,19 +105,21 @@ export function criarPaineis() {
     });
   }
 
-  function livro(book, casas) {
-    const asks = book.asks.slice(0, 10).reverse();
-    const bids = book.bids.slice(0, 10);
-    const maior = Math.max(1, ...asks.map((l) => l.qty), ...bids.map((l) => l.qty));
-    const linha = (lado) => (l) => ({ celulas: [{ t: l.broker || "—" }, { t: l.qty ? inteiro(l.qty) : "—", c: "num" },
-      { t: preco(l.price, casas), c: `num ${lado}` }, { barra: { pct: 100 * l.qty / maior, lado }, c: "barra-cel" }] });
-    atualizarLinhas($("livro-asks"), asks, linha("venda"));
-    atualizarLinhas($("livro-bids"), bids, linha("compra"));
-    $("livro-nota").textContent = book.depth === "top" ? "topo do livro"
-      : book.depth === "none" ? "sem livro nesta fonte" : `${Math.max(asks.length, bids.length)} níveis`;
-    $("spread").textContent = bids.length && book.asks.length
-      ? `spread ${preco(book.asks[0].price - bids[0].price, casas)}   ${preco(bids[0].price, casas)} × ${preco(book.asks[0].price, casas)}`
-      : "—";
+  function topo(book, casas) {
+    const bids = book.bids || [], asks = book.asks || [];
+    $("spread").textContent = bids.length && asks.length
+      ? `spread ${preco(asks[0].price - bids[0].price, casas)}   ${preco(bids[0].price, casas)} × ${preco(asks[0].price, casas)}`
+      : book.depth === "none" ? "sem livro nesta fonte" : "—";
+  }
+
+  function defesas(estado, casas, agora) {
+    const d = estado.defesas || { ativas: [], eventos: [] };
+    $("defesas-nota").textContent = d.ativas.length ? `${d.ativas.length} ativa${d.ativas.length > 1 ? "s" : ""}` : "nenhuma ativa";
+    atualizarLinhas($("defesas"), d.ativas, (x) => ({
+      celulas: [{ t: (TIPO[x.tipo] || x.tipo) + (x.e2_com ? " · E2" : "") }, { t: x.corretora },
+        { t: preco(x.preco, casas), c: `num ${x.lado}` }, { t: duracao(agora - x.desde), c: "num faint" }] }));
+    atualizarLinhas($("defesas-eventos"), [...d.eventos].reverse().slice(0, EVENTOS_NA_TELA), (ev) => ({
+      celulas: [{ t: horaB3(ev.ts), c: "faint" }, { t: textoEvento(ev, casas) }] }));
   }
 
   function saldo(lista) {
@@ -110,7 +138,8 @@ export function criarPaineis() {
       manchete(filtrados[filtrados.length - 1], estado.resumo?.vwap, casas, agora, tf);
       anteriores(filtrados.slice(-5, -1).reverse(), casas);
       fita(trades, estado.asset, casas);
-      livro(book, casas);
+      topo(book, casas);
+      defesas(estado, casas, agora);
       saldo(estado.resumo?.saldo_corretoras || []);
     },
   };

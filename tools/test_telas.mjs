@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import * as f from "../api/static/js/formato.js";
 import { textoStatus, estadoReconectar } from "../api/static/js/shell.js";
-import { tituloSinal, LOTE_GRANDE_PADRAO } from "../api/static/js/operar-paineis.js";
+import { tituloSinal, LOTE_GRANDE_PADRAO, textoEvento, duracao } from "../api/static/js/operar-paineis.js";
 import { sinceCandles, juntarCandles, precisaLimpar } from "../api/static/js/candles.js";
 
 assert.equal(f.preco(38.47), "38,47");
@@ -77,5 +77,22 @@ assert.deepEqual(estadoReconectar({ ...livre, reconexao: { em_andamento: false, 
   { ate: agora - 1, msg: "x" }, agora), { desabilitado: false, texto: "Reconectar", msg: "falhou: senha inválida" });
 assert.deepEqual(estadoReconectar({ conectado: false, ocupado: true, reconexao: {} }, null, agora),
   { desabilitado: true, texto: "conectando…", msg: "" });
+
+const ev = (evento, extra = {}) => ({ ts: 0, evento, tipo: "sniper", corretora: "MORGAN", lado: "compra",
+  preco: 21.17, detalhe: "", parceiro: "", ...extra });
+assert.equal(textoEvento(ev("confirmada")), "Sniper MORGAN segurando a compra @ 21,17");
+assert.equal(textoEvento(ev("mudou_nivel", { preco: 21.19, detalhe: "21,17 → 21,19" })), "Sniper MORGAN subiu 21,17 → 21,19");
+assert.equal(textoEvento(ev("fila_formada", { tipo: "fantasma", corretora: "TULLETT", lado: "venda", preco: 22.4 })),
+  "Fantasma TULLETT: fila formada @ 22,40");
+assert.equal(textoEvento(ev("defensor_ausente", { detalhe: "negócio a 4 ticks além" })),
+  "Sniper MORGAN sumiu (negócio a 4 ticks além)");
+assert.equal(textoEvento(ev("rompida", { tipo: "iceberg", corretora: "JP MORGAN" })), "Iceberg JP MORGAN rompido @ 21,17");
+assert.equal(textoEvento(ev("e2_formado", { tipo: "iceberg", corretora: "AGORA", parceiro: "TULLETT", preco: 22.05 })),
+  "E2: AGORA + TULLETT @ 22,05");
+assert.equal(textoEvento(ev("e2_uma_acabou", { tipo: "iceberg", corretora: "AGORA", parceiro: "MERRILL" })),
+  "E2 desfeito: MERRILL acabou, AGORA continua");
+assert.equal(duracao(45), "45 s");
+assert.equal(duracao(185), "3 min");
+assert.equal(duracao(7300), "2 h");
 
 console.log("test_telas.mjs: tudo certo");
