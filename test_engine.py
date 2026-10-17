@@ -2856,13 +2856,24 @@ def test_defesas_fila_e2():
     else:
         err(f"Fila: {[e.to_dict() for e in _evs(det)]} / {[e.to_dict() for e in _evs(det2)]}")
 
+    # Negócio que não é contra a fila não decide nada; o pendente espera o negócio contra ela
+    det = sniper_morgan()
+    det.on_book(21.16, 21.17)
+    det.on_tick(_neg(1000, 21.16, 100, "ITAU", Side.SELL, "XP"))       # venda no 21,16: não é contra a fila
+    vivo = bool([d for d in det.ativas() if d.corretora == "MORGAN"]) and not _evs(det, "fila_formada")
+    det.on_tick(_neg(2000, 21.17, 300, "XP", Side.BUY, "UBS"))         # compra contra a fila, não é o MORGAN
+    if vivo and [e for e in _evs(det, "fila_formada") if e.corretora == "MORGAN"]:
+        ok("Fila só se decide no negócio contra ela (compra no 21,17); outros negócios não encerram")
+    else:
+        err(f"Fila decidida pelo negócio errado: {[e.to_dict() for e in _evs(det)]}")
+
     # Fantasma vendedor: compra parada no 22,40 e o próximo negócio não é a TULLETT vendendo ali
     det = DefesaDetector(EngineConfig())
     for i in range(3):
         det.on_tick(_neg(i * 1000, 22.42, 100, "UBS", Side.BUY))
         det.on_tick(_neg(i * 1000 + 100, 22.40, 300, "TULLETT", Side.SELL))
     det.on_book(22.40, 22.42)
-    det.on_tick(_neg(5000, 22.42, 200, "CLEAR", Side.BUY, "XP"))
+    det.on_tick(_neg(5000, 22.40, 200, "CLEAR", Side.SELL, "XP"))
     if [e for e in _evs(det, "fila_formada") if e.corretora == "TULLETT"]:
         ok("Fantasma TULLETT: compra parada no 22,40 sem ela vender → fila_formada (aula 9393842)")
     else:
@@ -2904,6 +2915,19 @@ def test_defesas_fila_e2():
         ok("ÁGORA no 22,05 e no 22,06: mesma corretora, não é E2")
     else:
         err(f"E2 com a mesma corretora: {[e.to_dict() for e in _evs(det)]}")
+
+    # Parceiro em alerta removido a 4 ticks: o E2 se desfaz (sem par órfão)
+    det = DefesaDetector(EngineConfig())
+    det.on_tick(_neg(0, 22.07, 1000, "XP", Side.SELL, "AGORA"))        # AGORA em alerta no 22,07
+    det.on_tick(_neg(1000, 22.06, 800, "UBS", Side.SELL, "MERRILL"))
+    det.on_tick(_neg(1010, 22.06, 1000, "MERRILL", Side.BUY, "ITAU"))  # sniper MERRILL no 22,06 → E2
+    formou = bool(_evs(det, "e2_formado"))
+    det.on_tick(_neg(2000, 22.03, 100, "BTG", Side.SELL, "GENIAL"))     # 4 ticks além do 22,07, 3 do 22,06
+    merrill = [d for d in det.ativas() if d.corretora == "MERRILL"]
+    if formou and merrill and not merrill[0].e2_com and _evs(det, "e2_uma_acabou"):
+        ok("AGORA (alerta) sai a 4 ticks: o E2 se desfaz e o MERRILL continua sem par")
+    else:
+        err(f"E2 órfão: {[d.to_dict() for d in merrill]} / {[e.to_dict() for e in _evs(det)]}")
 
 
 def main():

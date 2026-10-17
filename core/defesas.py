@@ -211,13 +211,13 @@ class DefesaDetector:
             d.fila_pendente = p is not None and self.nivel(p) == d.nivel
 
     def _resolver_filas(self, tick, n: int, lado_agr: str):
-        """Depois de o book mostrar a fila, o próximo negócio: se não for o defensor agredindo do
-        lado dele no próprio preço, a fila se formou."""
+        """Depois de o book mostrar a fila, o próximo negócio CONTRA ela (agressão do lado da defesa no
+        próprio preço) decide: se não for o defensor, a fila se formou (spec §5.2/§5.3)."""
         for d in list(self._confirmadas.values()):
-            if not d.fila_pendente:
+            if not d.fila_pendente or n != d.nivel or lado_agr != d.lado:
                 continue
             d.fila_pendente = False
-            if tick.broker == d.corretora and lado_agr == d.lado and n == d.nivel:
+            if tick.broker == d.corretora:
                 continue
             self._evento("fila_formada", d, tick.timestamp)
             self._desfazer_e2(d, tick.timestamp)
@@ -346,7 +346,7 @@ class DefesaDetector:
                 if dist >= self.cfg.defesa_ausente_ticks:
                     if d.ativa:
                         self._evento("defensor_ausente", d, ts, f"negócio a {dist} ticks além")
-                        self._desfazer_e2(d, ts)
+                    self._desfazer_e2(d, ts)
                     self._remover(k)
 
     def _vizinhas(self, d: Defesa):
