@@ -31,6 +31,10 @@ from core.defesas import DefesaDetector
 
 logger = logging.getLogger("FlowEngine")
 
+# Quantas defesas get_state() entrega: as mais próximas do último preço. Limite de EXIBIÇÃO (tamanho do
+# estado e da tela), não é regra de mercado; as demais continuam sendo vigiadas pelo detector.
+DEFESAS_NA_TELA = 30
+
 
 # ──────────────────────────────────────────────────────────────
 # TIPOS DE DADOS
@@ -410,6 +414,7 @@ class FlowEngine:
 
         # ── Defesas (iceberg pela passiva, sniper, fantasma, E2): core/defesas.py
         self._defesas = DefesaDetector(self.cfg)
+        self._fonte_com_passiva = False   # vira True no 1º tick com passive_broker; reset() não zera (mesma fonte)
 
         # ── Histórico de best ask/bid por broker (logs separados para evitar sinal invertido)
         # chave: broker → lista de timestamps em que estava no 1º nível
@@ -456,6 +461,8 @@ class FlowEngine:
             tick.asset = self.asset
             self._avancar_relogio(tick.timestamp)
             self._ticks.append(tick)
+            if tick.passive_broker:
+                self._fonte_com_passiva = True
             self._defesas.on_tick(tick)
             self._update_iceberg(tick)
             self._update_urgency(tick)
@@ -568,11 +575,12 @@ class FlowEngine:
 
     def _icebergs_das_defesas(self) -> list[IcebergCandidate]:
         """Icebergs confirmados pelo módulo de defesas, no formato antigo (sinal, estado, confluência)."""
+        ativos = self._defesas.icebergs_ativos()
+        if not ativos:
+            return []
         avg_lot = self._iceberg_avg_lot(self._now())
         out = []
-        for d in self._defesas.ativas():
-            if d.tipo != "iceberg":
-                continue
+        for d in ativos:
             ic = IcebergCandidate(broker=d.corretora, side=Side.BUY if d.lado == "compra" else Side.SELL,
                                   price=d.preco, ref_qty=0, renewals=d.giros, total_vol=d.vol_passivo,
                                   first_seen=d.desde, last_renewed=d.ultima, confirmed=True, passive=True,
@@ -582,6 +590,13 @@ class FlowEngine:
             ic.confidence = self._confianca_iceberg(ic)
             out.append(ic)
         return out
+
+    def _defesas_na_confluencia(self, lado: str, preco: float, tol: float) -> list:
+        """Confluência da exaustão: só soma quando a fonte traz a corretora passiva (RTD, DLL). Em OCR/DDE/
+        manual o sniper e o fantasma aparecem na tela, mas não entram no sinal."""
+        if not self._fonte_com_passiva:
+            return []
+        return self._defesas_opostas_perto(lado, preco, tol)
 
     def _defesas_opostas_perto(self, lado: str, preco: float, tol: float) -> list:
         """Sniper/fantasma confirmados do lado `lado` perto de `preco` (confluência da exaustão)."""
@@ -1151,7 +1166,7 @@ class FlowEngine:
             elif near_ics:
                 conf += 0.05
                 extras.append("iceberg oposto (heurística fraca)")
-            outras = self._defesas_opostas_perto(opposite.value, ev.extreme_price, tol)
+            outras = self._defesas_na_confluencia(opposite.value, ev.extreme_price, tol)
             if outras and not any(ic.passive for ic in near_ics):
                 conf += 0.10
                 extras.append("defesa oposta (" +
@@ -1459,7 +1474,8 @@ class FlowEngine:
                 # True se algum iceberg ativo veio do fallback sem corretora passiva
                 "icebergs_weak_heuristic": any(i["weak_heuristic"] for i in confirmed),
                 "defesas": {
-                    "ativas":  [d.to_dict() for d in self._defesas.ativas()],
+                    "ativas":  [d.to_dict() for d in self._defesas.mais_proximas(
+                        self._ticks[-1].price, DEFESAS_NA_TELA)] if self._ticks else [],
                     "eventos": [e.to_dict() for e in self._defesas.eventos(20)],
                 },
                 "absorbed_levels":    absorbed,

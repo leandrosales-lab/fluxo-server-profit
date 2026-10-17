@@ -2660,6 +2660,18 @@ def _evs(det, evento=None):
     return [e for e in det.eventos(200) if evento is None or e.evento == evento]
 
 
+def _e2_consistente(det):
+    """Todo E2 aponta para um parceiro que aponta de volta (sem par órfão)."""
+    for k, d in det._defesas.items():
+        if d.e2_par:
+            o = det._defesas.get(d.e2_par)
+            if o is None or o.e2_par != k:
+                return False
+        elif d.e2_com:
+            return False
+    return True
+
+
 def test_defesas_classificacao():
     print(f"\n{AMARELO}═══ TESTE 29: Defesas — iceberg, sniper, fantasma e fim ═══{RESET}")
     from core.defesas import DefesaDetector
@@ -2831,6 +2843,42 @@ def test_defesas_classificacao():
     else:
         err("Negócio sem agressor deveria ser ignorado")
 
+    # ── Iceberg depois de uma agressão antiga da mesma corretora no preço (revisão final, item 1)
+    det = DefesaDetector(EngineConfig())
+    det.on_tick(_neg(0, 10.00, 100, "XP", Side.BUY, "ITAU"))            # XP agride 100 no 10,00
+    det.on_tick(_neg(2000, 10.00, 600, "RICO", Side.SELL, "XP"))
+    det.on_tick(_neg(3000, 10.00, 600, "CLEAR", Side.SELL, "XP"))
+    xp = [d for d in det.ativas() if d.corretora == "XP" and d.tipo == "iceberg"]
+    if len(xp) == 1 and xp[0].lado == "compra" and xp[0].vol_passivo == 1200:
+        ok("XP agrediu 100 antes e depois é passiva em 2 giros (1.200): iceberg confirmado")
+    else:
+        err(f"Iceberg com agressão antiga: {[d.to_dict() for d in det.ativas()]} / {[e.to_dict() for e in _evs(det)]}")
+
+    # ── "Continua defendendo depois de negócio além" só com defesa confirmada e nova ABSORÇÃO (item 2)
+    det = DefesaDetector(EngineConfig())
+    det.on_tick(_neg(0, 10.05, 1800, "ITAU", Side.BUY, "BRADESCO"))     # BRADESCO passiva 1.800 numa ordem: alerta
+    det.on_tick(_neg(1000, 10.06, 100, "RICO", Side.BUY, "XP"))
+    det.on_tick(_neg(2000, 10.07, 100, "RICO", Side.BUY, "XP"))
+    det.on_tick(_neg(3000, 10.05, 600, "BRADESCO", Side.SELL, "TORO"))  # agride 600 no mesmo nível
+    brad = [d for d in det.ativas() if d.corretora == "BRADESCO"]
+    if not brad:
+        ok("Alerta + negócios além + agressão no nível: BRADESCO não vira sniper")
+    else:
+        err(f"Sniper falso em alerta: {[d.to_dict() for d in brad]}")
+
+    # Defesa confirmada (iceberg rompido): agressão depois do negócio além não reclassifica; absorção sim
+    det = DefesaDetector(EngineConfig())
+    det.on_tick(_neg(0, 19.04, 1000, "XP", Side.SELL, "JP MORGAN"))
+    det.on_tick(_neg(1000, 19.04, 300, "RICO", Side.SELL, "JP MORGAN"))   # iceberg
+    det.on_tick(_neg(2000, 19.03, 100, "CLEAR", Side.SELL, "ITAU"))       # rompe
+    det.on_tick(_neg(3000, 19.04, 200, "JP MORGAN", Side.BUY, "TORO"))    # só agressão: não conta
+    nada = not det.ativas()
+    det.on_tick(_neg(4000, 19.04, 200, "TORO", Side.SELL, "JP MORGAN"))   # nova absorção: sniper
+    if nada and [d.tipo for d in det.ativas()] == ["sniper"]:
+        ok("Iceberg rompido: agressão no nível não reclassifica; nova absorção passiva sim")
+    else:
+        err(f"Reclassificação estrita: nada={nada} {[d.to_dict() for d in det.ativas()]}")
+
 
 def test_defesas_fila_e2():
     print(f"\n{AMARELO}═══ TESTE 30: Defesas — fila formada e E2 ═══{RESET}")
@@ -2929,6 +2977,69 @@ def test_defesas_fila_e2():
     else:
         err(f"E2 órfão: {[d.to_dict() for d in merrill]} / {[e.to_dict() for e in _evs(det)]}")
 
+    # ── Par do E2 pela chave: cada fim desfaz só o próprio par (revisão final, item 3)
+    def sniper(det, corretora, preco, ms):
+        det.on_tick(_neg(ms, preco, 100, "BTG", Side.SELL))
+        det.on_tick(_neg(ms + 10, preco, 100, corretora, Side.BUY))
+
+    def chave(corretora, preco):
+        return (corretora, "compra", round(preco / 0.01))
+
+    # rompida
+    det = DefesaDetector(EngineConfig())
+    det.on_tick(_neg(0, 22.05, 800, "XP", Side.SELL, "AGORA"))
+    det.on_tick(_neg(1000, 22.05, 700, "BTG", Side.SELL, "AGORA"))
+    det.on_tick(_neg(2000, 22.05, 1000, "JP MORGAN", Side.SELL, "TULLETT"))
+    par = det._defesas[chave("TULLETT", 22.05)].e2_par
+    det.on_tick(_neg(3000, 22.04, 100, "CLEAR", Side.SELL, "ITAU"))       # rompe o iceberg da AGORA
+    tull = det._defesas[chave("TULLETT", 22.05)]
+    if par == chave("AGORA", 22.05) and not tull.e2_par and tull.e2_com == "" and _e2_consistente(det):
+        ok("E2 desfeito por rompida: a TULLETT fica sem par")
+    else:
+        err(f"E2 rompida: par={par} tull={tull.to_dict()}")
+
+    # defensor_ausente
+    det = DefesaDetector(EngineConfig())
+    sniper(det, "X", 22.06, 0)
+    sniper(det, "MERRILL", 22.05, 1000)
+    formou = det._defesas[chave("MERRILL", 22.05)].e2_par == chave("X", 22.06)
+    det.on_tick(_neg(2000, 22.02, 100, "ITAU", Side.SELL, "XP"))          # X a 4 ticks, MERRILL a 3
+    mer = det._defesas.get(chave("MERRILL", 22.05))
+    if formou and _evs(det, "defensor_ausente") and mer and not mer.e2_par and _e2_consistente(det):
+        ok("E2 desfeito por defensor_ausente: o MERRILL continua sem par")
+    else:
+        err(f"E2 ausente: formou={formou} mer={mer and mer.to_dict()}")
+
+    # mudou_nivel
+    det = DefesaDetector(EngineConfig())
+    sniper(det, "MORGAN", 21.17, 0)
+    sniper(det, "UBS", 21.18, 1000)
+    formou = det._defesas[chave("UBS", 21.18)].e2_par == chave("MORGAN", 21.17)
+    det.on_tick(_neg(5000, 21.19, 200, "ELLIOT", Side.SELL))
+    det.on_tick(_neg(5010, 21.19, 7800, "MORGAN", Side.BUY))
+    ubs = det._defesas[chave("UBS", 21.18)]
+    if formou and _evs(det, "mudou_nivel") and ubs.e2_par == chave("MORGAN", 21.19) and _e2_consistente(det):
+        ok("E2 e mudou_nivel: o par antigo se desfaz e o UBS forma par com o MORGAN no novo nível")
+    else:
+        err(f"E2 mudou_nivel: formou={formou} ubs={ubs.to_dict()} par={ubs.e2_par}")
+
+    # órfão: X e Y em dois níveis vizinhos; acabar o par de cima não pode mexer no de baixo
+    det = DefesaDetector(EngineConfig())
+    sniper(det, "X", 22.06, 0)
+    sniper(det, "Y", 22.06, 1000)
+    for ms, corr in ((2000, "X"), (3000, "Y")):                         # abaixo, icebergs (sniper não repete nível)
+        det.on_tick(_neg(ms, 22.05, 1000, "XP", Side.SELL, corr))
+        det.on_tick(_neg(ms + 100, 22.05, 300, "RICO", Side.SELL, corr))
+    pares = (det._defesas[chave("X", 22.06)].e2_par, det._defesas[chave("X", 22.05)].e2_par)
+    det.on_book(22.05, 22.06)
+    det.on_tick(_neg(4000, 22.06, 300, "ITAU", Side.BUY))                 # fila formada no 22,06 (X e Y)
+    x2, y2 = det._defesas.get(chave("X", 22.05)), det._defesas.get(chave("Y", 22.05))
+    if pares == (chave("Y", 22.06), chave("Y", 22.05)) and x2 and y2 and x2.e2_par == chave("Y", 22.05) \
+            and y2.e2_par == chave("X", 22.05) and _e2_consistente(det):
+        ok("Dois pares vizinhos (X+Y sniper em 22,06 e icebergs em 22,05): acabar o de cima não desfaz o de baixo")
+    else:
+        err(f"E2 órfão: pares={pares} x2={x2 and x2.to_dict()} y2={y2 and y2.to_dict()}")
+
 
 def test_defesas_engine():
     print(f"\n{AMARELO}═══ TESTE 31: Defesas dentro do motor ═══{RESET}")
@@ -2979,6 +3090,30 @@ def test_defesas_engine():
         ok("Defesa sniper conta como confluência perto da extremidade da exaustão")
     else:
         err(f"Confluência: {[d.to_dict() for d in perto]}")
+
+
+    # Fonte sem passiva (OCR/DDE/manual): sniper/fantasma aparecem, mas não entram na confluência (item 5)
+    engine = FlowEngine("PETR4", EngineConfig())
+    engine.add_tick(Tick(1_000_000.0, 21.17, 800, "BTG", Side.SELL))
+    engine.add_tick(Tick(1_000_000.01, 21.17, 1200, "MORGAN", Side.BUY))
+    sem = engine._defesas_na_confluencia("compra", 21.18, 3 * 0.01 + 1e-9)
+    mostra = [d["corretora"] for d in engine.get_state()["defesas"]["ativas"]]
+    engine.add_tick(Tick(1_000_001.0, 21.17, 100, "ITAU", Side.BUY, passive_broker="XP"))
+    com = [d.corretora for d in engine._defesas_na_confluencia("compra", 21.18, 3 * 0.01 + 1e-9)]
+    if sem == [] and mostra == ["MORGAN"] and com == ["MORGAN"]:
+        ok("Sem passiva na fonte: sniper aparece na tela mas fica fora da confluência; com passiva entra")
+    else:
+        err(f"Confluência sem passiva: sem={sem} tela={mostra} com={com}")
+
+    # Reação só com 0 <= delta <= 30 ms (item 5): ms negativo (relógio fora de ordem) não vale
+    from core.defesas import DefesaDetector
+    det = DefesaDetector(EngineConfig())
+    det.on_tick(_neg(100, 21.17, 800, "BTG", Side.SELL))
+    det.on_tick(_neg(90, 21.17, 1200, "MORGAN", Side.BUY))
+    if not det.ativas():
+        ok("Agressão de volta com timestamp anterior (delta negativo) não é reação")
+    else:
+        err(f"Reação com delta negativo: {[d.to_dict() for d in det.ativas()]}")
 
     engine.reset()
     if not engine.get_state()["defesas"]["ativas"] and not engine.get_state()["defesas"]["eventos"]:

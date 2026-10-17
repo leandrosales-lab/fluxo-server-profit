@@ -12,6 +12,7 @@ broker, side.value ("compra"/"venda"/"neutro") e passive_broker.
 from __future__ import annotations
 
 import bisect
+import heapq
 import logging
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
@@ -88,7 +89,8 @@ class Defesa:
     defendeu_apos_alem: bool = False
     agressores: dict = field(default_factory=dict)   # agressores distintos (dict = ordem estável)
     niveis: list = field(default_factory=list)       # preços anteriores (mudou de nível)
-    e2_com: str = ""
+    e2_com: str = ""               # nome do parceiro do E2 (a tela usa)
+    e2_par: tuple = ()             # chave (corretora, lado, nível) do parceiro; é ela que desfaz o par
     fila_pendente: bool = False
     ordem_passiva: tuple = ()
     ordem_agressora: tuple = ()
@@ -145,11 +147,21 @@ class DefesaDetector:
         self._vol_nivel: dict = defaultdict(int)                 # (lado defendido, nível) → volume contra
         self._ult_agr = {COMPRA: None, VENDA: None}              # última agressão de cada lado
         self._ult_outra = {COMPRA: None, VENDA: None}            # última de outra corretora que não a anterior
+        self._vigiadas: dict = {}                                # chave → Defesa (sniper/fantasma confirmados)
+        self._icebergs: dict = {}                                # chave → Defesa (iceberg confirmado)
         self._eventos: deque = deque(maxlen=EVENTOS_GUARDADOS)
 
     # ── consultas ──────────────────────────────────────────────
     def ativas(self) -> list:
         return list(self._confirmadas.values())
+
+    def icebergs_ativos(self) -> list:
+        return list(self._icebergs.values())
+
+    def mais_proximas(self, preco: float, n: int) -> list:
+        """As n defesas confirmadas mais próximas de `preco` (ordem: distância, depois entrada)."""
+        alvo = self.nivel(preco)
+        return heapq.nsmallest(n, self._confirmadas.values(), key=lambda d: abs(d.nivel - alvo))
 
     def eventos(self, n: int = 20) -> list:
         return list(self._eventos)[-n:]
@@ -177,11 +189,12 @@ class DefesaDetector:
         if tick.passive_broker:
             d = self._obter(tick.passive_broker, lado_pas, n, tick.price, ts)
             d.vol_passivo += tick.qty
-            if d.ordem_passiva != ordem:
+            novo_giro = d.ordem_passiva != ordem
+            if novo_giro:
                 d.ordem_passiva = ordem
                 d.giros += 1
             d.agressores[tick.broker] = None
-            self._atividade(d, ts)
+            self._atividade(d, ts, passiva=novo_giro)
         self._vol_nivel[(lado_pas, n)] += tick.qty
 
         # Lado agressor: agredir no preço defende o lado dele naquele preço
@@ -192,7 +205,7 @@ class DefesaDetector:
             d.agressoes += 1
             ult = self._ult_agr[lado_pas]
             if (ult is not None and ult.nivel == n and ult.corretora != tick.broker
-                    and ordem[0] - ult.ms <= self.cfg.defesa_reacao_ms
+                    and 0 <= ordem[0] - ult.ms <= self.cfg.defesa_reacao_ms
                     and ult.passiva in ("", tick.broker)):
                 d.reacoes += 1
             if self._lado_vazio(lado_agr, n, tick.broker):
@@ -204,16 +217,14 @@ class DefesaDetector:
         """Topo do book (sem corretora). Fila formada: o topo do lado oposto parou no preço de um
         sniper/fantasma; o próximo negócio decide (aula-02 17:45–18:46; aula 9393842)."""
         topo = {COMPRA: melhor_compra, VENDA: melhor_venda}
-        for d in self._confirmadas.values():
-            if d.tipo not in ("sniper", "fantasma"):
-                continue
+        for d in self._vigiadas.values():
             p = topo[oposto(d.lado)]
             d.fila_pendente = p is not None and self.nivel(p) == d.nivel
 
     def _resolver_filas(self, tick, n: int, lado_agr: str):
         """Depois de o book mostrar a fila, o próximo negócio CONTRA ela (agressão do lado da defesa no
         próprio preço) decide: se não for o defensor, a fila se formou (spec §5.2/§5.3)."""
-        for d in list(self._confirmadas.values()):
+        for d in list(self._vigiadas.values()):
             if not d.fila_pendente or n != d.nivel or lado_agr != d.lado:
                 continue
             d.fila_pendente = False
@@ -266,6 +277,8 @@ class DefesaDetector:
     def _remover(self, k: tuple):
         d = self._defesas.pop(k)
         self._confirmadas.pop(k, None)
+        self._vigiadas.pop(k, None)
+        self._icebergs.pop(k, None)
         por = self._por_nivel[d.lado]
         por[d.nivel].pop(k, None)
         if not por[d.nivel]:
@@ -273,9 +286,11 @@ class DefesaDetector:
             niveis = self._niveis[d.lado]
             del niveis[bisect.bisect_left(niveis, d.nivel)]
 
-    def _atividade(self, d: Defesa, ts: float):
+    def _atividade(self, d: Defesa, ts: float, passiva: bool = False):
+        """`passiva`: houve um novo giro (nova absorção) agora. Só ele conta como "continua defendendo
+        depois de negócio além" (spec §9 item 9); agressão não conta."""
         d.ultima = ts
-        if d.alem_pendente:
+        if d.alem_pendente and passiva:
             d.alem_pendente = False
             d.defendeu_apos_alem = True
         self._classificar(d, ts)
@@ -287,7 +302,7 @@ class DefesaDetector:
         elif d.vol_passivo == 0 and d.agressoes_vazio >= cfg.defesa_fantasma_agressoes:
             novo = "fantasma"
         elif (d.giros >= cfg.defesa_iceberg_giros and d.vol_passivo >= cfg.defesa_iceberg_lote_min
-              and d.alem_max == 0 and d.agressoes == 0):
+              and d.alem_max == 0):
             novo = "iceberg"
         else:
             if (d.estado == "candidata" and d.giros >= 1 and d.alem_max == 0
@@ -301,7 +316,14 @@ class DefesaDetector:
         anterior = d.tipo
         d.tipo = novo
         d.estado = "confirmada"
-        self._confirmadas[self._chave(d)] = d
+        k = self._chave(d)
+        self._confirmadas[k] = d
+        if novo == "iceberg":
+            self._icebergs[k] = d
+            self._vigiadas.pop(k, None)
+        else:
+            self._vigiadas[k] = d
+            self._icebergs.pop(k, None)
         if anterior and anterior != novo:
             self._evento("reclassificada", d, ts, f"{anterior} → {novo}")
             self._mudar_nivel(d, ts)
@@ -336,11 +358,12 @@ class DefesaDetector:
             for k in list(self._por_nivel[lado].get(L, {})):
                 d = self._defesas[k]
                 d.alem_max = max(d.alem_max, dist)
-                if d.estado in ("alerta", "confirmada", "rompida") and d.vol_passivo > 0:
+                if d.estado in ("confirmada", "rompida") and d.vol_passivo > 0:
                     d.alem_pendente = True
                 if d.tipo == "iceberg" and d.estado == "confirmada":
                     d.estado = "rompida"
                     self._confirmadas.pop(k, None)
+                    self._icebergs.pop(k, None)
                     self._evento("rompida", d, ts, f"negócio a {dist} tick(s) além")
                     self._desfazer_e2(d, ts)
                 if dist >= self.cfg.defesa_ausente_ticks:
@@ -362,26 +385,28 @@ class DefesaDetector:
     def _formar_e2(self, d: Defesa, ts: float):
         """Duas defesas de corretoras diferentes, mesmo lado, a até defesa_e2_ticks (aulas 9393845/9393844).
         Uma confirmada e a outra ao menos em alerta (decisão 4 do plano)."""
-        if d.e2_com or d.estado not in ("confirmada", "alerta"):
+        if d.e2_par or d.estado not in ("confirmada", "alerta"):
             return
         for o in self._vizinhas(d):
-            if o.corretora == d.corretora or o.e2_com or o.estado not in ("confirmada", "alerta"):
+            if o.corretora == d.corretora or o.e2_par or o.estado not in ("confirmada", "alerta"):
                 continue
             if "confirmada" not in (d.estado, o.estado):
                 continue
+            d.e2_par, o.e2_par = self._chave(o), self._chave(d)
             d.e2_com, o.e2_com = o.corretora, d.corretora
             self._evento("e2_formado", d, ts, f"com {o.corretora} @ {_fmt(o.preco)}", parceiro=o.corretora)
             return
 
     def _desfazer_e2(self, d: Defesa, ts: float):
-        """Uma das duas acabou: a outra continua sozinha (aula 9393845 07:00–07:35)."""
-        if not d.e2_com:
+        """Uma das duas acabou: a outra continua sozinha (aula 9393845 07:00–07:35). O parceiro é achado
+        pela chave guardada, e só se desfaz se ele aponta de volta para `d`."""
+        if not d.e2_par:
             return
-        for o in list(self._vizinhas(d)):
-            if o.corretora == d.e2_com and o.e2_com == d.corretora:
-                o.e2_com = ""
-                self._evento("e2_uma_acabou", o, ts, f"{d.corretora} acabou", parceiro=d.corretora)
-        d.e2_com = ""
+        o = self._defesas.get(d.e2_par)
+        if o is not None and o.e2_par == self._chave(d):
+            o.e2_par, o.e2_com = (), ""
+            self._evento("e2_uma_acabou", o, ts, f"{d.corretora} acabou", parceiro=d.corretora)
+        d.e2_par, d.e2_com = (), ""
 
     def _evento(self, evento: str, d: Defesa, ts: float, detalhe: str = "", parceiro: str = ""):
         self._eventos.append(EventoDefesa(ts, evento, d.tipo, d.corretora, d.lado, d.preco, detalhe, parceiro))
