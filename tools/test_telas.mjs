@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import * as f from "../api/static/js/formato.js";
 import { textoStatus, estadoReconectar } from "../api/static/js/shell.js";
-import { tituloSinal, LOTE_GRANDE_PADRAO, textoEvento, duracao } from "../api/static/js/operar-paineis.js";
+import { tituloSinal, LOTE_GRANDE_PADRAO, textoEvento, duracao, ordenarDefesas } from "../api/static/js/operar-paineis.js";
 import { sinceCandles, juntarCandles, precisaLimpar } from "../api/static/js/candles.js";
 
 assert.equal(f.preco(38.47), "38,47");
@@ -81,7 +81,7 @@ assert.deepEqual(estadoReconectar({ conectado: false, ocupado: true, reconexao: 
 const ev = (evento, extra = {}) => ({ ts: 0, evento, tipo: "sniper", corretora: "MORGAN", lado: "compra",
   preco: 21.17, detalhe: "", parceiro: "", ...extra });
 assert.equal(textoEvento(ev("confirmada")), "Sniper MORGAN segurando a compra @ 21,17");
-assert.equal(textoEvento(ev("mudou_nivel", { preco: 21.19, detalhe: "21,17 → 21,19" })), "Sniper MORGAN subiu 21,17 → 21,19");
+assert.equal(textoEvento(ev("mudou_nivel", { preco: 21.19, detalhe: "21,17 → 21,19" })), "Sniper MORGAN mudou de nível 21,17 → 21,19");
 assert.equal(textoEvento(ev("fila_formada", { tipo: "fantasma", corretora: "TULLETT", lado: "venda", preco: 22.4 })),
   "Fantasma TULLETT: fila formada @ 22,40");
 assert.equal(textoEvento(ev("defensor_ausente", { detalhe: "negócio a 4 ticks além" })),
@@ -94,5 +94,13 @@ assert.equal(textoEvento(ev("e2_uma_acabou", { tipo: "iceberg", corretora: "AGOR
 assert.equal(duracao(45), "45 s");
 assert.equal(duracao(185), "3 min");
 assert.equal(duracao(7300), "2 h");
+
+const dd = (preco) => ({ preco });
+const dez = [20, 21, 22, 23, 24, 25, 26, 27, 28, 29].map(dd);
+assert.deepEqual(ordenarDefesas(dez, 25.1, 3).map((x) => x.preco), [25, 26, 24]);
+assert.equal(ordenarDefesas(dez, 25.1).length, 8);
+assert.deepEqual(ordenarDefesas(dez, null, 2).map((x) => x.preco), [20, 21]);
+assert.deepEqual(ordenarDefesas(undefined, 25, 8), []);
+assert.equal(dez[0].preco, 20);   // não altera a lista recebida
 
 console.log("test_telas.mjs: tudo certo");

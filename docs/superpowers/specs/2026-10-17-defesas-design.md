@@ -194,8 +194,10 @@ Estas decisões prevalecem sobre §5, §6 e §7 onde divergirem (as seções ant
    não comentou (ex.: outros "snipers" por reação com passiva desconhecida). A validação de quem defende fica para os
    dados reais da DLL quando a Bovespa estiver liberada.
 9. Sniper só por reação ("absorve e boleta de volta" em ≤ defesa_reacao_ms, com a passiva da agressão contrária igual
-   à corretora ou vazia); "continua defendendo depois de negócio além" só para quem já era defesa (alerta, confirmada
-   ou rompida). Passiva + agressão espaçadas não fazem sniper.
+   à corretora ou vazia); "continua defendendo depois de negócio além" só para defesa confirmada ou rompida (≥2 giros),
+   e só com nova absorção passiva no preço (agressão não conta). Passiva + agressão espaçadas não fazem sniper.
 10. Fila formada (sniper e fantasma) só se decide no negócio contra a fila (agressão do lado da defesa, no próprio preço); outros negócios
     não encerram a defesa.
 11. Reclassificação para sniper também funde o sniper antigo da mesma corretora e lado (uma defesa só).
+12. Reação só com 0 ≤ Δ ≤ defesa_reacao_ms; com fonte sem passiva (OCR/DDE/manual), sniper e fantasma aparecem na tela
+    mas não entram na confluência de sinal.

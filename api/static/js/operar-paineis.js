@@ -7,6 +7,14 @@ const NOME = { "Absorção": ["Absorção", "f"], "Exaustão": ["Exaustão", "f"
 const SEGUNDOS_NOVO = 60;
 const TIPO = { iceberg: "Iceberg", sniper: "Sniper", fantasma: "Fantasma" };
 const EVENTOS_NA_TELA = 8;
+const DEFESAS_NA_TELA = 8;   // limite de exibição do painel (o servidor já manda só as 30 mais próximas)
+
+/** As `limite` defesas mais próximas de `preco` (empate mantém a ordem recebida). Sem preço, a ordem original. */
+export function ordenarDefesas(ativas, preco, limite = DEFESAS_NA_TELA) {
+  const lista = [...(ativas || [])];
+  if (preco != null) lista.sort((a, b) => Math.abs(a.preco - preco) - Math.abs(b.preco - preco));
+  return lista.slice(0, limite);
+}
 
 /** "45 s", "3 min", "2 h": há quanto tempo a defesa está ativa. */
 export function duracao(seg) {
@@ -20,7 +28,7 @@ export function textoEvento(ev, casas = 2) {
   const p = preco(ev.preco, casas);
   switch (ev.evento) {
     case "confirmada": return `${quem} segurando a ${ev.lado} @ ${p}`;
-    case "mudou_nivel": return `${quem} ${ev.lado === "compra" ? "subiu" : "desceu"} ${ev.detalhe}`;
+    case "mudou_nivel": return `${quem} mudou de nível ${ev.detalhe}`;
     case "rompida": return `${quem} rompido @ ${p}`;
     case "fila_formada": return `${quem}: fila formada @ ${p}`;
     case "defensor_ausente": return `${quem} sumiu (${ev.detalhe})`;
@@ -113,12 +121,14 @@ export function criarPaineis() {
   }
 
   function defesas(estado, casas, agora) {
-    const d = estado.defesas || { ativas: [], eventos: [] };
-    $("defesas-nota").textContent = d.ativas.length ? `${d.ativas.length} ativa${d.ativas.length > 1 ? "s" : ""}` : "nenhuma ativa";
-    atualizarLinhas($("defesas"), d.ativas, (x) => ({
+    const d = estado.defesas || {};
+    const ativas = d.ativas || [], eventos = d.eventos || [];
+    $("defesas-nota").textContent = ativas.length ? `${ativas.length} ativa${ativas.length > 1 ? "s" : ""}` : "nenhuma ativa";
+    atualizarLinhas($("defesas"), ordenarDefesas(ativas, estado.resumo?.ultimo), (x) => ({
       celulas: [{ t: (TIPO[x.tipo] || x.tipo) + (x.e2_com ? " · E2" : "") }, { t: x.corretora },
         { t: preco(x.preco, casas), c: `num ${x.lado}` }, { t: duracao(agora - x.desde), c: "num faint" }] }));
-    atualizarLinhas($("defesas-eventos"), [...d.eventos].reverse().slice(0, EVENTOS_NA_TELA), (ev) => ({
+    // "alerta" é só candidata; a lista de eventos da tela mostra o que já virou defesa
+    atualizarLinhas($("defesas-eventos"), eventos.filter((ev) => ev.evento !== "alerta").reverse().slice(0, EVENTOS_NA_TELA), (ev) => ({
       celulas: [{ t: horaB3(ev.ts), c: "faint" }, { t: textoEvento(ev, casas) }] }));
   }
 
