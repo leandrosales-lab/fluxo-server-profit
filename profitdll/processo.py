@@ -17,7 +17,7 @@ Protocolo (uma linha JSON por mensagem):
     qualquer linha (ou EOF) = encerrar: bridge.stop() (Unsubscribe + DLLFinalize) e sair.
 
 Uso do filho (o pai monta o comando):
-  python -m profitdll.processo --asset WDOFUT [--bolsa F] [--agentes agentes.json] [--timeout 30]
+  python -m profitdll.processo --asset PETR4 [--agentes agentes.json] [--timeout 30]
 """
 import os
 import sys
@@ -31,7 +31,7 @@ from typing import Optional, Callable
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.engine import Tick, BookLevel, Side
-from profitdll.bridge import bolsa_padrao, mascarar_caminho, CAMINHO_PADRAO_DLL
+from profitdll.bridge import validar_ativo, BOLSA, mascarar_caminho, CAMINHO_PADRAO_DLL
 
 logger = logging.getLogger("ProfitDLL")
 
@@ -75,19 +75,18 @@ class PonteDLLProcesso:
     start()/stop() criam/encerram o filho; reconectar = stop() + start() (processo novo).
     """
 
-    def __init__(self, asset: str, exchange: Optional[str] = None,
-                 agentes_path: Optional[str] = None, timeout: int = 30,
+    def __init__(self, asset: str, agentes_path: Optional[str] = None, timeout: int = 30,
                  comando: Optional[list] = None, folga: float = 15.0):
-        self.asset = asset
-        self.exchange = exchange or bolsa_padrao(asset)
+        self.asset = validar_ativo(asset)
+        self.exchange = BOLSA
         self.timeout = timeout
         self.folga = folga                         # além do timeout da DLL: subir o Python e carregar a DLL
         self.on_tick: Optional[Callable[[Tick], None]] = None
         self.on_book: Optional[Callable[[list[BookLevel]], None]] = None
         self.motivo_falha: Optional[str] = None
         if comando is None:
-            comando = [sys.executable, "-X", "utf8", "-m", "profitdll.processo", "--asset", asset,
-                       "--bolsa", self.exchange, "--timeout", str(timeout)]
+            comando = [sys.executable, "-X", "utf8", "-m", "profitdll.processo", "--asset", self.asset,
+                       "--timeout", str(timeout)]
             if agentes_path:
                 comando += ["--agentes", agentes_path]
         self._comando = comando
@@ -266,7 +265,6 @@ def main_filho(argv=None, fabrica_ponte=None, entrada=None, saida=None) -> int:
 
     p = argparse.ArgumentParser(description="ProfitDLL em processo filho do Fluxo Server")
     p.add_argument("--asset", required=True)
-    p.add_argument("--bolsa", default=None)
     p.add_argument("--agentes", default=None)
     p.add_argument("--timeout", default=30, type=int)
     args = p.parse_args(argv)
@@ -302,7 +300,7 @@ def main_filho(argv=None, fabrica_ponte=None, entrada=None, saida=None) -> int:
     if raiz.level > logging.INFO or raiz.level == logging.NOTSET:
         raiz.setLevel(logging.INFO)
     try:
-        bridge = fabrica_ponte(args.asset, args.bolsa, args.agentes, timeout=args.timeout)
+        bridge = fabrica_ponte(args.asset, args.agentes, timeout=args.timeout)
         bridge.on_tick = lambda t: enviar(tick_para_msg(t))
         bridge.on_book = lambda niveis: enviar(book_para_msg(niveis, time.time()))
         ok = bridge.start()

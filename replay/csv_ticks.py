@@ -9,7 +9,7 @@ Formato gravado pelo Fluxo Server (--gravar arquivo.csv):
   - timestamp: segundos desde 1970 (epoch) com milissegundos, ou data/hora
                ISO (2026-10-14T10:00:00.125) ou 14/10/2026 10:00:00.125
   - preco:     preço do negócio
-  - quantidade: contratos / ações do negócio
+  - quantidade: ações do negócio
   - agressor:  B (compra) ou S (venda). Também aceita C/V, Compra/Venda,
                Comprador/Vendedor
   - corretora_agressora: quem agrediu

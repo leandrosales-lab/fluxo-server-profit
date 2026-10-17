@@ -385,11 +385,20 @@ def test_sem_exaustao():
         err(f"Exaustão falsa: {state['exhaustions']}")
 
 
+def programa_asset_ok(programa) -> bool:
+    sys_argv = sys.argv
+    try:
+        sys.argv = ["main.py", "--asset", "petr4"]
+        return programa.parse_args().asset == "PETR4"
+    finally:
+        sys.argv = sys_argv
+
+
 def test_profitdll():
     print(f"\n{AMARELO}═══ TESTE 9: Ponte ProfitDLL (negócios simulados) ═══{RESET}")
 
     import json, tempfile, threading
-    from profitdll.bridge import (ProfitDLLBridge, trade_para_tick, bolsa_padrao,
+    from profitdll.bridge import (ProfitDLLBridge, trade_para_tick, validar_ativo, BOLSA,
                                   AGRESSAO_COMPRA, AGRESSAO_VENDA)
 
     # Lado agressor e corretora agressora vêm do TradeType
@@ -412,16 +421,47 @@ def test_profitdll():
     else:
         err("Corretora sem nome deveria usar o código")
 
-    if (bolsa_padrao("WDOFUT"), bolsa_padrao("WINZ26"), bolsa_padrao("PETR4")) == ("F", "F", "B"):
-        ok("Bolsa inferida: futuros → F, ações → B")
+    recusados = []
+    for futuro in ("WDOFUT", "WINZ26", "DOLF27", "INDFUT", "wdofut"):
+        try:
+            validar_ativo(futuro)
+        except ValueError:
+            recusados.append(futuro)
+    if validar_ativo(" petr4 ") == "PETR4" and len(recusados) == 5 and BOLSA == "B"             and ProfitDLLBridge("BBAS3").exchange == "B":
+        ok("Só ações: ticker de futuro recusado, bolsa sempre B (Bovespa)")
     else:
-        err("Inferência de bolsa incorreta")
+        err(f"Validação de ativo incorreta: recusados={recusados}")
+    try:
+        ProfitDLLBridge("WDOFUT")
+        err("Ponte deveria recusar ticker de futuro")
+    except ValueError:
+        ok("Ponte recusa ticker de futuro")
+    import contextlib, io
+    import main as programa
+    from profitdll.historico import parse_args as args_historico
+    recusas = 0
+    for argv, analisar in ((["main.py", "--asset", "WINZ26", "--modo", "replay"], lambda: programa.parse_args()),
+                           (None, lambda: args_historico(["--asset", "WDOFUT", "--inicio", "2026-10-01"]))):
+        sys_argv = sys.argv
+        try:
+            if argv:
+                sys.argv = argv
+            with contextlib.redirect_stderr(io.StringIO()):
+                analisar()
+        except SystemExit:
+            recusas += 1
+        finally:
+            sys.argv = sys_argv
+    if recusas == 2 and programa_asset_ok(programa):
+        ok("main.py e o histórico recusam futuro na linha de comando; ação passa normalizada")
+    else:
+        err(f"Linha de comando aceitou futuro ({recusas}/2 recusas)")
 
     # Fila → consumidor → engine, com nomes vindos de JSON
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
         json.dump({"3": "xp inc", "8": "UBS"}, f)
-    engine = FlowEngine("WDOFUT", EngineConfig(delta_window_sec=60.0))
-    bridge = ProfitDLLBridge("WDOFUT", agentes_path=f.name)
+    engine = FlowEngine("PETR4", EngineConfig(delta_window_sec=60.0))
+    bridge = ProfitDLLBridge("PETR4", agentes_path=f.name)
     os.unlink(f.name)
     bridge.on_tick = engine.add_tick
     consumidor = threading.Thread(target=bridge._consumir, daemon=True)
@@ -518,8 +558,8 @@ def test_profitdll_tempo_real():
         err(f"topo_para_niveis incorreto: {niveis}")
 
     # Sequência intercalada trade/book processada direto (sem thread, sem DLL)
-    engine = FlowEngine("WDOFUT", EngineConfig(tick_size=0.5, delta_window_sec=60.0))
-    bridge = ProfitDLLBridge("WDOFUT")
+    engine = FlowEngine("PETR4", EngineConfig(tick_size=0.5, delta_window_sec=60.0))
+    bridge = ProfitDLLBridge("PETR4")
     bridge.on_tick = engine.add_tick
     bridge.on_book = engine.update_book
     t0 = esperado
@@ -585,8 +625,8 @@ def test_profitdll_tempo_real():
         err(f"Esperado 3 ticks e delta +8: {state['tick_count']} / {state['delta']}")
 
     # Mesma sequência pela fila + thread consumidora: ordem preservada
-    engine2 = FlowEngine("WDOFUT", EngineConfig(tick_size=0.5, delta_window_sec=60.0))
-    bridge2 = ProfitDLLBridge("WDOFUT")
+    engine2 = FlowEngine("PETR4", EngineConfig(tick_size=0.5, delta_window_sec=60.0))
+    bridge2 = ProfitDLLBridge("PETR4")
     bridge2.on_tick = engine2.add_tick
     bridge2.on_book = engine2.update_book
     for ev in eventos:
@@ -640,8 +680,8 @@ def test_profitdll_nomes_e_descartes():
             buf.value = self.NOMES[codigo][:tam - 1]
             return 0
 
-    engine = FlowEngine("WDOFUT", EngineConfig(tick_size=0.5))
-    b = ProfitDLLBridge("WDOFUT", agentes_path=None)
+    engine = FlowEngine("PETR4", EngineConfig(tick_size=0.5))
+    b = ProfitDLLBridge("PETR4", agentes_path=None)
     b.nomes = {107: "TERRA (JSON)"}          # o JSON vence a DLL
     b.dll = DLLFalsa()
     b.on_tick = engine.add_tick
@@ -668,7 +708,7 @@ def test_profitdll_nomes_e_descartes():
     else:
         err(f"Descartes por tipo errados: {st['ignorados_por_tipo']}")
 
-    sem_dll = ProfitDLLBridge("WDOFUT")
+    sem_dll = ProfitDLLBridge("PETR4")
     if sem_dll._nome_agente(8) == "8":
         ok("Sem DLL o broker continua sendo o código")
     else:
@@ -686,7 +726,7 @@ def test_profitdll_reconexao():
         def UnsubscribeTicker(self, *a): return 0
         def DLLFinalize(self): return 0
 
-    b = ProfitDLLBridge("WDOFUT", timeout=0.5)
+    b = ProfitDLLBridge("PETR4", timeout=0.5)
     falhar = {"login": False}
 
     def conectar_falso():
@@ -738,7 +778,7 @@ def test_profitdll_reconexao():
     st = b.stats()
     if st["latencia_ms"] is not None and 30 <= st["latencia_ms"] < 2000 \
             and st["estados"]["market"] == {"codigo": 4, "nome": "conectado"} \
-            and st["ativo"] == "WDOFUT" and st["bolsa"] == "F":
+            and st["ativo"] == "PETR4" and st["bolsa"] == "B":
         ok(f"stats() com latência ({st['latencia_ms']} ms), estados com nome, ativo e bolsa")
     else:
         err(f"stats() incompleto: {st}")
@@ -1271,7 +1311,7 @@ def test_iceberg_rtd_passiva():
 # ──────────────────────────────────────────────────────────────
 
 _PASTA = os.path.dirname(os.path.abspath(__file__))
-_EXEMPLO = os.path.join(_PASTA, "replay", "exemplo_wdo.csv")
+_EXEMPLO = os.path.join(_PASTA, "replay", "exemplo_petr4.csv")
 
 
 def _arquivo_temp(conteudo: str, encoding: str = "utf-8") -> str:
@@ -1369,7 +1409,7 @@ def test_replay_leitura():
 
     # Exportação do Times & Trades do Profit: ';', vírgula decimal, mais novo primeiro
     arq = _arquivo_temp(
-        "Times & Trades - WDOFUT\n"
+        "Times & Trades - PETR4\n"
         "Data;Compradora;Preço;Quantidade;Vendedora;Agressor\n"
         "14/10/2026 10:00:03,100;XP INC;5.124,00;1.000;UBS;Comprador\n"
         "14/10/2026 10:00:02,000;ITAU;5.123,50;5;BTG PACTUAL;Vendedor\n"
@@ -1433,7 +1473,7 @@ def test_replay_gravacao():
     os.close(fd)
     os.unlink(caminho)
     try:
-        engine = FlowEngine("WDOFUT", EngineConfig(tick_size=0.5))
+        engine = FlowEngine("PETR4", EngineConfig(tick_size=0.5))
         grav = GravadorTicks(caminho)
         engine.add_tick = grav.envolver(engine.add_tick)
         for t in originais:
@@ -1467,8 +1507,8 @@ def test_replay_deterministico():
                                avaliar_sinais, SinalReplay)
 
     def rodar():
-        cfg = EngineConfig(tick_size=0.5, flow_pct_threshold=65.0, min_confidence=0.60)
-        sinais, player = executar_replay(FlowEngine("WDOFUT", cfg), ler_ticks(_EXEMPLO),
+        cfg = EngineConfig(tick_size=0.01, flow_pct_threshold=65.0, min_confidence=0.60)
+        sinais, player = executar_replay(FlowEngine("PETR4", cfg), ler_ticks(_EXEMPLO),
                                          velocidade=0, alvo_ticks=4, horizonte_sec=300)
         return [(s.indice, s.sinal, s.padrao, s.preco, s.stop, s.confianca, s.resultado,
                  s.mfe_ticks, s.mae_ticks) for s in sinais], player
@@ -1482,7 +1522,7 @@ def test_replay_deterministico():
         err("Replay não é determinístico")
     padroes = {x[2] for x in a}
     if "Exaustão" in padroes and "Absorção" in padroes:
-        ok("Exemplo WDO gera sinais de exaustão e de absorção")
+        ok("Exemplo PETR4 gera sinais de exaustão e de absorção")
     else:
         err(f"Exemplo deveria gerar exaustão e absorção: {padroes}")
 
@@ -1512,8 +1552,8 @@ def test_replay_deterministico():
         err("Parâmetro inexistente deveria dar erro")
     except ValueError:
         ok("Parâmetro inexistente no grid é recusado")
-    linhas = rodar_grid(ler_ticks(_EXEMPLO), grade, EngineConfig(tick_size=0.5),
-                        asset="WDOFUT", alvo_ticks=4, horizonte_sec=300)
+    linhas = rodar_grid(ler_ticks(_EXEMPLO), grade, EngineConfig(tick_size=0.01),
+                        asset="PETR4", alvo_ticks=4, horizonte_sec=300)
     if len(linhas) == 4 and all("taxa_acerto" in l and "n_sinais" in l for l in linhas):
         resumo = [(l["exhaustion_vol_ratio"], l["exhaustion_reversal_ticks"],
                    l["n_sinais"], l["n_exaustao"]) for l in linhas]
@@ -1628,9 +1668,9 @@ def test_historico_dll():
         err("Data final antes da inicial deveria falhar")
     except ValueError:
         ok("Data final antes da inicial é recusada")
-    if caminho_do_dia("historico/wdo_{data}.csv", date(2026, 10, 1)) == "historico/wdo_2026-10-01.csv" \
-            and caminho_do_dia("h/{asset}_{data}.csv", date(2026, 10, 1), "WDOFUT") == \
-            "h/WDOFUT_2026-10-01.csv":
+    if caminho_do_dia("historico/petr4_{data}.csv", date(2026, 10, 1)) == "historico/petr4_2026-10-01.csv" \
+            and caminho_do_dia("h/{asset}_{data}.csv", date(2026, 10, 1), "PETR4") == \
+            "h/PETR4_2026-10-01.csv":
         ok("Nome do arquivo por dia: {data} → AAAA-MM-DD, {asset} → ticker")
     else:
         err("caminho_do_dia incorreto")
@@ -1674,13 +1714,13 @@ def test_historico_dll():
     # Gravação de um dia fake e leitura de volta com o leitor do replay
     pasta = tempfile.mkdtemp()
     try:
-        caminho = caminho_do_dia(os.path.join(pasta, "sub", "wdo_{data}.csv"), date(2026, 10, 14))
+        caminho = caminho_do_dia(os.path.join(pasta, "sub", "petr4_{data}.csv"), date(2026, 10, 14))
         n = gravar_dia(caminho, res.ticks)
         sobras = os.listdir(os.path.dirname(caminho))
         leitura = ler_csv(caminho)
     finally:
         shutil.rmtree(pasta, ignore_errors=True)
-    if n == 4 and sobras == ["wdo_2026-10-14.csv"]:
+    if n == 4 and sobras == ["petr4_2026-10-14.csv"]:
         ok("Dia gravado na pasta criada, sem sobrar o arquivo .parcial")
     else:
         err(f"Gravação do dia incorreta: n={n} arquivos={sobras}")
@@ -2163,8 +2203,8 @@ def test_api_health_modo():
 
     porta = 15574
     for kwargs, esperado in (({}, ("manual", None)),
-                             ({"modo": "replay", "fonte": "exemplo_wdo.csv"}, ("replay", "exemplo_wdo.csv"))):
-        engine = FlowEngine("WDOFUT", EngineConfig(tick_size=0.5))
+                             ({"modo": "replay", "fonte": "exemplo_petr4.csv"}, ("replay", "exemplo_petr4.csv"))):
+        engine = FlowEngine("PETR4", EngineConfig(tick_size=0.01))
         server = FlowServer(engine, host="127.0.0.1", port=porta, **kwargs)
         server.start()
         time.sleep(0.3)
@@ -2173,7 +2213,7 @@ def test_api_health_modo():
                 h = json.loads(r.read())
         finally:
             server.stop()
-        if (h["modo"], h["fonte"]) == esperado and h["tick_size"] == 0.5 and h["asset"] == "WDOFUT":
+        if (h["modo"], h["fonte"]) == esperado and h["tick_size"] == 0.01 and h["asset"] == "PETR4":
             ok(f"/health → modo {h['modo']}, fonte {h['fonte']}, tick {h['tick_size']}")
         else:
             err(f"/health: {h}")
@@ -2268,7 +2308,7 @@ def test_api_reconectar():
             time.sleep(0.05)
         err("reconexão não terminou")
 
-    server = FlowServer(FlowEngine("WDOFUT", EngineConfig(tick_size=0.5)),
+    server = FlowServer(FlowEngine("PETR4", EngineConfig(tick_size=0.5)),
                         host="127.0.0.1", port=porta, modo="dll", fonte="ProfitDLL")
     server.start()
     time.sleep(0.3)
@@ -2392,7 +2432,7 @@ def test_dll_processo_filho():
             f.write(FILHO_FALSO)
 
         def ponte(modo):
-            p = PonteDLLProcesso("WDOFUT", timeout=5, comando=[sys.executable, script, modo])
+            p = PonteDLLProcesso("PETR4", timeout=5, comando=[sys.executable, script, modo])
             recebidos, livros = [], []
             p.on_tick, p.on_book = recebidos.append, livros.append
             return p, recebidos, livros
@@ -2455,7 +2495,7 @@ def test_dll_processo_filho():
             p.stop()
 
             # Filho que nunca responde: start() desiste no prazo e mata o processo sem esperar o "stop"
-            p = PonteDLLProcesso("WDOFUT", timeout=1, folga=0.5, comando=[sys.executable, script, "mudo"])
+            p = PonteDLLProcesso("PETR4", timeout=1, folga=0.5, comando=[sys.executable, script, "mudo"])
             inicio = time.time()
             conectou = p.start()
             gasto = time.time() - inicio
@@ -2498,7 +2538,7 @@ def test_dll_processo_filho():
             criadas = []
             saida = io.StringIO()
             stdout_antes = sys.stdout
-            codigo = main_filho(["--asset", "WDOFUT"], fabrica_ponte=lambda *a, **k: criadas.append(PonteFalsaFilho())
+            codigo = main_filho(["--asset", "PETR4"], fabrica_ponte=lambda *a, **k: criadas.append(PonteFalsaFilho())
                                 or criadas[-1], entrada=io.StringIO(""), saida=saida)
             msgs = [json.loads(linha) for linha in saida.getvalue().splitlines()]
             tipos = [m["tipo"] for m in msgs]
@@ -2526,8 +2566,8 @@ def test_dll_processo_filho():
                     "        self.on_tick(Tick(1000.0, 10.0, 7, 'XP', Side.BUY)); return True\n"
                     "    def stop(self): pass\n"
                     "    def stats(self): return {'conectado': True, 'trades_recebidos': 1}\n"
-                    "sys.exit(main_filho(['--asset', 'WDOFUT'], fabrica_ponte=Ponte))\n")
-            p = PonteDLLProcesso("WDOFUT", timeout=5, comando=[sys.executable, ruidoso])
+                    "sys.exit(main_filho(['--asset', 'PETR4'], fabrica_ponte=Ponte))\n")
+            p = PonteDLLProcesso("PETR4", timeout=5, comando=[sys.executable, ruidoso])
             recebidos = []
             p.on_tick = recebidos.append
             conectou = p.start()

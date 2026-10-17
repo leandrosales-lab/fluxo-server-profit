@@ -98,7 +98,7 @@ export function montarShell(telaAtiva) {
   getJSON("/health").then((h) => {
     Object.assign(saude, h);
     document.getElementById("modo").innerHTML = h.modo === "replay" ? "<b>replay</b>" : "<b>ao vivo</b>";
-    document.getElementById("aviso-exemplo").textContent = h.fonte === "exemplo_wdo.csv"
+    document.getElementById("aviso-exemplo").textContent = h.fonte === "exemplo_petr4.csv"
       ? "Dados de exemplo — pregão gravado para demonstração, não é negociação de hoje" : "";
   }).catch(() => { /* o aviso "sem resposta" cobre */ });
 

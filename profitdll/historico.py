@@ -11,15 +11,14 @@ com a ProfitDLL":
   - GetHistoryTrades(ticker, bolsa, dataInicial, dataFinal) pede o período;
   - THistoryTradeCallback é chamado uma vez por negócio;
   - TProgressCallback informa o progresso (0–100); 100 = terminou;
-  - a data inicial não pode ter mais de 30 dias (NL_HISTORY_PERIOD_LIMIT) e,
-    só para WIN/WDO, o intervalo não pode chegar a 10 dias (NL_INVALID_ARGS)
+  - a data inicial não pode ter mais de 30 dias (NL_HISTORY_PERIOD_LIMIT)
     — aqui pedimos DIA A DIA e validamos os 30 dias antes de conectar;
   - formato de data ESTRITO '%d/%m/%Y %H:%M:%S' (sempre via strftime).
 
 Uso (Windows, mesmas variáveis PROFITDLL_* do modo dll):
-  python -m profitdll.historico --asset WDOFUT --inicio 2026-10-01 --fim 2026-10-10
-  python -m profitdll.historico --asset WDOFUT --inicio 2026-10-01 --fim 2026-10-10 \\
-      --saida historico/wdo_{data}.csv --agentes agentes.json
+  python -m profitdll.historico --asset PETR4 --inicio 2026-10-01 --fim 2026-10-10
+  python -m profitdll.historico --asset PETR4 --inicio 2026-10-01 --fim 2026-10-10 \\
+      --saida historico/petr4_{data}.csv --agentes agentes.json
 
 Saída:
   - Com {data} no caminho (padrão): UM ARQUIVO POR DIA. Dias cujo arquivo
@@ -44,7 +43,7 @@ from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.engine import Tick
-from profitdll.bridge import (ProfitDLLBridge, trade_para_tick, bolsa_padrao,
+from profitdll.bridge import (ProfitDLLBridge, trade_para_tick, validar_ativo, BOLSA,
                               carregar_nomes_agentes, FUSO_B3,
                               data_b3_para_epoch as _data_b3_ou_none)
 
@@ -61,8 +60,7 @@ HORA_FIM_PADRAO    = "18:35:00"
 SAIDA_PADRAO       = os.path.join("historico", "{asset}_{data}.csv")
 
 # Limites da DLL (manual p.30): data inicial com mais de 30 dias em relação à
-# data do servidor → NL_HISTORY_PERIOD_LIMIT; WIN/WDO com intervalo de 10 dias
-# ou mais → NL_INVALID_ARGS (como pedimos dia a dia, só o de 30 dias importa).
+# data do servidor → NL_HISTORY_PERIOD_LIMIT (pedimos dia a dia).
 LIMITE_DIAS_HISTORICO   = 30
 NL_INVALID_ARGS         = -2147483645
 NL_HISTORY_PERIOD_LIMIT = -2147483602
@@ -271,14 +269,13 @@ class BaixadorHistorico:
     progresso chegar a 100.
     """
 
-    def __init__(self, asset: str, exchange: Optional[str] = None,
-                 agentes_path: Optional[str] = None, timeout_conexao: int = 30,
-                 timeout_dia: float = 600.0):
-        self.asset = asset
-        self.exchange = exchange or bolsa_padrao(asset)
+    def __init__(self, asset: str, agentes_path: Optional[str] = None,
+                 timeout_conexao: int = 30, timeout_dia: float = 600.0):
+        self.asset = validar_ativo(asset)
+        self.exchange = BOLSA
         self.nomes = carregar_nomes_agentes(agentes_path)
         self.timeout_dia = timeout_dia
-        self.bridge = ProfitDLLBridge(asset, self.exchange, agentes_path,
+        self.bridge = ProfitDLLBridge(self.asset, agentes_path,
                                       timeout=timeout_conexao)
         self.dll = None
         self._callbacks: list = []      # mantém os WINFUNCTYPE vivos (anti-GC)
@@ -427,14 +424,12 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(
         prog="python -m profitdll.historico",
         description="Baixa o histórico de negócios pela ProfitDLL para o CSV do replay")
-    p.add_argument("--asset",       required=True, help="Ticker (ex: WDOFUT, WINZ26, PETR4)")
+    p.add_argument("--asset",       required=True, help="Ticker da ação (ex: PETR4)")
     p.add_argument("--inicio",      required=True, help="Primeiro dia (AAAA-MM-DD ou DD/MM/AAAA)")
     p.add_argument("--fim",         default=None,  help="Último dia (padrão: igual ao início)")
     p.add_argument("--saida",       default=SAIDA_PADRAO,
                    help="CSV de saída. Com {data}: um arquivo por dia (padrão "
                         "historico/{asset}_{data}.csv). Sem {data}: um arquivo só")
-    p.add_argument("--bolsa",       default=None,
-                   help="B (Bovespa) ou F (BMF). Padrão: inferido do ticker")
     p.add_argument("--agentes",     default=None, help="JSON {codigo: nome} das corretoras")
     p.add_argument("--hora-inicio", default=HORA_INICIO_PADRAO,
                    help=f"Início da janela de cada dia (padrão {HORA_INICIO_PADRAO})")
@@ -446,7 +441,12 @@ def parse_args(argv=None):
                    help="Tentativas por dia em caso de erro/timeout (padrão 2)")
     p.add_argument("--refazer",     action="store_true",
                    help="Baixa de novo dias que já têm arquivo (ou apaga o arquivo único)")
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    try:
+        args.asset = validar_ativo(args.asset)      # só ações
+    except ValueError as e:
+        p.error(str(e))
+    return args
 
 
 def main(argv=None) -> int:
@@ -475,7 +475,7 @@ def main(argv=None) -> int:
                 return 2
             os.unlink(caminho)
 
-    baixador = BaixadorHistorico(args.asset, args.bolsa, args.agentes,
+    baixador = BaixadorHistorico(args.asset, args.agentes,
                                  timeout_dia=args.timeout_dia)
     logger.info(f"Histórico de {args.asset} (bolsa {baixador.exchange}): {len(dias)} dias "
                 f"úteis de {inicio:%d/%m/%Y} a {fim:%d/%m/%Y}, "

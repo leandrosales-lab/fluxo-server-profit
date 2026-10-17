@@ -15,7 +15,7 @@ Não precisa do Profit aberto, nem da DLL, nem de internet.
 Acrescente `--gravar arquivo.csv` em qualquer modo. Cada negócio que chega ao engine também é salvo no arquivo:
 
 ```
-python main.py --asset WDOFUT --modo dll --tick-size 0.5 --gravar wdo_2026-10-14.csv
+python main.py --asset PETR4 --modo dll --gravar petr4_2026-10-14.csv
 python main.py --asset PETR4 --modo rtd --gravar petr4_hoje.csv
 ```
 
@@ -61,13 +61,13 @@ Se o arquivo tiver só a hora, sem a data, o replay usa 01/01/2000 como data. Is
 ## 2. Rodar o replay
 
 ```
-python main.py --asset WDOFUT --modo replay --arquivo replay/exemplo_wdo.csv --tick-size 0.5 --sem-servidor
+python main.py --asset PETR4 --modo replay --arquivo replay/exemplo_petr4.csv --sem-servidor
 ```
 
 | Opção | Para que serve |
 |---|---|
 | `--arquivo` | O CSV do pregão (obrigatório) |
-| `--tick-size` | Tamanho do tick do ativo (WDO = 0.5, WIN = 5, ações = 0.01). **Importante:** os resultados são medidos em ticks |
+| `--tick-size` | Tamanho do tick (padrão 0.01, o de ações). **Importante:** os resultados são medidos em ticks |
 | `--velocidade` | `0` = o mais rápido possível (padrão). `1` = tempo real. `10` = 10 vezes mais rápido |
 | `--sem-servidor` | Roda direto, sem abrir o servidor/telas (modo lote) |
 | `--alvo-ticks` | Quantos ticks a favor contam como acerto (padrão 4) |
@@ -81,7 +81,7 @@ Os outros parâmetros do engine (`--flow-window`, `--flow-pct`, `--min-confidenc
 Sem `--sem-servidor`, o servidor sobe normalmente e as telas ficam em `http://127.0.0.1:5000/operar` (F2 abre a Conexão, T alterna o tema escuro/claro). Use uma velocidade maior que zero para ver o pregão andar:
 
 ```
-python main.py --asset WDOFUT --modo replay --arquivo wdo_2026-10-14.csv --tick-size 0.5 --velocidade 20
+python main.py --asset PETR4 --modo replay --arquivo petr4_2026-10-14.csv --velocidade 20
 ```
 
 Quando o arquivo termina, o relatório aparece e o servidor continua no ar com o estado final até você apertar Ctrl+C.
@@ -122,9 +122,9 @@ Um sinal conta como "novo" quando muda o lado, o padrão ou o stop em relação 
 Com `--grid`, o replay roda uma vez para cada combinação de valores e mostra quantos sinais saíram e a taxa de acerto de cada uma:
 
 ```
-python main.py --asset WDOFUT --modo replay --arquivo wdo_2026-10-14.csv --tick-size 0.5 ^
+python main.py --asset PETR4 --modo replay --arquivo petr4_2026-10-14.csv ^
     --grid exhaustion_vol_ratio=0.5,0.6,0.7 exhaustion_reversal_ticks=2,3,4 ^
-    --saida grid_wdo.csv
+    --saida grid_petr4.csv
 ```
 
 (No Linux/macOS, troque `^` por `\`.)
@@ -151,7 +151,7 @@ Dica: calibre com alguns dias e confira o resultado em **outros** dias. Um parâ
 
 ## 5. Arquivo de exemplo
 
-`replay/exemplo_wdo.csv` é um pregão **inventado** de WDO (tick 0,5), com uns 7 minutos e 235 negócios. Ele tem:
+`replay/exemplo_petr4.csv` é um pregão **inventado** de PETR4 (tick R$ 0,01, preços em torno de R$ 38), com uns 7 minutos e 235 negócios. Ele tem:
 
 1. três pernas de alta com cada vez menos compra → exaustão no topo;
 2. vendedores batendo várias vezes no mesmo preço até o nível ceder → absorção;
@@ -180,22 +180,22 @@ Precisa das mesmas coisas do modo `dll`: Windows, a `ProfitDLL.dll`, o `profitTy
 **1. Baixar** (um arquivo por dia, na pasta `historico/`):
 
 ```
-python -m profitdll.historico --asset WDOFUT --inicio 2026-10-01 --fim 2026-10-10 ^
-    --saida historico/wdo_{data}.csv --agentes agentes.json
+python -m profitdll.historico --asset PETR4 --inicio 2026-10-01 --fim 2026-10-10 ^
+    --saida historico/petr4_{data}.csv --agentes agentes.json
 ```
 
-Isso gera `historico/wdo_2026-10-01.csv`, `historico/wdo_2026-10-02.csv`, `historico/wdo_2026-10-05.csv`...
+Isso gera `historico/petr4_2026-10-01.csv`, `historico/petr4_2026-10-02.csv`, `historico/petr4_2026-10-05.csv`...
 
 **2. Ver um dia no replay:**
 
 ```
-python main.py --asset WDOFUT --modo replay --arquivo historico/wdo_2026-10-01.csv --tick-size 0.5 --sem-servidor
+python main.py --asset PETR4 --modo replay --arquivo historico/petr4_2026-10-01.csv --sem-servidor
 ```
 
 **3. Calibrar com o grid:**
 
 ```
-python main.py --asset WDOFUT --modo replay --arquivo historico/wdo_2026-10-01.csv --tick-size 0.5 ^
+python main.py --asset PETR4 --modo replay --arquivo historico/petr4_2026-10-01.csv ^
     --grid exhaustion_vol_ratio=0.5,0.6,0.7 exhaustion_reversal_ticks=2,3,4 --saida grid_0110.csv
 ```
 
@@ -205,11 +205,10 @@ Faça o grid em alguns dias e confira os melhores valores nos **outros** dias ba
 
 | Opção | Para que serve |
 |---|---|
-| `--asset` | Ticker (`WDOFUT`, `WINZ26`, `PETR4`...) — obrigatório |
+| `--asset` | Ticker da ação (`PETR4`, `BBAS3`...) — obrigatório. Contrato futuro é recusado |
 | `--inicio` | Primeiro dia, `2026-10-01` ou `01/10/2026` — obrigatório |
 | `--fim` | Último dia (se faltar, baixa só o dia do `--inicio`) |
 | `--saida` | Onde gravar. Padrão: `historico/{asset}_{data}.csv` |
-| `--bolsa` | `F` (BMF) ou `B` (Bovespa). Se faltar, é deduzida do ticker |
 | `--agentes` | JSON `{"codigo": "NOME"}` com o nome das corretoras (igual ao modo `dll`) |
 | `--hora-inicio` / `--hora-fim` | Janela de cada dia. Padrão `09:00:00` a `18:35:00` |
 | `--timeout-dia` | Quantos segundos esperar cada dia terminar (padrão 600) |
@@ -219,12 +218,12 @@ Faça o grid em alguns dias e confira os melhores valores nos **outros** dias ba
 ### Um arquivo por dia ou um arquivo só
 
 - **Com `{data}` no nome** (o padrão): um arquivo por dia. `{data}` vira `AAAA-MM-DD` e `{asset}` vira o ticker. Se o download parar no meio, rode o mesmo comando de novo: os dias que já têm arquivo são pulados. Cada arquivo só aparece quando o dia termina inteiro, então um arquivo que existe nunca está pela metade.
-- **Sem `{data}` no nome** (ex.: `--saida historico/wdo_outubro.csv`): todos os dias no mesmo arquivo, um depois do outro. Se o arquivo já existir, o programa para e avisa; use `--refazer` para apagar e baixar de novo.
+- **Sem `{data}` no nome** (ex.: `--saida historico/petr4_outubro.csv`): todos os dias no mesmo arquivo, um depois do outro. Se o arquivo já existir, o programa para e avisa; use `--refazer` para apagar e baixar de novo.
 
 ### Como funciona por dentro
 
 - O programa entra com o mesmo login do modo `dll`, mas **não assina** o ativo: só pede o histórico.
-- Pede **um dia de cada vez** (a DLL aceita até 10 dias por pedido, mas a Nelogica recomenda dia a dia: WDO e WIN têm centenas de milhares de negócios por dia). Sábados e domingos são pulados. Feriados não são conhecidos: a DLL não devolve nada e o dia fica sem arquivo.
+- Pede **um dia de cada vez** (a Nelogica recomenda dia a dia: ativos líquidos têm centenas de milhares de negócios por dia). Sábados e domingos são pulados. Feriados não são conhecidos: a DLL não devolve nada e o dia fica sem arquivo.
 - Espera a DLL avisar que chegou a 100%. Cada dia é gravado assim que termina.
 - Converte cada negócio com a mesma regra do tempo real: tipo 2 = compra agressora, tipo 3 = venda agressora. A corretora agressora vai em `corretora_agressora` e a outra em `corretora_passiva`. Os outros tipos (leilão, cross, RLP...) ficam de fora e são contados no log.
 - O horário vem da DLL como horário de Brasília (`14/10/2026 10:00:00.125`) e vira o `timestamp` em segundos, com milissegundos. A conversão usa UTC-3 fixo, então não depende do fuso do computador.

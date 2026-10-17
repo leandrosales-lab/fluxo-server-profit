@@ -21,7 +21,7 @@
 '      D1: =RTD("rtdtrading.rtdserver";;"PETR4_B_0";"AVD")  (agente venda)
 '      E1: =RTD("rtdtrading.rtdserver";;"PETR4_B_0";"NEG")  (num negocios)
 '
-'   SUFIXOS: _B_0 = Bovespa (acoes) | _F_0 = BMF (futuros, ex.: WDOFUT_F_0)
+'   SUFIXO: _B_0 = Bovespa (o Fluxo Server trabalha so com acoes)
 '
 '   8. Rode StartMonitor() (Alt+F8)
 ' ============================================================

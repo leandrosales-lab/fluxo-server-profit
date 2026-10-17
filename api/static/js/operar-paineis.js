@@ -15,11 +15,11 @@ export function tituloSinal(s) {
   return `${nome} ${lado}`;
 }
 
-/** Lote grande da fita: contratos para futuros de índice/dólar, ações em lotes de 100. */
-export function loteGrandePadrao(ativo) { return /^(WDO|DOL|WIN|IND)/.test(ativo || "") ? 50 : 5000; }
-function loteGrande(ativo) {
+/** Lote grande da fita (ações); ajustável por fluxo.loteGrande no localStorage. */
+export const LOTE_GRANDE_PADRAO = 5000;
+function loteGrande() {
   try { const v = Number(localStorage.getItem("fluxo.loteGrande")); if (v > 0) return v; } catch { /* padrão */ }
-  return loteGrandePadrao(ativo);
+  return LOTE_GRANDE_PADRAO;
 }
 
 export function criarPaineis() {
@@ -64,8 +64,8 @@ export function criarPaineis() {
   }
 
   function fita(trades, ativo, casas) {
-    const limite = loteGrande(ativo);
-    $("tt-meta").textContent = `lotes ≥ ${inteiro(limite)} em negrito`;
+    const limite = loteGrande();
+    $("tt-meta").textContent = `≥ ${inteiro(limite)} ações em negrito`;
     atualizarLinhas($("tt"), [...trades].reverse(), (t) => {
       const compra = t.side === "compra";
       const comprador = compra ? t.broker : t.passive_broker;

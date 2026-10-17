@@ -8,10 +8,10 @@ USO:
   python main.py --asset PETR4 --modo ocr
   python main.py --asset VALE3 --modo dde
   python main.py --asset PETR4 --modo rtd
-  python main.py --asset WDOFUT --modo dll --tick-size 0.5
+  python main.py --asset PETR4 --modo dll
   python main.py --asset PETR4 --modo manual --port 5000
-  python main.py --asset WDOFUT --modo dll --tick-size 0.5 --gravar pregao.csv
-  python main.py --asset WDOFUT --modo replay --arquivo pregao.csv --tick-size 0.5 --sem-servidor
+  python main.py --asset PETR4 --modo dll --gravar pregao.csv
+  python main.py --asset PETR4 --modo replay --arquivo pregao.csv --sem-servidor
 
 MODOS:
   ocr    → Captura tela do Profit via OCR (Tesseract)
@@ -168,8 +168,7 @@ def setup_dll_mode(engine: FlowEngine, args):
     """
     from profitdll.processo import PonteDLLProcesso
 
-    bridge = PonteDLLProcesso(asset=args.asset, exchange=args.bolsa,
-                              agentes_path=args.agentes)
+    bridge = PonteDLLProcesso(asset=args.asset, agentes_path=args.agentes)
     bridge.on_tick = engine.add_tick
     bridge.on_book = engine.update_book   # topo do livro (TinyBook)
     return bridge
@@ -328,8 +327,6 @@ def parse_args():
                    help="Região do Book em pixels: left,top,width,height (modo ocr)")
     p.add_argument("--calibrate",   action="store_true",
                    help="Salvar screenshots de calibração e sair (modo ocr)")
-    p.add_argument("--bolsa",       default=None,
-                   help="Bolsa na ProfitDLL: B (Bovespa) ou F (BMF). Padrão: inferido do ticker (modo dll)")
     p.add_argument("--agentes",     default=None,
                    help="JSON {codigo: nome} das corretoras (modo dll)")
     # Gravação e replay
@@ -357,7 +354,13 @@ def parse_args():
     p.add_argument("--iceberg-min",    default=None, type=int,   help="Renovações mínimas do Iceberg. Padrão 3")
     p.add_argument("--tick-size",      default=0.01, type=float, help="Tamanho do tick do ativo")
     p.add_argument("--min-confidence", default=None, type=float, help="Confiança mínima para sinal. Padrão 0.60")
-    return p.parse_args()
+    args = p.parse_args()
+    from profitdll.bridge import validar_ativo
+    try:
+        args.asset = validar_ativo(args.asset)      # só ações
+    except ValueError as e:
+        p.error(str(e))
+    return args
 
 
 def main():

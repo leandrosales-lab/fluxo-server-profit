@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import * as f from "../api/static/js/formato.js";
 import { textoStatus, estadoReconectar } from "../api/static/js/shell.js";
-import { tituloSinal, loteGrandePadrao } from "../api/static/js/operar-paineis.js";
+import { tituloSinal, LOTE_GRANDE_PADRAO } from "../api/static/js/operar-paineis.js";
 import { sinceCandles, juntarCandles, precisaLimpar } from "../api/static/js/candles.js";
 
 assert.equal(f.preco(38.47), "38,47");
@@ -33,15 +33,14 @@ assert.deepEqual(textoStatus({ ...ok, estados: { market: { codigo: 6 } } }, "Pro
 assert.deepEqual(textoStatus({ conectado: false, motivo_falha: "senha inválida", estados: {} }, "ProfitDLL"),
   ["desconectado — senha inválida", true]);
 assert.deepEqual(textoStatus({ ...ok, reconexao: { em_andamento: true } }, "ProfitDLL"), ["reconectando…", true]);
-assert.deepEqual(textoStatus(undefined, "exemplo_wdo.csv"), ["fonte: exemplo_wdo.csv", false]);
+assert.deepEqual(textoStatus(undefined, "exemplo_petr4.csv"), ["fonte: exemplo_petr4.csv", false]);
 // fora do pregão a DLL entrega o último negócio do dia: "latência" de 1 h não é latência, não aparece
 assert.deepEqual(textoStatus({ ...ok, latencia_ms: 3631402 }, "ProfitDLL"), ["ProfitDLL conectado (2,4)", false]);
 
 assert.equal(tituloSinal({ signal: "BUY", pattern: "Absorção" }), "Absorção compradora");
 assert.equal(tituloSinal({ signal: "SELL", pattern: "Iceberg" }), "Iceberg vendedor");
 assert.equal(tituloSinal({ signal: "SELL", pattern: "BestOffer" }), "Melhor oferta vendedora");
-assert.equal(loteGrandePadrao("WDOFUT"), 50);
-assert.equal(loteGrandePadrao("PETR4"), 5000);
+assert.equal(LOTE_GRANDE_PADRAO, 5000);   // ações: lote grande da fita
 
 // conexão inicial ainda em curso (ponte ocupada): alerta, não "desconectado"
 assert.deepEqual(textoStatus({ conectado: false, ocupado: true, estados: {}, reconexao: {} }, "ProfitDLL"),

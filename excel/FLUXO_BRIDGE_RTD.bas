@@ -53,9 +53,8 @@ Private Const PYTHON_URL As String = "http://127.0.0.1:5000"
 Private Const ASSET As String = "PETR4"
 
 ' Sufixo do ativo nas formulas RTD (ajuda da Nelogica, "Significados e
-' sintaxe do RTD"): _B_0 = Bovespa (acoes), _F_0 = BMF (futuros).
+' sintaxe do RTD"): _B_0 = Bovespa. O Fluxo Server trabalha so com acoes.
 Private Const SUFIXO_ACOES As String = "_B_0"
-Private Const SUFIXO_FUTUROS As String = "_F_0"
 
 ' Campo RTD da quantidade acumulada no dia. NAO use VOL: no Profit,
 ' VOL e' o volume financeiro em R$.
@@ -137,15 +136,11 @@ Public Sub InserirFormulasRTD()
     Dim sSufixo As String
     Dim ws As Worksheet
 
-    sAtivo = InputBox("Digite o codigo do ativo (ex: PETR4, VALE3, WINFUT):", _
+    sAtivo = InputBox("Digite o codigo do ativo (acao, ex: PETR4, VALE3):", _
                       "Configurar RTD", ASSET)
     If sAtivo = "" Then Exit Sub
 
-    If EhFuturo(UCase(sAtivo)) Then
-        sSufixo = SUFIXO_FUTUROS
-    Else
-        sSufixo = SUFIXO_ACOES
-    End If
+    sSufixo = SUFIXO_ACOES
 
     Dim sAtivoRTD As String
     sAtivoRTD = UCase(sAtivo) & sSufixo
@@ -176,15 +171,6 @@ Public Sub InserirFormulasRTD()
            "Verifique se os dados estao chegando nas celulas E1:I1." & vbCrLf & _
            "Se aparecer #N/D, confira o codigo do ativo e se o RTD esta ligado no Profit.", vbInformation
 End Sub
-
-' Futuros da BMF (sufixo _F_0). Ativos fora desta lista usam _B_0.
-Private Function EhFuturo(sAtivo As String) As Boolean
-    Dim p As Variant
-    For Each p In Array("WIN", "WDO", "DOL", "IND", "BGI", "CCM", "ICF", _
-                        "SFI", "DI1", "DDI", "FRC", "BIT", "ETR", "SOL")
-        If Left(sAtivo, 3) = p Then EhFuturo = True: Exit Function
-    Next p
-End Function
 
 Private Function FormulaRTD(sAtivoRTD As String, sCampo As String) As String
     FormulaRTD = "=RTD(""rtdtrading.rtdserver"",,""" & sAtivoRTD & """,""" & sCampo & """)"

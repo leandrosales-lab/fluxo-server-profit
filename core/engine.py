@@ -1339,7 +1339,7 @@ class FlowEngine:
         """
         Atualiza o resumo do dia com um negócio. Regras:
         - abertura e último seguem o HORÁRIO do negócio (um negócio atrasado não vira "último");
-        - volume financeiro = Σ preço × quantidade (sem multiplicador de contrato);
+        - volume financeiro = Σ preço × quantidade (ações: sem multiplicador);
         - saldo da corretora = compras − vendas em quantidade, contando a ponta agressora e,
           quando a fonte informa, a passiva (agressão de compra: agressora +q, passiva −q).
         """

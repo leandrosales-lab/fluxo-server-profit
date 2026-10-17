@@ -44,12 +44,9 @@ OPCAO 1: RTD (RECOMENDADO)
 
    SUFIXOS:
      _B_0 = Bovespa (acoes: PETR4, VALE3, MGLU3, etc.)
-     _F_0 = BMF (futuros: DOLFUT, WINFUT, INDFUT, etc.)
+     O Fluxo Server trabalha so com acoes.
 
-   Exemplo para mini-dolar:
-   E1 = =RTD("rtdtrading.rtdserver";;"WDOFUT_F_0";"ULT")
-
-   IMPORTANTE: use QTT (quantidade acumulada em acoes/contratos), NAO VOL.
+   IMPORTANTE: use QTT (quantidade acumulada em acoes), NAO VOL.
    No Profit, VOL e' o volume financeiro em R$. O servidor calcula a
    quantidade de cada negocio pela diferenca de QTT entre duas leituras.
 

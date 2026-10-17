@@ -24,7 +24,7 @@ function opcoesTema(casas) {
     localization: { locale: "pt-BR", timeFormatter: (t) => horaB3(t) },
   };
 }
-/** Formato de preço das séries: casas do tick e passo mínimo = tick do ativo (WDO anda de 0,5 em 0,5). */
+/** Formato de preço das séries: casas do tick e passo mínimo = tick do ativo (ações: R$ 0,01). */
 const formatoPreco = (casas, tick) => ({ type: "custom", minMove: tick || 10 ** -casas, formatter: (p) => preco(p, casas) });
 
 export function criarGrafico(el, casasIniciais) {

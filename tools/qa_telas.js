@@ -13,8 +13,8 @@ const SAIDA = path.join(RAIZ, "qa-telas");
 const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function subirServidor() {
-  return spawn("python", ["-X", "utf8", "main.py", "--asset", "WDOFUT", "--modo", "replay",
-    "--arquivo", "replay/exemplo_wdo.csv", "--tick-size", "0.5", "--velocidade", "6", "--port", String(PORTA)],
+  return spawn("python", ["-X", "utf8", "main.py", "--asset", "PETR4", "--modo", "replay",
+    "--arquivo", "replay/exemplo_petr4.csv", "--velocidade", "6", "--port", String(PORTA)],
     { cwd: RAIZ, env: { ...process.env, PYTHONIOENCODING: "utf-8" }, stdio: "ignore" });
 }
 async function esperarSaude() {
@@ -45,7 +45,7 @@ const verificacoes = [];   // [nome, async (page) => {}] — as tarefas de cada 
 verificacoes.push(["barra e atalhos", async (page) => {
   await page.goto(`${BASE}/operar`);
   // o /health chega em paralelo ao 1º /state: espera o status já com o nome da fonte
-  await page.waitForFunction(() => document.getElementById("status-texto").textContent.includes("exemplo_wdo.csv"));
+  await page.waitForFunction(() => document.getElementById("status-texto").textContent.includes("exemplo_petr4.csv"));
   checar(await page.locator('.aba[aria-current="page"]').textContent() === "Operar", "aba Operar marcada");
   checar(true, "status mostra a fonte do replay");
   checar((await page.textContent("#modo")).includes("replay"), "modo replay no cabeçalho");

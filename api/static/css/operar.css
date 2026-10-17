@@ -18,7 +18,7 @@
 .anteriores td { line-height: 23px; }
 .anteriores td:nth-child(5) { font-family: "IBM Plex Sans", sans-serif; color: var(--muted); }
 
-.bloco-baixo { display: grid; grid-template-columns: 380px 360px; min-height: 0; border-top: 1px solid var(--rule); }
+.bloco-baixo { display: grid; grid-template-columns: 420px 320px; min-height: 0; border-top: 1px solid var(--rule); }
 .bloco-baixo > .secao:first-child { border-left: 0; }
 .bloco-baixo td { line-height: 21px; }
 tr.spread td { color: var(--faint); font-size: 12px; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }

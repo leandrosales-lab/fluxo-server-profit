@@ -1,31 +1,36 @@
 # Próximos passos — onde paramos
 
-Última atualização: 16/10/2026. Este arquivo serve para continuar o trabalho de outro computador.
+Última atualização: 17/10/2026. Este arquivo serve para continuar o trabalho de outro computador.
 
 ## Prioridade
 
-1. **WDO e WIN pela ProfitDLL.** A licença atual só libera BMF (ver abaixo). Gravar pregões com `--gravar` e calibrar o
-   engine no replay. Tick do WDO 0,5 (`--tick-size 0.5`), do WIN 5 (`--tick-size 5`).
-2. **Ações (PETR4, BBAS3)** dependem de incluir a Bovespa na licença da DLL (suportecorp@nelogica.com.br). Até lá, ações
-   só pelo RTD do Profit. Bolsa `B`, sufixo RTD `_B_0`, tick de R$ 0,01.
+**O sistema trabalha só com ações** (decisão de 17/10/2026). Contratos futuros (WIN, WDO, DOL, IND... ou terminados em
+`FUT`) são recusados na linha de comando, na ponte da DLL e no histórico. Bolsa sempre `B`, sufixo RTD `_B_0`, tick R$ 0,01.
+
+1. **Incluir a Bovespa na licença da ProfitDLL** (em contratação; suportecorp@nelogica.com.br). A licença atual só libera
+   BMF (ver abaixo); até chegar, não há dado ao vivo pela DLL — só replay e RTD do Profit.
+2. **PETR4 ao vivo pela DLL** assim que a Bovespa estiver liberada: conferir assinatura, histórico (`profitdll.historico`)
+   e gravar pregões com `--gravar` para calibrar no replay.
+3. **Estratégias do curso** (sniper, fantasma, escora × rompimento, E2): spec a escrever a partir do consolidado local
+   das aulas (fora do repositório).
 
 ## O que já está pronto (no `main`)
 
 - **Engine:** detecta absorção por volume, exaustão, delta acumulado e iceberg pela **corretora passiva**. Usa o horário do negócio, não o relógio do computador.
 - **Ponte RTD:**
   - A quantidade vem de `QTT`. O `VOL` do Profit é volume em R$.
-  - Os sufixos são `_B_0` para ações e `_F_0` para futuros.
+  - O sufixo é `_B_0` (ações).
   - O bid/ask vem de `OCP`/`OVD`.
   - O servidor deduz a quantidade e o lado agressor de cada negócio.
 - **Modo replay:** `--gravar`, `--modo replay` e `--grid`. Ver [replay.md](replay.md).
 - **ProfitDLL (testada com a DLL real em 16/10/2026):**
   - Conecta em ~4 s; negócios com agressor, topo do livro (TinyBook), nome da corretora pela DLL e horário da B3.
   - **A licença atual só libera BMF** (log da DLL: `Exchanges=E,1,0;F,1,0`). Ações (bolsa `B`) são recusadas em
-    silêncio: o histórico fica em 0% para sempre.
+    silêncio: o histórico fica em 0% para sempre. A DLL fica sem uso até a Bovespa entrar na licença.
   - **A DLL não reinicializa no mesmo processo** (Access violation em `CreateDataLoader`): no modo dll ela roda num
     processo filho (`profitdll/processo.py`) e o Reconectar reinicia só o filho.
-  - Credenciais: `tools\configurar_profitdll.ps1`; subir: `tools\rodar_dll.ps1 -Asset WDOFUT -TickSize 0.5`.
-  - Histórico: `python -m profitdll.historico` (ainda não confirmado com dados reais de BMF).
+  - Credenciais: `tools\configurar_profitdll.ps1`; subir: `tools\rodar_dll.ps1 -Asset PETR4`.
+  - Histórico: `python -m profitdll.historico` (ainda não confirmado com dados reais).
 - **Telas (design v3):** `http://127.0.0.1:5000/operar` (F1) e `/conexao` (F2), tema escuro/claro (T), Reconectar
   da DLL na Conexão. Testes: `node tools/test_telas.mjs` e `node tools/qa_telas.js` (QA no navegador com Playwright).
 

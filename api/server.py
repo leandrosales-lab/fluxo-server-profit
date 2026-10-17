@@ -108,7 +108,7 @@ class FlowHandler(BaseHTTPRequestHandler):
     dll = None                  # ProfitDLLBridge no modo dll (contadores no /state)
     log: "log_memoria.LogMemoria" = None   # GET /log (tela Conexão)
     modo = "manual"             # GET /health: modo do main.py
-    fonte = None                # GET /health: nome da fonte (ex.: exemplo_wdo.csv, ProfitDLL)
+    fonte = None                # GET /health: nome da fonte (ex.: exemplo_petr4.csv, ProfitDLL)
 
     # Reconexão da ProfitDLL pedida pela tela Conexão (uma de cada vez)
     reconexao = {"em_andamento": False, "ultima": None, "resultado": None}

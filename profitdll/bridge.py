@@ -108,16 +108,18 @@ TINYBOOK_ASK = 1
 # horário de verão desde 2019) — não depende de tzdata no Windows.
 FUSO_B3 = timezone(timedelta(hours=-3))
 
-# Prefixos de derivativos BMF (bolsa "F"); demais ativos vão para Bovespa ("B")
-_PREFIXOS_BMF = ("WIN", "WDO", "IND", "DOL", "BGI", "CCM", "ICF", "DI1", "WSP", "BIT")
+# O sistema trabalha só com ações: toda assinatura vai para a Bovespa ("B").
+BOLSA = "B"
+# Prefixos de derivativos da BMF — recusados com mensagem clara em vez de uma assinatura que não chega
+_PREFIXOS_FUTUROS = ("WIN", "WDO", "IND", "DOL", "BGI", "CCM", "ICF", "DI1", "WSP", "BIT")
 
 
-def bolsa_padrao(ticker: str) -> str:
-    """Código de bolsa da DLL para o ticker: F = BMF (futuros), B = Bovespa."""
-    t = ticker.upper()
-    if t.endswith("FUT") or t.startswith(_PREFIXOS_BMF):
-        return "F"
-    return "B"
+def validar_ativo(ticker: str) -> str:
+    """Ticker normalizado (maiúsculo); ValueError para contrato futuro."""
+    t = ticker.strip().upper()
+    if t.endswith("FUT") or t.startswith(_PREFIXOS_FUTUROS):
+        raise ValueError(f"{t} é contrato futuro; o Fluxo Server trabalha só com ações (ex.: PETR4)")
+    return t
 
 
 # ──────────────────────────────────────────────────────────────
@@ -261,10 +263,9 @@ class ProfitDLLBridge:
       ("book",  lado (0 bid / 1 ask), price, qty, time.time() da chegada)
     """
 
-    def __init__(self, asset: str, exchange: Optional[str] = None,
-                 agentes_path: Optional[str] = None, timeout: int = 30):
-        self.asset    = asset
-        self.exchange = exchange or bolsa_padrao(asset)
+    def __init__(self, asset: str, agentes_path: Optional[str] = None, timeout: int = 30):
+        self.asset    = validar_ativo(asset)
+        self.exchange = BOLSA
         self.timeout  = timeout
         self.nomes    = carregar_nomes_agentes(agentes_path)
         self.on_tick: Optional[Callable[[Tick], None]] = None
