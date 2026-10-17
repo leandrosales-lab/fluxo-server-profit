@@ -7,9 +7,8 @@
 **O sistema trabalha só com ações** (decisão de 17/10/2026). Contratos futuros (WIN, WDO, DOL, IND... ou terminados em
 `FUT`) são recusados na linha de comando, na ponte da DLL e no histórico. Bolsa sempre `B`, sufixo RTD `_B_0`, tick R$ 0,01.
 
-1. **Incluir a Bovespa na licença da ProfitDLL** (em contratação; suportecorp@nelogica.com.br). A licença atual só libera
-   BMF (ver abaixo); até chegar, não há dado ao vivo pela DLL — só replay e RTD do Profit.
-2. **PETR4 ao vivo pela DLL** assim que a Bovespa estiver liberada: conferir assinatura, histórico (`profitdll.historico`)
+1. ~~Incluir a Bovespa na licença da ProfitDLL~~ — **liberada em 17/10/2026** (ver abaixo).
+2. **PETR4 ao vivo pela DLL** (primeiro pregão após a liberação): conferir assinatura, histórico (`profitdll.historico`)
    e gravar pregões com `--gravar` para calibrar no replay.
 3. **Estratégias do curso** (sniper, fantasma, escora × rompimento, E2): spec a escrever a partir do consolidado local
    das aulas (fora do repositório).
@@ -25,8 +24,9 @@
 - **Modo replay:** `--gravar`, `--modo replay` e `--grid`. Ver [replay.md](replay.md).
 - **ProfitDLL (testada com a DLL real em 16/10/2026):**
   - Conecta em ~4 s; negócios com agressor, topo do livro (TinyBook), nome da corretora pela DLL e horário da B3.
-  - **A licença atual só libera BMF** (log da DLL: `Exchanges=E,1,0;F,1,0`). Ações (bolsa `B`) são recusadas em
-    silêncio: o histórico fica em 0% para sempre. A DLL fica sem uso até a Bovespa entrar na licença.
+  - **Bovespa liberada em 17/10/2026:** o log da DLL passou a mostrar `Exchanges=#, A, B, D, E, F, V` (antes `E, F`).
+    Histórico de PETR4 de 16/10 (10:00–10:05) baixado: 432 negócios, 283 com agressor, todos com corretora passiva.
+    Falta conferir o tempo real num pregão aberto.
   - **A DLL não reinicializa no mesmo processo** (Access violation em `CreateDataLoader`): no modo dll ela roda num
     processo filho (`profitdll/processo.py`) e o Reconectar reinicia só o filho.
   - Credenciais: `tools\configurar_profitdll.ps1`; subir: `tools\rodar_dll.ps1 -Asset PETR4`.
