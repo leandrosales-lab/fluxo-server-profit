@@ -2700,12 +2700,24 @@ def test_defesas_classificacao():
     # ── Sniper: passiva E agressora do mesmo lado no mesmo preço (aula-02 12:20; aula 9393841 11:39)
     det = DefesaDetector(EngineConfig())
     det.on_tick(_neg(0, 21.17, 1000, "BTG", Side.SELL, "MORGAN"))
-    det.on_tick(_neg(500, 21.17, 700, "MORGAN", Side.BUY, "UBS"))
+    det.on_tick(_neg(10, 21.17, 700, "MORGAN", Side.BUY, "UBS"))
     at = det.ativas()
     if len(at) == 1 and at[0].tipo == "sniper" and at[0].corretora == "MORGAN" and at[0].lado == "compra":
         ok("MORGAN absorve no 21,17 e boleta de volta no 21,17 → sniper comprador")
     else:
         err(f"Sniper passiva+agressora: {[d.to_dict() for d in at]}")
+
+    # Sem reação: absorveu e só agrediu muito depois (outro cliente) → não é sniper
+    det = DefesaDetector(EngineConfig())
+    det.on_tick(_neg(0, 21.17, 100, "BTG", Side.SELL, "XP"))
+    det.on_tick(_neg(3 * 3600 * 1000, 21.17, 100, "XP", Side.BUY, "UBS"))
+    det.on_tick(_neg(3 * 3600 * 1000 + 1000, 21.17, 100, "ITAU", Side.SELL, "XP"))
+    det.on_tick(_neg(3 * 3600 * 1000 + 2000, 21.16, 100, "ITAU", Side.SELL, "BTG"))
+    det.on_tick(_neg(3 * 3600 * 1000 + 3000, 21.17, 100, "ITAU", Side.SELL, "XP"))
+    if not [d for d in det.ativas() if d.corretora == "XP"]:
+        ok("Absorver 100 e agredir horas depois, ou absorver de novo após 1 tick além, não faz sniper")
+    else:
+        err(f"Sniper falso: {[d.to_dict() for d in det.ativas()]}")
 
     # Mesma corretora vendendo no preço = cliente diferente, não conta (aula-02 09:18)
     det = DefesaDetector(EngineConfig())
@@ -2772,6 +2784,20 @@ def test_defesas_classificacao():
         ok("Sniper MORGAN mudou de nível 21,17 → 21,19 (uma defesa só, com histórico)")
     else:
         err(f"Mudança de nível: {[d.to_dict() for d in morgan]} / {[e.to_dict() for e in mud]}")
+
+    # Reclassificação também funde o sniper antigo da mesma corretora
+    det = DefesaDetector(EngineConfig())
+    det.on_tick(_neg(0, 21.10, 800, "BTG", Side.SELL))
+    det.on_tick(_neg(10, 21.10, 1200, "MORGAN", Side.BUY))        # sniper MORGAN no 21,10
+    det.on_tick(_neg(1000, 21.12, 1000, "XP", Side.SELL, "MORGAN"))
+    det.on_tick(_neg(2000, 21.12, 300, "RICO", Side.SELL, "MORGAN"))   # iceberg MORGAN no 21,12
+    det.on_tick(_neg(3000, 21.11, 100, "CLEAR", Side.SELL, "ITAU"))   # rompe o 21,12
+    det.on_tick(_neg(4000, 21.12, 200, "TORO", Side.SELL, "MORGAN"))  # volta: iceberg → sniper
+    morgan = [d for d in det.ativas() if d.corretora == "MORGAN"]
+    if len(morgan) == 1 and morgan[0].preco == 21.12 and 21.10 in morgan[0].to_dict()["niveis_anteriores"]:
+        ok("Iceberg reclassificado como sniper absorve o sniper antigo da MORGAN: uma defesa só")
+    else:
+        err(f"Duas defesas da MORGAN: {[d.to_dict() for d in morgan]}")
 
     # ── Fantasma: agressora no preço com o lado dela vazio, 3 vezes (aula-02 25:09–25:35; aula 9393842)
     det = DefesaDetector(EngineConfig())

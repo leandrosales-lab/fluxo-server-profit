@@ -258,7 +258,7 @@ class DefesaDetector:
 
     def _classificar(self, d: Defesa, ts: float):
         cfg = self.cfg
-        if d.reacoes > 0 or (d.vol_passivo > 0 and (d.agressoes > 0 or d.defendeu_apos_alem)):
+        if d.reacoes > 0 or d.defendeu_apos_alem:
             novo = "sniper"
         elif d.vol_passivo == 0 and d.agressoes_vazio >= cfg.defesa_fantasma_agressoes:
             novo = "fantasma"
@@ -280,6 +280,7 @@ class DefesaDetector:
         self._confirmadas[self._chave(d)] = d
         if anterior and anterior != novo:
             self._evento("reclassificada", d, ts, f"{anterior} → {novo}")
+            self._mudar_nivel(d, ts)
         elif not self._mudar_nivel(d, ts):
             self._evento("confirmada", d, ts)
         self._formar_e2(d, ts)
@@ -311,7 +312,7 @@ class DefesaDetector:
             for k in list(self._por_nivel[lado].get(L, {})):
                 d = self._defesas[k]
                 d.alem_max = max(d.alem_max, dist)
-                if d.giros > 0:
+                if d.estado in ("alerta", "confirmada", "rompida") and d.vol_passivo > 0:
                     d.alem_pendente = True
                 if d.tipo == "iceberg" and d.estado == "confirmada":
                     d.estado = "rompida"
