@@ -119,7 +119,7 @@ Unidade: uma **candidata** por (corretora, lado defendido, preço). Lado defendi
 - Guarda só candidatas e defesas ativas e os eventos recentes (janela limitada), para o teste de desempenho.
 
 ### 6.2 `FlowEngine`
-- `add_tick`: chama `defesas.on_tick` quando o tick tem passiva; sem passiva, segue o iceberg simplificado de hoje.
+- `add_tick`: chama `defesas.on_tick` em todo negócio com agressor (a parte passiva só conta com a passiva presente); sem passiva, o iceberg simplificado de hoje continua para OCR/DDE/manual.
 - `update_book`: chama `defesas.on_book`.
 - **Sinal de iceberg:** passa a vir das defesas do tipo iceberg confirmadas. Preço = nível. **Stop = 1 tick além do
   nível** (é onde o professor diz que o iceberg acabou; escora em iceberg com stop 1 tick atrás, aula 9393840 /
@@ -177,3 +177,24 @@ E2, ordem original), mesma corretora nos dois lados, negócio sem agressor, font
 ## 8. Fora de escopo
 Sinais de escora × rompimento (subprojeto 2), condução e saída (3), saldo por corretora, POV, camaleões, urgência
 (4), book completo, market maker, lotão.
+
+## 9. Decisões tomadas no plano (17/10/2026)
+
+1. Sem tempo de expiração (decisão do dono): defesa só termina por acontecimento; o sinal de iceberg só sai com o
+   último negócio no próprio nível.
+2. O módulo recebe todo negócio com agressor; a parte passiva só conta com a passiva presente.
+3. Passiva desconhecida não contradiz a reação do sniper; com a DLL a regra fica estrita.
+4. "Lado vazio" do fantasma inferido pelos negócios (compra agressora executa na melhor venda, venda na melhor compra)
+   e sem outra corretora agredindo do mesmo lado no preço.
+5. E2 = uma defesa confirmada + outra ao menos em alerta (o professor chama o setup com o player novo, 9393845 04:49).
+6. Teste do recuo 21,30 → 21,28 virou teste unitário: na sequência transcrita o recuo vem antes do reconhecimento.
+7. Confiança do sinal de iceberg = fórmula antiga do motor (só ordena sinais; não é regra do curso).
+8. Limitação conhecida: nas sequências das aulas (sem passiva nem book) aparecem classificações extras que o professor
+   não comentou (ex.: outros "snipers" por reação com passiva desconhecida). A validação de quem defende fica para os
+   dados reais da DLL quando a Bovespa estiver liberada.
+9. Sniper só por reação ("absorve e boleta de volta" em ≤ defesa_reacao_ms, com a passiva da agressão contrária igual
+   à corretora ou vazia); "continua defendendo depois de negócio além" só para quem já era defesa (alerta, confirmada
+   ou rompida). Passiva + agressão espaçadas não fazem sniper.
+10. Fila formada só se decide no negócio contra a fila (agressão do lado da defesa, no próprio preço); outros negócios
+    não encerram a defesa.
+11. Reclassificação para sniper também funde o sniper antigo da mesma corretora e lado (uma defesa só).

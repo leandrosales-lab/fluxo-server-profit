@@ -10,12 +10,15 @@
 1. ~~Incluir a Bovespa na licença da ProfitDLL~~ — **liberada em 17/10/2026** (ver abaixo).
 2. **PETR4 ao vivo pela DLL** (primeiro pregão após a liberação): conferir assinatura, histórico (`profitdll.historico`)
    e gravar pregões com `--gravar` para calibrar no replay.
-3. **Estratégias do curso** (sniper, fantasma, escora × rompimento, E2): spec a escrever a partir do consolidado local
-   das aulas (fora do repositório).
+3. **Estratégias do curso — subprojeto 2 (escora × rompimento)**: sinais a partir das defesas, com gatilho e stop por
+   tipo. Depois: 3 (condução e saída) e 4 (players e algoritmos).
 
 ## O que já está pronto (no `main`)
 
 - **Engine:** detecta absorção por volume, exaustão, delta acumulado e iceberg pela **corretora passiva**. Usa o horário do negócio, não o relógio do computador.
+- **Defesas (17/10/2026):** `core/defesas.py` reconhece iceberg (pela passiva), sniper, fantasma e E2 pelas regras do
+  professor, com eventos de fim (rompida, fila formada, defensor ausente). Painel "Defesas" no Operar. Spec:
+  `docs/superpowers/specs/2026-10-17-defesas-design.md`.
 - **Ponte RTD:**
   - A quantidade vem de `QTT`. O `VOL` do Profit é volume em R$.
   - O sufixo é `_B_0` (ações).
