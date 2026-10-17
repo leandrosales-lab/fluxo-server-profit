@@ -3,7 +3,6 @@ import { horaB3, hm, preco, compacto } from "./formato.js";
 import { juntarCandles } from "./candles.js";
 
 const LW = window.LightweightCharts;
-const LETRA = { "Absorção": "A", "Exaustão": "E", "Iceberg": "I", "Urgência": "U", "BestOffer": "O" };
 const cor = (nome) => getComputedStyle(document.documentElement).getPropertyValue(nome).trim();
 
 function opcoesTema(casas) {
@@ -39,23 +38,11 @@ export function criarGrafico(el, casasIniciais) {
     priceFormat: { type: "custom", formatter: semSinal } }, 1);
   const delta = chart.addSeries(LW.LineSeries, { lineWidth: 1, priceLineVisible: false,
     priceFormat: { type: "custom", formatter: compacto } }, 2);
-  const marcas = LW.createSeriesMarkers(velas, []);
   chart.panes()[1].setHeight(110);
   chart.panes()[2].setHeight(190);
 
   let candles = [];   // ordenados por time
-  let sinais = [];
   let tf = 60;
-
-  function desenharMarcas() {
-    const tempos = new Set(candles.map((c) => c.time));
-    marcas.setMarkers(sinais.map((s) => {
-      const t = Math.floor(s.timestamp / tf) * tf;
-      const compra = s.signal === "BUY";
-      return tempos.has(t) ? { time: t, position: compra ? "belowBar" : "aboveBar", shape: compra ? "arrowUp" : "arrowDown",
-        color: cor(compra ? "--buy" : "--sell"), text: LETRA[s.pattern] || "?" } : null;
-    }).filter(Boolean).sort((a, b) => a.time - b.time));
-  }
 
   function redesenhar() {
     velas.setData(candles.map(({ time, open, high, low, close }) => ({ time, open, high, low, close })));
@@ -71,7 +58,6 @@ export function criarGrafico(el, casasIniciais) {
     vwap.setData(vw);
     delta.setData(dl);
     volume.setData(vb);
-    desenharMarcas();
   }
 
   function aplicarCores() {
@@ -96,10 +82,9 @@ export function criarGrafico(el, casasIniciais) {
       candles = juntos;
       redesenhar();
     },
-    limpar() { candles = []; sinais = []; redesenhar(); },
+    limpar() { candles = []; redesenhar(); },
     ultimoTempo() { return candles.length ? candles[candles.length - 1].time : null; },
     ultimoCandle() { return candles[candles.length - 1] || null; },
-    definirSinais(lista) { sinais = lista; desenharMarcas(); },
     /** Ajusta casas decimais e passo do eixo de preço ao tick do ativo (vem do /health). */
     definirCasas(n, tick) {
       casas = n;

@@ -32,7 +32,6 @@ marcarTf(grafico.tf);
 document.querySelectorAll("#tfs [data-tf]").forEach((b) => b.addEventListener("click", () => {
   const tf = Number(b.dataset.tf);
   grafico.trocarTf(tf);
-  grafico.definirSinais(sinais);
   marcarTf(tf);
   try { localStorage.setItem(CHAVE_TF, String(tf)); } catch { /* vale só nesta visita */ }
 }));
@@ -93,7 +92,6 @@ async function passo() {
     novos.forEach((x) => vistos.add(chaveSinal(x)));
     sinais = sinais.concat(novos);
     ultimoSinalTs = sinais[sinais.length - 1].timestamp;
-    grafico.definirSinais(sinais);
   }
 
   const [tr, book] = await Promise.all([getJSON("/trades?limit=40"), getJSON("/book")]);
