@@ -2651,6 +2651,161 @@ def test_defesas_ordem_original():
         err(f"Ativa 20.000: {ativa}")
 
 
+def _neg(ms, preco, qtd, agressor, lado, passiva=""):
+    """Negócio sintético: ms a partir de 1.000.000 s."""
+    return Tick(1_000_000.0 + ms / 1000, preco, qtd, agressor, lado, passive_broker=passiva)
+
+
+def _evs(det, evento=None):
+    return [e for e in det.eventos(200) if evento is None or e.evento == evento]
+
+
+def test_defesas_classificacao():
+    print(f"\n{AMARELO}═══ TESTE 29: Defesas — iceberg, sniper, fantasma e fim ═══{RESET}")
+    from core.defesas import DefesaDetector
+
+    # ── Iceberg: passiva repetida, ≥ 1.000, 2 giros, nenhum negócio além (aula-02; aula 9393845)
+    det = DefesaDetector(EngineConfig())
+    det.on_tick(_neg(0, 19.04, 1000, "XP", Side.SELL, "JP MORGAN"))
+    alerta = _evs(det, "alerta")
+    det.on_tick(_neg(1000, 19.04, 300, "RICO", Side.SELL, "JP MORGAN"))
+    at = det.ativas()
+    if alerta and not alerta[0].tipo and len(at) == 1 and at[0].tipo == "iceberg" \
+            and at[0].lado == "compra" and at[0].giros == 2 and at[0].vol_passivo == 1300:
+        ok("1 giro de 1.000 = alerta; 2º giro confirma iceberg comprador de JP MORGAN @ 19,04")
+    else:
+        err(f"Iceberg: alerta={alerta} ativas={[d.to_dict() for d in at]}")
+
+    det.on_tick(_neg(2000, 19.03, 100, "CLEAR", Side.SELL, "ITAU"))
+    if _evs(det, "rompida") and not det.ativas():
+        ok("1º negócio 1 tick além → iceberg rompido (aula-02 24:15)")
+    else:
+        err(f"Rompimento: {[e.to_dict() for e in _evs(det)]}")
+    det.on_tick(_neg(3000, 19.04, 200, "TORO", Side.SELL, "JP MORGAN"))
+    at = det.ativas()
+    rec = _evs(det, "reclassificada")
+    if len(at) == 1 and at[0].tipo == "sniper" and rec and "iceberg → sniper" in rec[-1].detalhe:
+        ok("JP MORGAN volta a defender o 19,04 depois do negócio além → reclassificado como sniper (spec §5.5)")
+    else:
+        err(f"Reclassificação: {[d.to_dict() for d in at]} / {[e.to_dict() for e in rec]}")
+
+    det = DefesaDetector(EngineConfig())
+    det.on_tick(_neg(0, 19.04, 600, "XP", Side.SELL, "JP MORGAN"))
+    det.on_tick(_neg(1000, 19.04, 300, "RICO", Side.SELL, "JP MORGAN"))
+    if not det.ativas() and not _evs(det, "alerta"):
+        ok("Passiva repetida com 900 ações (< 1.000) não é iceberg nem alerta")
+    else:
+        err(f"Lote mínimo ignorado: {[d.to_dict() for d in det.ativas()]}")
+
+    # ── Sniper: passiva E agressora do mesmo lado no mesmo preço (aula-02 12:20; aula 9393841 11:39)
+    det = DefesaDetector(EngineConfig())
+    det.on_tick(_neg(0, 21.17, 1000, "BTG", Side.SELL, "MORGAN"))
+    det.on_tick(_neg(500, 21.17, 700, "MORGAN", Side.BUY, "UBS"))
+    at = det.ativas()
+    if len(at) == 1 and at[0].tipo == "sniper" and at[0].corretora == "MORGAN" and at[0].lado == "compra":
+        ok("MORGAN absorve no 21,17 e boleta de volta no 21,17 → sniper comprador")
+    else:
+        err(f"Sniper passiva+agressora: {[d.to_dict() for d in at]}")
+
+    # Mesma corretora vendendo no preço = cliente diferente, não conta (aula-02 09:18)
+    det = DefesaDetector(EngineConfig())
+    det.on_tick(_neg(0, 21.17, 1000, "BTG", Side.SELL, "MORGAN"))
+    det.on_tick(_neg(500, 21.17, 700, "MORGAN", Side.SELL, "ITAU"))
+    if not [d for d in det.ativas() if d.corretora == "MORGAN"]:
+        ok("MORGAN passiva na compra e agressora na venda no mesmo preço: não é sniper")
+    else:
+        err(f"Lados misturados: {[d.to_dict() for d in det.ativas()]}")
+
+    # Reação: agressão contrária no preço e o defensor agride de volta em ≤ 30 ms (aula 9393841)
+    det = DefesaDetector(EngineConfig())
+    det.on_tick(_neg(0, 21.17, 800, "BTG", Side.SELL))
+    det.on_tick(_neg(10, 21.17, 1200, "MORGAN", Side.BUY))
+    s1 = [d.corretora for d in det.ativas() if d.tipo == "sniper"]
+    det = DefesaDetector(EngineConfig())
+    det.on_tick(_neg(0, 21.17, 800, "BTG", Side.SELL))
+    det.on_tick(_neg(40, 21.17, 1200, "MORGAN", Side.BUY))
+    s2 = [d.corretora for d in det.ativas() if d.tipo == "sniper"]
+    det = DefesaDetector(EngineConfig())
+    det.on_tick(_neg(0, 21.17, 800, "BTG", Side.SELL, "ITAU"))
+    det.on_tick(_neg(10, 21.17, 1200, "MORGAN", Side.BUY))
+    s3 = [d.corretora for d in det.ativas() if d.tipo == "sniper"]
+    if s1 == ["MORGAN"] and s2 == [] and s3 == []:
+        ok("Reação em 10 ms = sniper; 40 ms não; passiva conhecida de outra corretora (ITAU) não")
+    else:
+        err(f"Reação: 10 ms={s1} 40 ms={s2} passiva ITAU={s3}")
+
+    # Tolerância: até 3 ticks além continua; a 4 ticks = defensor ausente (aulas 9393833/9393841)
+    det = DefesaDetector(EngineConfig())
+    det.on_tick(_neg(0, 21.17, 800, "BTG", Side.SELL))
+    det.on_tick(_neg(10, 21.17, 1200, "MORGAN", Side.BUY))
+    for ms, p in ((1000, 21.16), (2000, 21.15), (3000, 21.14)):
+        det.on_tick(_neg(ms, p, 100, "UBS", Side.SELL, "XP"))
+    vivo = [d.alem_max for d in det.ativas() if d.corretora == "MORGAN"]
+    det.on_tick(_neg(4000, 21.13, 100, "UBS", Side.SELL, "XP"))
+    aus = [e for e in _evs(det, "defensor_ausente") if e.corretora == "MORGAN"]
+    if vivo == [3] and aus and not [d for d in det.ativas() if d.corretora == "MORGAN"]:
+        ok("Sniper aguenta negócios a 1, 2 e 3 ticks além; a 4 ticks → defensor_ausente")
+    else:
+        err(f"Tolerância: vivo={vivo} ausente={[e.to_dict() for e in aus]}")
+
+    # Recuo de 2 ticks com o defensor ainda lá não encerra (aula 9393841 13:44–13:54)
+    det = DefesaDetector(EngineConfig())
+    det.on_tick(_neg(0, 21.30, 800, "UBS", Side.SELL))
+    det.on_tick(_neg(10, 21.30, 1000, "MORGAN", Side.BUY))
+    det.on_tick(_neg(1000, 21.28, 1800, "UBS", Side.SELL, "XP"))
+    det.on_tick(_neg(2000, 21.30, 600, "XP", Side.SELL, "MORGAN"))
+    if [d.preco for d in det.ativas() if d.corretora == "MORGAN"] == [21.30] and not _evs(det, "defensor_ausente"):
+        ok("Recuo 21,30 → 21,28 → 21,30: sniper continua")
+    else:
+        err(f"Recuo: {[d.to_dict() for d in det.ativas()]}")
+
+    # Mudou de nível: mesma corretora passa a defender outro preço do mesmo lado (aula 9393841)
+    det = DefesaDetector(EngineConfig())
+    det.on_tick(_neg(0, 21.17, 800, "BTG", Side.SELL))
+    det.on_tick(_neg(10, 21.17, 1200, "MORGAN", Side.BUY))
+    det.on_tick(_neg(5000, 21.19, 200, "ELLIOT", Side.SELL))
+    det.on_tick(_neg(5010, 21.19, 7800, "MORGAN", Side.BUY))
+    morgan = [d for d in det.ativas() if d.corretora == "MORGAN"]
+    mud = _evs(det, "mudou_nivel")
+    if len(morgan) == 1 and morgan[0].preco == 21.19 and morgan[0].to_dict()["niveis_anteriores"] == [21.17] \
+            and mud and mud[-1].detalhe == "21,17 → 21,19":
+        ok("Sniper MORGAN mudou de nível 21,17 → 21,19 (uma defesa só, com histórico)")
+    else:
+        err(f"Mudança de nível: {[d.to_dict() for d in morgan]} / {[e.to_dict() for e in mud]}")
+
+    # ── Fantasma: agressora no preço com o lado dela vazio, 3 vezes (aula-02 25:09–25:35; aula 9393842)
+    det = DefesaDetector(EngineConfig())
+    for i in range(3):
+        det.on_tick(_neg(i * 1000, 22.42, 100, "UBS", Side.BUY))        # compras pagam 22,42: venda vazia no 22,40
+        det.on_tick(_neg(i * 1000 + 100, 22.40, 300, "TULLETT", Side.SELL))
+    at = [d for d in det.ativas() if d.corretora == "TULLETT"]
+    det2 = DefesaDetector(EngineConfig())
+    for i in range(3):
+        det2.on_tick(_neg(i * 1000, 22.42, 100, "UBS", Side.BUY))
+        det2.on_tick(_neg(i * 1000 + 50, 22.40, 100, "XP", Side.SELL))   # outro vendedor também no 22,40
+        det2.on_tick(_neg(i * 1000 + 100, 22.40, 300, "TULLETT", Side.SELL))
+    at2 = [d for d in det2.ativas() if d.corretora == "TULLETT"]
+    if len(at) == 1 and at[0].tipo == "fantasma" and at[0].lado == "venda" and not at2:
+        ok("TULLETT vende 3 vezes no 22,40 com a venda vazia ali → fantasma; com outro vendedor no 22,40, não")
+    else:
+        err(f"Fantasma: {[d.to_dict() for d in at]} / com XP: {[d.to_dict() for d in at2]}")
+    det.on_tick(_neg(4000, 22.43, 100, "XP", Side.BUY, "BTG"))
+    vivo = bool([d for d in det.ativas() if d.corretora == "TULLETT"])
+    det.on_tick(_neg(5000, 22.44, 100, "XP", Side.BUY, "BTG"))
+    if vivo and [e for e in _evs(det, "defensor_ausente") if e.corretora == "TULLETT"]:
+        ok("Fantasma aguenta 3 ticks além (22,43); a 4 ticks (22,44) → defensor_ausente")
+    else:
+        err(f"Fim do fantasma: vivo={vivo} eventos={[e.to_dict() for e in _evs(det)]}")
+
+    # Negócio sem lado agressor é ignorado
+    det = DefesaDetector(EngineConfig())
+    det.on_tick(_neg(0, 19.04, 5000, "LEILAO", Side.NONE, "JP MORGAN"))
+    if not det._defesas and not det.eventos():
+        ok("Negócio sem agressor (leilão/cross) não cria defesa")
+    else:
+        err("Negócio sem agressor deveria ser ignorado")
+
+
 def main():
     print(f"\n{AZUL}╔══════════════════════════════════════════════╗{RESET}")
     print(f"{AZUL}║   FLUXO SERVER — Suite de Testes Automáticos  ║{RESET}")
@@ -2692,6 +2847,7 @@ def main():
     test_dll_processo_filho()
     test_main_fonte_dll()
     test_defesas_ordem_original()
+    test_defesas_classificacao()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")
