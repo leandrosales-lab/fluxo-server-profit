@@ -2987,6 +2987,92 @@ def test_defesas_engine():
         err(f"reset() deixou defesas: {engine.get_state()['defesas']}")
 
 
+def test_defesas_aulas():
+    print(f"\n{AMARELO}═══ TESTE 32: Defesas nas sequências das aulas (material local) ═══{RESET}")
+    pasta = _pasta_aulas()
+    if not pasta:
+        info("Sequências das aulas não encontradas (FLUXO_CENARIOS_AULAS): teste pulado")
+        return
+    from replay.csv_ticks import ler_ticks
+
+    def rodar(*nomes):
+        engine = FlowEngine("PETR4", EngineConfig())
+        for nome in nomes:
+            for t in ler_ticks(os.path.join(pasta, nome)):
+                engine.add_tick(t)
+        return engine._defesas.eventos(200)
+
+    def ev(evs, evento, corretora, preco=None):
+        return [e for e in evs if e.evento == evento and e.corretora == corretora
+                and (preco is None or abs(e.preco - preco) < 1e-9)]
+
+    # Sniper "Morgan de 1K", BRAV3 27/11/2024 (aula 9393841), 4 trechos em sequência
+    d = "27/11/2024"
+    evs = rodar("sniper_9393841_1113.csv", "sniper_9393841_1257.csv",
+                "sniper_9393841_1327.csv", "sniper_9393841_1429.csv")
+    conf = ev(evs, "confirmada", "Morgan", 21.17)
+    if conf and _hb3(d, "10:12:10.750") <= conf[0].ts <= _hb3(d, "10:12:10.830") and conf[0].tipo == "sniper":
+        ok("Sniper Morgan no 21,17 entre 10:12:10,75 e 10:12:10,83 (\"absorvendo e boletando\", 11:13)")
+    else:
+        err(f"Sniper 21,17: {[e.to_dict() for e in conf]}")
+    mud = [(e.preco, round(e.ts, 3)) for e in ev(evs, "mudou_nivel", "Morgan")]
+    esperado = [(21.19, round(_hb3(d, "10:12:51.970"), 3)), (21.30, round(_hb3(d, "10:13:33.690"), 3)),
+                (21.34, round(_hb3(d, "10:14:05.550"), 3))]
+    if mud == esperado:
+        ok("Morgan sobe 21,17 → 21,19 → 21,30 → 21,34 como uma defesa só")
+    else:
+        err(f"Mudanças de nível: {mud} (esperado {esperado})")
+    aus = ev(evs, "defensor_ausente", "Morgan")
+    if len(aus) == 1 and abs(aus[0].ts - _hb3(d, "10:14:14.100")) < 1e-6 and aus[0].preco == 21.34:
+        ok("\"Cadê ele?\": defensor ausente no negócio de 10:14:14,10 a 4 ticks (21,30), nem antes nem depois")
+    else:
+        err(f"Fim do sniper: {[e.to_dict() for e in aus]}")
+
+    # Mesmo trecho isolado: Morgan volta no 21,01 ("voltou", aula 9393841 08:39)
+    evs = rodar("sniper_9393841_0545.csv")
+    volta = [e for e in ev(evs, "confirmada", "Morgan", 21.01) if e.tipo == "sniper"]
+    if volta and abs(volta[0].ts - _hb3(d, "10:11:02.890")) < 1e-6 and not ev(evs, "confirmada", "Morgan", 21.03):
+        ok("Morgan reconhecido no 21,01 às 10:11:02,89; no 21,03 a passiva não aparece na tela (sem marcação)")
+    else:
+        err(f"Trecho 0545: {[e.to_dict() for e in evs if e.corretora == 'Morgan']}")
+
+    # Fantasma Tullett no 22,40, RECV3 04/04/2024 (aula 9393842)
+    d = "04/04/2024"
+    evs = rodar("fantasma_9393842_0436.csv")
+    f1 = [e for e in ev(evs, "confirmada", "Tullett", 22.40) if e.tipo == "fantasma"]
+    if f1 and abs(f1[0].ts - _hb3(d, "10:47:41.740")) < 1e-6:
+        ok("Fantasma vendedor Tullett no 22,40 na 3ª agressão com a venda vazia (10:47:41,74; \"40, 40, 40\")")
+    else:
+        err(f"Fantasma 0436: {[e.to_dict() for e in evs if e.corretora == 'Tullett']}")
+    evs = rodar("fantasma_9393842_1306.csv")
+    f2 = [e for e in ev(evs, "confirmada", "Tullett", 22.40) if e.tipo == "fantasma"]
+    fim = ev(evs, "defensor_ausente", "Tullett", 22.40)
+    if f2 and abs(f2[0].ts - _hb3(d, "11:08:48.560")) < 1e-6 \
+            and len(fim) == 1 and abs(fim[0].ts - _hb3(d, "11:09:05.570")) < 1e-6:
+        ok("Fantasma ativo até a última venda (11:09:03,57); varrida a 22,47 às 11:09:05,57 = fim")
+    else:
+        err(f"Fantasma 1306: {[e.to_dict() for e in evs if e.corretora == 'Tullett']}")
+
+    # E2 no mesmo preço, MRFG3 14/07/2025 (aula 9393845) — a única sequência com a passiva
+    d = "14/07/2025"
+    evs = rodar("e2_9393845_0411.csv")
+    ic = [e for e in ev(evs, "confirmada", "Agora", 22.05) if e.tipo == "iceberg"]
+    e2 = [e for e in evs if e.evento == "e2_formado" and {e.corretora, e.parceiro} == {"Agora", "Tullett"}]
+    if ic and abs(ic[0].ts - _hb3(d, "12:43:53.180")) < 1e-6 \
+            and e2 and abs(e2[0].ts - _hb3(d, "12:44:12.180")) < 1e-6:
+        ok("Iceberg Ágora no 22,05 às 12:43:53,18; E2 Ágora + Tullett às 12:44:12,18 (player novo de 1.000)")
+    else:
+        err(f"E2 0411: {[e.to_dict() for e in evs if e.corretora in ('Agora', 'Tullett')]}")
+
+    # Icebergs da aula 9393840: nenhum negócio além do nível → nenhum rompimento
+    for nome in ("iceberg_9393840_0403.csv", "iceberg_9393840_0845.csv"):
+        evs = rodar(nome)
+        if not [e for e in evs if e.evento == "rompida"]:
+            ok(f"{nome}: nenhum rompimento (a passiva não aparece na tela; só o nível é verificável)")
+        else:
+            err(f"{nome}: rompimento indevido {[e.to_dict() for e in evs if e.evento == 'rompida']}")
+
+
 def main():
     print(f"\n{AZUL}╔══════════════════════════════════════════════╗{RESET}")
     print(f"{AZUL}║   FLUXO SERVER — Suite de Testes Automáticos  ║{RESET}")
@@ -3031,6 +3117,7 @@ def main():
     test_defesas_classificacao()
     test_defesas_fila_e2()
     test_defesas_engine()
+    test_defesas_aulas()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")
