@@ -320,6 +320,23 @@ class EngineConfig:
     stop_ticks_behind:      int   = 2
     tick_size:              float = 0.01   # tamanho do tick do ativo
 
+    # ── Defesas (core/defesas.py): regras do professor, origem em cada linha ──
+    # Iceberg: o volume executado contra a passiva no preço precisa chegar a este lote (aula-02 03:43–04:09)
+    defesa_iceberg_lote_min:   int = 1000
+    # Iceberg: 1 giro = alerta, 2 giros confirmam (aula 9393845 05:52); giro = ordem original contra ela no preço
+    defesa_iceberg_giros:      int = 2
+    # Sniper: agride de volta até N ms depois da agressão contrária no mesmo preço (medido 0–30 ms, aula 9393841)
+    defesa_reacao_ms:          int = 30
+    # Fantasma: agressões no mesmo preço com o lado dele vazio (aula-02 25:35 "15, 15, 15"; aula 9393842)
+    defesa_fantasma_agressoes: int = 3
+    # Sniper/fantasma: negócio a N ticks além do nível = defensor ausente (até 3 com a defesa ativa nas
+    # aulas 9393833/9393841/9393842; o fim visto foi a 4 e 5 ticks, aula 9393841 10:14:14,10 e 21,03 → 20,98)
+    defesa_ausente_ticks:      int = 4
+    # E2: distância máxima entre as duas defesas, em ticks (0 tick aula 9393845; 1 tick aula 9393844)
+    defesa_e2_ticks:           int = 1
+    # Sinal de iceberg: stop no 1º tick além do nível (aula-02 24:15; aula 9393845 06:30)
+    defesa_stop_ticks:         int = 1
+
     # Confiança mínima para emitir sinal
     min_confidence:         float = 0.60
 

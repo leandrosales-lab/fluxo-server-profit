@@ -2585,6 +2585,72 @@ def test_dll_processo_filho():
             lg.setLevel(nivel_antigo)
 
 
+# ──────────────────────────────────────────────────────────────
+# DEFESAS (core/defesas.py)
+# ──────────────────────────────────────────────────────────────
+
+def _pasta_aulas():
+    """Sequências transcritas das aulas: só no computador do dono, fora do git."""
+    pasta = os.environ.get("FLUXO_CENARIOS_AULAS") or os.path.join(
+        os.path.expanduser("~"), "Documents", "fluxo-cursos", "estrategias", "medidas", "cenarios")
+    return pasta if os.path.isdir(pasta) else None
+
+
+def _hb3(data: str, hora: str) -> float:
+    """Epoch de um horário da B3 (UTC-3): _hb3('27/11/2024', '10:14:14.100')."""
+    from datetime import datetime, timedelta, timezone
+    dt = datetime.strptime(f"{data} {hora}", "%d/%m/%Y %H:%M:%S.%f")
+    return dt.replace(tzinfo=timezone(timedelta(hours=-3))).timestamp()
+
+
+def test_defesas_ordem_original():
+    print(f"\n{AMARELO}═══ TESTE 28: Defesas — ordem original (pedaços da mesma agressão) ═══{RESET}")
+    from core.defesas import juntar_ordens
+
+    t0 = 1_000_000.0
+    ticks = [
+        Tick(t0, 18.58, 3900, "ATIVA", Side.BUY, passive_broker="XP"),
+        Tick(t0, 18.59, 9400, "ATIVA", Side.BUY, passive_broker="BTG"),
+        Tick(t0, 18.60, 2000, "BTG", Side.BUY, passive_broker="UBS"),          # mesmo ms, outro agressor
+        Tick(t0, 18.60, 6700, "ATIVA", Side.BUY, passive_broker="ATIVA"),      # volta a ser a ATIVA
+        Tick(t0 + 0.111, 18.60, 400, "ATIVA", Side.BUY, passive_broker="XP"),  # 111 ms depois: outra ordem
+        Tick(t0 + 0.2, 18.60, 100, "LEILAO", Side.NONE),
+    ]
+    obtido = [(o.corretora, o.lado, o.qtd, o.pedacos, o.preco_ini, o.preco_fim) for o in juntar_ordens(ticks)]
+    esperado = [("ATIVA", "compra", 20000, 3, 18.58, 18.60), ("BTG", "compra", 2000, 1, 18.60, 18.60),
+                ("ATIVA", "compra", 400, 1, 18.60, 18.60)]
+    if obtido == esperado:
+        ok("Mesma corretora, lado e ms = uma ordem; outro agressor ou outro ms = outra; sem agressor fica fora")
+    else:
+        err(f"Ordens originais erradas: {obtido}")
+
+    pasta = _pasta_aulas()
+    if not pasta:
+        info("Sequências das aulas não encontradas (FLUXO_CENARIOS_AULAS): parte da aula 9393818 pulada")
+        return
+    from replay.csv_ticks import ler_ticks
+    casos = {
+        "leitura-tt_9393818_0600_negocios.csv": [
+            ("XP", 1500), ("BGC Liquidez", 9500), ("Clear", 200), ("Itau", 1000), ("BTG", 10500),
+            ("UBS", 1800), ("Santander", 3500), ("UBS", 2800), ("UBS", 400), ("CM Capital", 1000),
+            ("UBS", 100), ("JP Morgan", 700)],
+        "leitura-tt_9393818_1018_negocios.csv": [
+            ("CM Capital", 200), ("Ideal", 400), ("Ativa", 20000), ("BTG", 2000)],
+    }
+    for nome, esp in casos.items():
+        ordens = juntar_ordens(ler_ticks(os.path.join(pasta, nome)))
+        if [(o.corretora, o.qtd) for o in ordens] == esp:
+            ok(f"{nome}: ordens iguais às do Profit (UBS 3.200 com 111 ms entre pedaços fica em 2.800 + 400, spec §4)")
+        else:
+            err(f"{nome}: {[(o.corretora, o.qtd) for o in ordens]}")
+    ativa = [o for o in juntar_ordens(ler_ticks(os.path.join(pasta, "leitura-tt_9393818_1018_negocios.csv")))
+             if o.corretora == "Ativa"][0]
+    if ativa.pedacos == 27 and (ativa.preco_ini, ativa.preco_fim) == (18.58, 18.60):
+        ok("Ativa 20.000 em 27 pedaços, 18,58 → 18,60 (aula 9393818)")
+    else:
+        err(f"Ativa 20.000: {ativa}")
+
+
 def main():
     print(f"\n{AZUL}╔══════════════════════════════════════════════╗{RESET}")
     print(f"{AZUL}║   FLUXO SERVER — Suite de Testes Automáticos  ║{RESET}")
@@ -2625,6 +2691,7 @@ def main():
     test_api_reconectar()
     test_dll_processo_filho()
     test_main_fonte_dll()
+    test_defesas_ordem_original()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")
