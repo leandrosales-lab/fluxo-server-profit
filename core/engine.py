@@ -27,6 +27,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
+from core.defesas import DefesaDetector
+
 logger = logging.getLogger("FlowEngine")
 
 
@@ -403,8 +405,11 @@ class FlowEngine:
         self._book_sell: dict[float, BookLevel] = {}
 
         # ── Estado dos Icebergs candidatos
-        # chave: (broker, side, price_rounded)
+        # chave (fallback sem passiva): (side, price, broker, "agressor")
         self._icebergs: dict[tuple, IcebergCandidate] = {}
+
+        # ── Defesas (iceberg pela passiva, sniper, fantasma, E2): core/defesas.py
+        self._defesas = DefesaDetector(self.cfg)
 
         # ── Histórico de best ask/bid por broker (logs separados para evitar sinal invertido)
         # chave: broker → lista de timestamps em que estava no 1º nível
@@ -451,6 +456,7 @@ class FlowEngine:
             tick.asset = self.asset
             self._avancar_relogio(tick.timestamp)
             self._ticks.append(tick)
+            self._defesas.on_tick(tick)
             self._update_iceberg(tick)
             self._update_urgency(tick)
             self._register_price_touch(tick)
@@ -482,6 +488,8 @@ class FlowEngine:
                 elif self._book_depth == "none":
                     self._book_depth = "top"
             self._update_best_offer_log()
+            self._defesas.on_book(max(self._book_buy) if self._book_buy else None,
+                                  min(self._book_sell) if self._book_sell else None)
             self._analyze()
             self._registrar_sinal()
 
@@ -508,79 +516,33 @@ class FlowEngine:
 
     def _update_iceberg(self, tick: Tick):
         """
-        Detecta iceberg: ordem passiva escondida renovada no mesmo preço.
-
-        Com corretora passiva (RTD, DLL): a assinatura é a MESMA passiva
-        sendo agredida repetidamente no mesmo preço (± iceberg_price_ticks),
-        com volume bem acima do lote médio, por um tempo, sem o preço
-        atravessar o nível. Chave: (lado passivo, preço, corretora passiva).
-
-        Sem corretora passiva (manual, OCR, DDE): fallback antigo — mesmo
+        Iceberg sem corretora passiva (manual, OCR, DDE): fallback antigo — mesmo
         agressor, mesmo lado, mesmo preço, lote próximo. Heurística fraca.
-
-        Todo o tempo vem do timestamp do tick (nunca do relógio local).
+        Com a passiva (RTD, DLL), as defesas vêm de core/defesas.py.
         """
         self._expire_icebergs(tick)
         if tick.side not in (Side.BUY, Side.SELL):
             return
         if tick.passive_broker:
-            self._update_iceberg_passive(tick)
-        else:
-            self._update_iceberg_fallback(tick)
+            return   # com a passiva, iceberg/sniper/fantasma vêm de core/defesas.py
+        self._update_iceberg_fallback(tick)
 
     def _iceberg_tol(self) -> float:
         return self.cfg.iceberg_price_ticks * self.cfg.tick_size + 1e-9
 
     def _expire_icebergs(self, tick: Tick):
-        """Descarta candidatos sem renovação (timeout) ou cujo nível foi atravessado."""
+        """Descarta candidatos do fallback sem renovação (timeout)."""
         now = tick.timestamp
-        tol = self._iceberg_tol()
         for k, ic in list(self._icebergs.items()):
             motivo = None
             if now - ic.last_renewed > self.cfg.iceberg_timeout_sec:
                 motivo = "EXPIROU"
-            elif ic.passive and ((ic.side == Side.BUY and tick.price < ic.price - tol) or
-                                 (ic.side == Side.SELL and tick.price > ic.price + tol)):
-                # Negociou além do nível: a passiva acabou (ou saiu)
-                motivo = "ROMPIDO"
             if motivo is None:
                 continue
             if ic.confirmed:
                 logger.info(f"Iceberg {motivo}: {ic.broker} @ {ic.price} "
                             f"({ic.renewals} renovações, {ic.total_vol:,} vol total)")
             del self._icebergs[k]
-
-    def _update_iceberg_passive(self, tick: Tick):
-        now = tick.timestamp
-        price_r = round(tick.price, 2)
-        broker = tick.passive_broker
-        # Agressão vendedora executa contra compra passiva e vice-versa
-        side = Side.BUY if tick.side == Side.SELL else Side.SELL
-        tol = self._iceberg_tol()
-
-        # Candidato da mesma passiva no mesmo lado, no preço ou em confluência
-        ic = self._icebergs.get((side, price_r, broker))
-        if ic is None:
-            near = [c for c in self._icebergs.values()
-                    if c.passive and c.side == side and c.broker == broker
-                    and abs(c.price - price_r) <= tol]
-            ic = min(near, key=lambda c: abs(c.price - price_r)) if near else None
-        if ic is None:
-            ic = IcebergCandidate(broker=broker, side=side, price=price_r,
-                                  ref_qty=tick.qty, first_seen=now,
-                                  last_renewed=now, passive=True)
-            self._icebergs[(side, price_r, broker)] = ic
-
-        ic.renewals    += 1
-        ic.total_vol   += tick.qty
-        ic.last_renewed = now
-        ic.aggressors.add(tick.broker)
-
-        # Reavaliar todas as passivas do nível: a fatia de cada uma muda a cada agressão
-        avg_lot = self._iceberg_avg_lot(now)
-        for c in self._icebergs.values():
-            if c.passive and c.side == side and abs(c.price - price_r) <= tol:
-                self._evaluate_iceberg(c, now, avg_lot)
 
     def _iceberg_avg_lot(self, now: float) -> float:
         """Lote médio agredido na janela iceberg_window_sec (tempo dos ticks)."""
@@ -593,39 +555,38 @@ class FlowEngine:
             n += 1
         return vol / n if n else 0.0
 
-    def _evaluate_iceberg(self, ic: IcebergCandidate, now: float, avg_lot: float):
-        """Atualiza vol_ratio, fatia, confiança e confirmação de um candidato passivo."""
-        tol = self._iceberg_tol()
-        aggressor = Side.SELL if ic.side == Side.BUY else Side.BUY
-        level_vol = 0
-        for t in reversed(self._ticks):
-            if t.timestamp < ic.first_seen:
-                break
-            if t.side == aggressor and abs(t.price - ic.price) <= tol:
-                level_vol += t.qty
-        ic.share     = ic.total_vol / level_vol if level_vol > 0 else 1.0
-        ic.vol_ratio = ic.total_vol / avg_lot if avg_lot > 0 else 0.0
-
+    def _confianca_iceberg(self, ic: IcebergCandidate) -> float:
+        """Força do iceberg só para ordenar sinais (fórmula que o motor já usava; não é regra do curso)."""
         cfg = self.cfg
-        was = ic.confirmed
-        ic.confirmed = (ic.renewals >= cfg.iceberg_min_renewals
-                        and ic.vol_ratio >= cfg.iceberg_vol_ratio
-                        and ic.share >= cfg.iceberg_min_share
-                        and ic.duration >= cfg.iceberg_min_duration_sec)
-
-        # Confiança: renovações, volume vs lote médio, duração segurando, fatia no nível
         r = min(1.0, ic.renewals / max(3 * cfg.iceberg_min_renewals, 1))
         v = min(1.0, ic.vol_ratio / max(3 * cfg.iceberg_vol_ratio, 1e-9))
         d = min(1.0, ic.duration / max(cfg.iceberg_full_duration_sec, 1e-9))
         conf = 0.35 + 0.15 * r + 0.15 * v + 0.10 * d + 0.10 * ic.share
         if len(ic.aggressors) >= 2:
             conf += 0.05   # vários agressores diferentes batendo na mesma passiva
-        ic.confidence = min(0.90, conf)
+        return min(0.90, conf)
 
-        if ic.confirmed and not was:
-            logger.info(f"Iceberg CONFIRMADO (passiva): {ic.broker} {ic.side.value} @ {ic.price} "
-                        f"| {ic.renewals} execuções | vol {ic.total_vol:,} "
-                        f"({ic.vol_ratio:.1f}x lote médio) | fatia {ic.share:.0%}")
+    def _icebergs_das_defesas(self) -> list[IcebergCandidate]:
+        """Icebergs confirmados pelo módulo de defesas, no formato antigo (sinal, estado, confluência)."""
+        avg_lot = self._iceberg_avg_lot(self._now())
+        out = []
+        for d in self._defesas.ativas():
+            if d.tipo != "iceberg":
+                continue
+            ic = IcebergCandidate(broker=d.corretora, side=Side.BUY if d.lado == "compra" else Side.SELL,
+                                  price=d.preco, ref_qty=0, renewals=d.giros, total_vol=d.vol_passivo,
+                                  first_seen=d.desde, last_renewed=d.ultima, confirmed=True, passive=True,
+                                  aggressors=set(d.agressores))
+            ic.share = self._defesas.fatia(d)
+            ic.vol_ratio = d.vol_passivo / avg_lot if avg_lot > 0 else 0.0
+            ic.confidence = self._confianca_iceberg(ic)
+            out.append(ic)
+        return out
+
+    def _defesas_opostas_perto(self, lado: str, preco: float, tol: float) -> list:
+        """Sniper/fantasma confirmados do lado `lado` perto de `preco` (confluência da exaustão)."""
+        return [d for d in self._defesas.ativas()
+                if d.tipo in ("sniper", "fantasma") and d.lado == lado and abs(d.preco - preco) <= tol]
 
     def _update_iceberg_fallback(self, tick: Tick):
         """Comportamento antigo: mesmo agressor, mesmo lado, mesmo preço, lote próximo."""
@@ -1009,7 +970,9 @@ class FlowEngine:
         flow_strength = max(pct_buy, pct_sell)
 
         # ── 1. Verificar Icebergs confirmados
-        confirmed_icebergs = [ic for ic in self._icebergs.values() if ic.confirmed]
+        confirmed_icebergs = ([ic for ic in self._icebergs.values() if ic.confirmed]
+                              + self._icebergs_das_defesas())
+        nivel_atual = self._defesas.nivel(self._ticks[-1].price)
 
         # ── 2. Verificar Best Offer passivo (ask e bid separados)
         best_ask_brokers = self._get_best_ask_brokers()
@@ -1030,6 +993,9 @@ class FlowEngine:
         # Icebergs → sinal contrário ao fluxo contra eles
         for ic in confirmed_icebergs:
             if ic.passive:
+                # Sem tempo de expiração (decisão de 17/10): o sinal só vale com o preço no nível
+                if self._defesas.nivel(ic.price) != nivel_atual:
+                    continue
                 # Corretora passiva real: suporte (compra passiva) → BUY, resistência → SELL
                 cand = self._iceberg_passive_candidate(ic, pct_buy, pct_sell, best_ask_brokers,
                                                        best_bid_brokers, absorbed_levels)
@@ -1185,6 +1151,11 @@ class FlowEngine:
             elif near_ics:
                 conf += 0.05
                 extras.append("iceberg oposto (heurística fraca)")
+            outras = self._defesas_opostas_perto(opposite.value, ev.extreme_price, tol)
+            if outras and not any(ic.passive for ic in near_ics):
+                conf += 0.10
+                extras.append("defesa oposta (" +
+                              ", ".join(f"{d.tipo} {d.corretora}" for d in outras) + ")")
             if any(abs(p - ev.extreme_price) <= tol and s == ev.direction
                    for p, _, _, s in absorbed_levels):
                 conf += 0.05
@@ -1247,7 +1218,7 @@ class FlowEngine:
             conf += 0.05
             extras.append("absorção no nível")
 
-        offset = self.cfg.stop_ticks_behind * self.cfg.tick_size
+        offset = self.cfg.defesa_stop_ticks * self.cfg.tick_size   # 1º tick além do nível (aula-02 24:15)
         lado = "COMPRADOR (suporte)" if buy else "VENDEDOR (resistência)"
         reason = (f"Iceberg {lado} de {ic.broker} (passiva) @ {ic.price:.2f} | "
                   f"{ic.renewals} execuções de {len(ic.aggressors)} agressores | "
@@ -1472,7 +1443,8 @@ class FlowEngine:
         """Retorna estado completo do motor para debug e para as telas."""
         with self._lock:
             pct_buy, pct_sell = self._calc_flow_pressure()
-            confirmed = [ic.to_dict() for ic in self._icebergs.values() if ic.confirmed]
+            confirmed = ([ic.to_dict() for ic in self._icebergs.values() if ic.confirmed]
+                         + [ic.to_dict() for ic in self._icebergs_das_defesas()])
             absorbed = [{"price": p, "touches": t, "volume": v, "absorbed_side": s.value}
                         for p, t, v, s in self._get_absorbed_levels()[:3]]
             win_buy, win_sell, win_delta = self._calc_window_delta(self.cfg.delta_window_sec)
@@ -1486,6 +1458,10 @@ class FlowEngine:
                 "icebergs_confirmed": confirmed,
                 # True se algum iceberg ativo veio do fallback sem corretora passiva
                 "icebergs_weak_heuristic": any(i["weak_heuristic"] for i in confirmed),
+                "defesas": {
+                    "ativas":  [d.to_dict() for d in self._defesas.ativas()],
+                    "eventos": [e.to_dict() for e in self._defesas.eventos(20)],
+                },
                 "absorbed_levels":    absorbed,
                 "delta": {
                     "cumulative":  self._cum_delta,
@@ -1513,6 +1489,7 @@ class FlowEngine:
             self._book_buy.clear()
             self._book_sell.clear()
             self._icebergs.clear()
+            self._defesas.reset()
             self._best_ask_log.clear()
             self._best_bid_log.clear()
             self._price_touches.clear()

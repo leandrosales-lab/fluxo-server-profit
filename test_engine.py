@@ -1122,10 +1122,10 @@ def test_iceberg_passiva():
     else:
         err("icebergs_weak_heuristic deveria ser False")
     if signal.signal == Signal.BUY and signal.pattern.value == "Iceberg" \
-            and signal.broker == "JP MORGAN" and signal.stop_price < 19.04:
-        ok(f"Sinal BUY no suporte, stop {signal.stop_price:.2f}")
+            and signal.broker == "JP MORGAN" and signal.stop_price == 19.03:
+        ok(f"Sinal BUY no suporte, stop no 1º tick além do nível ({signal.stop_price:.2f}, aula-02 24:15)")
     else:
-        err(f"Esperado BUY/Iceberg JP MORGAN com stop abaixo: {signal.to_dict()}")
+        err(f"Esperado BUY/Iceberg JP MORGAN com stop 19,03: {signal.to_dict()}")
 
     info("Venda negociada ABAIXO do nível (19.03): o iceberg acabou...")
     engine.add_tick(Tick(ts + 1, 19.03, 200, "RICO", Side.SELL, passive_broker="ITAU"))
@@ -1134,7 +1134,7 @@ def test_iceberg_passiva():
     else:
         err("Iceberg deveria ser descartado quando o preço atravessa")
 
-    info("Expiração pelo tempo do TICK (não do relógio local)...")
+    info("Sem acontecimento de fim, o iceberg continua mesmo depois de muito tempo...")
     engine2 = FlowEngine("PETR4", _cfg_iceberg())
     ts = _base_negocios(engine2, 1_000_000.0)   # tempo antigo: só o tick conta
     for i in range(5):
@@ -1144,10 +1144,10 @@ def test_iceberg_passiva():
     engine2.add_tick(Tick(ts + engine2.cfg.iceberg_timeout_sec + 1, 19.05, 100, "X",
                           Side.BUY, passive_broker="Y"))
     depois = len(engine2.get_state()["icebergs_confirmed"])
-    if antes == 1 and depois == 0:
-        ok("Iceberg confirmado com timestamps antigos e expirado pelo tempo dos ticks")
+    if antes == 1 and depois == 1:
+        ok("Sem tempo de expiração (decisão de 17/10): a defesa só termina por acontecimento")
     else:
-        err(f"Expiração pelo tempo do tick falhou: antes={antes} depois={depois}")
+        err(f"Defesa sem acontecimento de fim deveria continuar: antes={antes} depois={depois}")
 
     info("Iceberg VENDEDOR: compras agredindo a mesma passiva → resistência...")
     engine3 = FlowEngine("VALE3", _cfg_iceberg())
@@ -1180,18 +1180,18 @@ def test_iceberg_passivas_espalhadas():
                              passive_broker=passivas[i % 4]))
 
     state = engine.get_state()
-    cands = [ic for ic in engine._icebergs.values() if ic.passive]
-    info(f"Candidatos: {[(c.broker, c.renewals, round(c.share, 2)) for c in cands]}")
+    nivel = engine._defesas.nivel(19.04)
+    cands = [d for d in engine._defesas._defesas.values() if d.vol_passivo and d.nivel == nivel]
+    info(f"Candidatas: {[(c.corretora, c.giros, c.vol_passivo) for c in cands]}")
     if not state["icebergs_confirmed"]:
         ok("Nenhum iceberg: nenhuma passiva domina o nível")
     else:
         err(f"Agressões espalhadas não deveriam virar iceberg: {state['icebergs_confirmed']}")
-    # A fatia conta o volume do nível desde que cada passiva apareceu (~25-31%)
-    if len(cands) == 4 and all(c.renewals == 4 and c.share < engine.cfg.iceberg_min_share
+    if len(cands) == 4 and all(c.giros == 4 and c.vol_passivo == 600 and c.estado == "candidata"
                                for c in cands):
-        ok("Cada passiva com 4 execuções e fatia ~25-31% do nível (abaixo de iceberg_min_share)")
+        ok("Cada passiva com 4 execuções e 600 ações: abaixo do lote mínimo de 1.000 (aula-02)")
     else:
-        err(f"Candidatos inesperados: {[(c.broker, c.renewals, c.share) for c in cands]}")
+        err(f"Candidatas inesperadas: {[(c.corretora, c.giros, c.vol_passivo, c.estado) for c in cands]}")
     if engine.get_signal().pattern.value != "Iceberg":
         ok("Nenhum sinal de iceberg emitido")
     else:
@@ -1207,9 +1207,9 @@ def test_iceberg_passivas_espalhadas():
         ts += 1.0
         engine2.add_tick(Tick(ts, 19.04, 100, f"V{i}", Side.SELL, passive_broker="JP MORGAN"))
     if not engine2.get_state()["icebergs_confirmed"]:
-        ok("3 execuções de 100 com lote médio ~800 não é iceberg (vol_ratio baixo)")
+        ok("3 execuções de 100 (300 ações) não é iceberg: abaixo de 1.000")
     else:
-        err("Volume abaixo de iceberg_vol_ratio não deveria confirmar")
+        err("Passiva com menos de 1.000 ações não deveria confirmar")
 
 
 def test_iceberg_fallback():
@@ -2930,6 +2930,63 @@ def test_defesas_fila_e2():
         err(f"E2 órfão: {[d.to_dict() for d in merrill]} / {[e.to_dict() for e in _evs(det)]}")
 
 
+def test_defesas_engine():
+    print(f"\n{AMARELO}═══ TESTE 31: Defesas dentro do motor ═══{RESET}")
+
+    engine = FlowEngine("PETR4", _cfg_iceberg())
+    ts = _base_negocios(engine, 1_000_000.0)
+    for i, agr in enumerate(["BRADESCO", "RICO", "CLEAR", "XP INC", "TORO", "GENIAL"]):
+        ts += 1.0
+        engine.add_tick(Tick(ts, 19.04, 200, agr, Side.SELL, passive_broker="JP MORGAN"))
+    st = engine.get_state()
+    ativas = st["defesas"]["ativas"]
+    sig = engine.get_signal()
+    if [(d["tipo"], d["corretora"], d["lado"]) for d in ativas] == [("iceberg", "JP MORGAN", "compra")]             and st["icebergs_confirmed"] and st["icebergs_confirmed"][0]["passive_broker"] == "JP MORGAN"             and sig.pattern.value == "Iceberg" and sig.stop_price == 19.03:
+        ok("Iceberg das defesas no estado, em icebergs_confirmed e no sinal (stop 19,03)")
+    else:
+        err(f"Integração: {ativas} / {st['icebergs_confirmed']} / {sig.to_dict()}")
+    if any(e["evento"] == "confirmada" for e in st["defesas"]["eventos"]):
+        ok("Eventos das defesas expostos em get_state()['defesas']['eventos']")
+    else:
+        err(f"Eventos ausentes: {st['defesas']}")
+
+    engine.add_tick(Tick(ts + 1, 19.05, 100, "ITAU", Side.BUY, passive_broker="XP INC"))
+    st = engine.get_state()
+    if st["defesas"]["ativas"] and engine.get_signal().pattern.value != "Iceberg":
+        ok("Preço fora do nível: a defesa continua (sem tempo), mas o sinal de iceberg sai")
+    else:
+        err(f"Sinal fora do nível: {engine.get_signal().to_dict()} / {st['defesas']['ativas']}")
+
+    # Topo do book chega ao módulo: fila formada contra um sniper
+    engine = FlowEngine("PETR4", EngineConfig())
+    ts = 1_000_000.0
+    engine.add_tick(Tick(ts, 21.17, 800, "BTG", Side.SELL))
+    engine.add_tick(Tick(ts + 0.01, 21.17, 1200, "MORGAN", Side.BUY))
+    engine.update_book([BookLevel(21.16, 500, "", Side.BUY, ts + 1), BookLevel(21.17, 900, "", Side.SELL, ts + 1)])
+    engine.add_tick(Tick(ts + 2, 21.17, 300, "XP", Side.BUY, passive_broker="UBS"))
+    if any(e["evento"] == "fila_formada" and e["corretora"] == "MORGAN"
+           for e in engine.get_state()["defesas"]["eventos"]):
+        ok("update_book alimenta o módulo: fila_formada contra o sniper MORGAN")
+    else:
+        err(f"Fila pelo book: {engine.get_state()['defesas']}")
+
+    # Confluência da exaustão aceita sniper/fantasma do lado oposto
+    engine = FlowEngine("PETR4", EngineConfig())
+    engine.add_tick(Tick(1_000_000.0, 21.17, 800, "BTG", Side.SELL))
+    engine.add_tick(Tick(1_000_000.01, 21.17, 1200, "MORGAN", Side.BUY))
+    perto = engine._defesas_opostas_perto("compra", 21.18, 3 * 0.01 + 1e-9)
+    if [d.corretora for d in perto] == ["MORGAN"]:
+        ok("Defesa sniper conta como confluência perto da extremidade da exaustão")
+    else:
+        err(f"Confluência: {[d.to_dict() for d in perto]}")
+
+    engine.reset()
+    if not engine.get_state()["defesas"]["ativas"] and not engine.get_state()["defesas"]["eventos"]:
+        ok("reset() limpa defesas e eventos")
+    else:
+        err(f"reset() deixou defesas: {engine.get_state()['defesas']}")
+
+
 def main():
     print(f"\n{AZUL}╔══════════════════════════════════════════════╗{RESET}")
     print(f"{AZUL}║   FLUXO SERVER — Suite de Testes Automáticos  ║{RESET}")
@@ -2973,6 +3030,7 @@ def main():
     test_defesas_ordem_original()
     test_defesas_classificacao()
     test_defesas_fila_e2()
+    test_defesas_engine()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")
