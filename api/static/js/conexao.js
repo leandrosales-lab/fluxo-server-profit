@@ -1,6 +1,6 @@
 // Tela Conexão: estados da ProfitDLL, negócios/s, contadores, configuração, log e Reconectar.
 import { getJSON, postJSON, laco } from "./api.js";
-import { montarShell, latenciaValida } from "./shell.js";
+import { montarShell, latenciaValida, estadoReconectar } from "./shell.js";
 import { atualizarLinhas } from "./tabela.js";
 import { inteiro, horaB3, hm } from "./formato.js";
 
@@ -72,22 +72,31 @@ function faixaEstados(dll) {
   }
   $("c-latencia").textContent = latenciaValida(dll.latencia_ms) ? `${inteiro(dll.latencia_ms)} ms`
     : dll.latencia_ms != null ? "sem negócio recente" : "—";
+  ultimaDll = dll;
+  desenharBotao();
+}
+
+// Último clique em Reconectar nesta tela: { ate: ms, msg } (ver estadoReconectar no shell.js)
+let clique = null, ultimaDll = null;
+function desenharBotao() {
+  if (!ultimaDll) return;
+  const { desabilitado, texto, msg } = estadoReconectar(ultimaDll, clique, Date.now());
   const botao = $("reconectar");
   botao.hidden = false;
-  botao.disabled = !!rec.em_andamento;
-  botao.textContent = rec.em_andamento ? "reconectando…" : "Reconectar";
-  if (!rec.em_andamento) $("reconectar-msg").textContent = rec.resultado?.startsWith("falhou") ? rec.resultado : "";
+  botao.disabled = desabilitado;
+  botao.textContent = texto;
+  $("reconectar-msg").textContent = msg;
 }
 $("reconectar").addEventListener("click", async () => {
-  const botao = $("reconectar");
-  botao.disabled = true;
-  botao.textContent = "reconectando…";
+  clique = { ate: Date.now() + 3000, msg: null };   // até o /state confirmar a reconexão
+  desenharBotao();
   try {
     const { status, dados } = await postJSON("/dll/reconectar");
-    if (status !== 202) $("reconectar-msg").textContent = dados.error || `falhou: HTTP ${status}`;
+    if (status !== 202) clique = { ate: Date.now() + 5000, msg: dados.error || `falhou: HTTP ${status}` };
   } catch {
-    $("reconectar-msg").textContent = "falhou: servidor sem resposta";
+    clique = { ate: Date.now() + 5000, msg: "falhou: servidor sem resposta" };
   }
+  desenharBotao();
 });
 
 function semDll(fonte) {
@@ -141,10 +150,16 @@ function desenharLog() {
   $("log-meta").textContent = `${inteiro(registros.length)} eventos guardados · mais recentes primeiro`;
 }
 async function buscarLog() {
-  const r = await getJSON(`/log${ultimoLog != null ? `?since=${ultimoLog}` : ""}`);
+  // por seq, não por horário: registros com o mesmo instante ou fora de ordem não se perdem
+  let r = await getJSON(`/log${ultimoLog != null ? `?apos=${ultimoLog}` : ""}`);
+  if (ultimoLog != null && r.ultimo_seq < ultimoLog) {   // servidor reiniciado: o seq recomeçou do 1
+    registros = [];
+    ultimoLog = null;
+    r = await getJSON("/log");
+  }
   if (r.registros.length) {
     registros = registros.concat(r.registros).slice(-500);
-    ultimoLog = registros[registros.length - 1].ts;
+    ultimoLog = registros[registros.length - 1].seq;
   }
   desenharLog();
 }

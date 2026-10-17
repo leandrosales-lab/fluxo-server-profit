@@ -91,8 +91,9 @@ export function criarGrafico(el, casasIniciais) {
     trocarTf(novo) { tf = novo; candles = []; redesenhar(); },
     /** Junta candles novos ou alterados (o since volta um candle: negócio atrasado muda o anterior). */
     juntar(novos) {
-      if (!novos.length) return;
-      candles = juntarCandles(candles, novos);
+      const juntos = juntarCandles(candles, novos);
+      if (juntos === candles) return;          // nada mudou: não redesenha
+      candles = juntos;
       redesenhar();
     },
     limpar() { candles = []; sinais = []; redesenhar(); },

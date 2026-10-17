@@ -31,6 +31,7 @@ class LogMemoria(logging.Handler):
         super().__init__(nivel)
         self._registros: deque = deque(maxlen=capacidade)
         self._trava = threading.Lock()
+        self._seq = 0      # número crescente por registro: o horário repete (relógio do Windows) e chega fora de ordem
 
     def emit(self, record: logging.LogRecord):
         try:
@@ -43,17 +44,31 @@ class LogMemoria(logging.Handler):
         registro = {"ts": record.created, "nivel": record.levelname,
                     "origem": record.name, "msg": mascarar(msg, segredos)}
         with self._trava:
+            self._seq += 1
+            registro["seq"] = self._seq
             self._registros.append(registro)
 
-    def registros(self, since: Optional[float] = None, nivel: str = "INFO") -> list[dict]:
-        """Registros com ts > since e nível >= nivel, do mais antigo ao mais novo."""
+    @property
+    def ultimo_seq(self) -> int:
+        """Último seq emitido. Menor que o visto pela tela = servidor reiniciado (o seq recomeçou)."""
+        with self._trava:
+            return self._seq
+
+    def registros(self, since: Optional[float] = None, nivel: str = "INFO",
+                  apos: Optional[int] = None) -> list[dict]:
+        """
+        Registros com nível >= nivel, na ordem em que chegaram. Para buscar só os novos,
+        use apos=<último seq visto> (não perde registros com o mesmo horário);
+        since=<horário> continua aceito.
+        """
         minimo = NIVEIS.get(str(nivel).upper())
         if minimo is None:
             raise ValueError(f"nível inválido: {nivel} (use {', '.join(NIVEIS)})")
         with self._trava:
             copia = list(self._registros)
         return [dict(r) for r in copia
-                if (since is None or r["ts"] > since) and NIVEIS.get(r["nivel"], 0) >= minimo]
+                if (since is None or r["ts"] > since) and (apos is None or r["seq"] > apos)
+                and NIVEIS.get(r["nivel"], 0) >= minimo]
 
 
 _instalado: Optional[LogMemoria] = None

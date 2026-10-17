@@ -1,9 +1,9 @@
 // Testes das funções puras do frontend (sem navegador). Uso: node tools/test_telas.mjs
 import assert from "node:assert/strict";
 import * as f from "../api/static/js/formato.js";
-import { textoStatus } from "../api/static/js/shell.js";
+import { textoStatus, estadoReconectar } from "../api/static/js/shell.js";
 import { tituloSinal, loteGrandePadrao } from "../api/static/js/operar-paineis.js";
-import { sinceCandles, juntarCandles } from "../api/static/js/candles.js";
+import { sinceCandles, juntarCandles, precisaLimpar } from "../api/static/js/candles.js";
 
 assert.equal(f.preco(38.47), "38,47");
 assert.equal(f.preco(5078.5, 1), "5.078,5");
@@ -53,5 +53,30 @@ assert.equal(sinceCandles(null, 60), null);
 const juntos = juntarCandles([{ time: 960, volume: 5 }, { time: 1020, volume: 1 }],
                              [{ time: 960, volume: 7 }, { time: 1020, volume: 2 }, { time: 1080, volume: 1 }]);
 assert.deepEqual(juntos.map((c) => [c.time, c.volume]), [[960, 7], [1020, 2], [1080, 1]]);
+
+// sem mudança real, juntarCandles devolve o MESMO array (o gráfico não redesenha à toa)
+const base = [{ time: 960, open: 1, high: 2, low: 1, close: 2, volume: 5, buy: 3, sell: 2, financeiro: 9 }];
+assert.equal(juntarCandles(base, [{ ...base[0] }]), base);
+assert.notEqual(juntarCandles(base, [{ ...base[0], volume: 6 }]), base);
+
+// reset: a tela limpa quando a geração muda, mesmo que o /state já traga negócios novos
+assert.equal(precisaLimpar(null, 0), false);   // 1ª leitura
+assert.equal(precisaLimpar(0, 0), false);
+assert.equal(precisaLimpar(0, 1), true);
+
+// botão Reconectar
+const agora = 100000;
+const livre = { conectado: true, reconexao: { em_andamento: false, resultado: null } };
+// um /state que saiu antes do clique ainda diz "livre": o botão continua desabilitado
+assert.deepEqual(estadoReconectar(livre, { ate: agora + 2000, msg: null }, agora),
+  { desabilitado: true, texto: "reconectando…", msg: "" });
+// 409 do clique: a mensagem fica 5 s mesmo com /state dizendo "livre"
+assert.deepEqual(estadoReconectar(livre, { ate: agora + 5000, msg: "reconexão já em andamento" }, agora),
+  { desabilitado: false, texto: "Reconectar", msg: "reconexão já em andamento" });
+// depois do prazo vale o servidor: resultado da última tentativa
+assert.deepEqual(estadoReconectar({ ...livre, reconexao: { em_andamento: false, resultado: "falhou: senha inválida" } },
+  { ate: agora - 1, msg: "x" }, agora), { desabilitado: false, texto: "Reconectar", msg: "falhou: senha inválida" });
+assert.deepEqual(estadoReconectar({ conectado: false, ocupado: true, reconexao: {} }, null, agora),
+  { desabilitado: true, texto: "conectando…", msg: "" });
 
 console.log("test_telas.mjs: tudo certo");

@@ -83,6 +83,19 @@ verificacoes.push(["operar: faixa e gráfico", async (page) => {
   checar(true, "capturas operar-escuro.png e operar-claro.png salvas");
 }]);
 
+verificacoes.push(["operar: reset com o replay rodando (mercado aberto)", async (page) => {
+  await page.goto(`${BASE}/operar`);
+  // precisa já haver sinal na tela: senão "0 hoje" seria verdade antes do reset e o teste não provaria nada
+  await page.waitForFunction(() => /^[1-9]\d* hoje$/.test(document.getElementById("sinais-meta").textContent),
+    null, { timeout: 60000 });
+  const antes = await page.evaluate(() => fetch("/state").then((r) => r.json()).then((e) => e.geracao));
+  await page.evaluate(() => fetch("/reset", { method: "POST" }));
+  // o /state seguinte já pode ter negócios novos; a tela tem que perceber pela geração e zerar os sinais
+  await page.waitForFunction(() => document.getElementById("sinais-meta").textContent === "0 hoje", null, { timeout: 3000 });
+  const depois = await page.evaluate(() => fetch("/state").then((r) => r.json()).then((e) => e.geracao));
+  checar(depois === antes + 1, `reset com negócios chegando: tela zera os sinais (geração ${antes} → ${depois})`);
+}]);
+
 verificacoes.push(["operar: painéis", async (page) => {
   await page.goto(`${BASE}/operar`);
   await page.waitForFunction(() => document.getElementById("m-titulo").textContent !== "Nenhum sinal ainda hoje",

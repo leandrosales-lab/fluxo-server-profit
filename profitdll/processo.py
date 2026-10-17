@@ -274,8 +274,14 @@ def main_filho(argv=None, fabrica_ponte=None, entrada=None, saida=None) -> int:
     entrada = entrada or sys.stdin
     stdout_original = None
     if saida is None:
-        saida, stdout_original = sys.stdout, sys.stdout
-        sys.stdout = sys.stderr        # o stdout real é só do protocolo; print perdido vai para o stderr
+        # O protocolo ganha uma cópia própria do fd 1, e o fd 1 passa a apontar para o stderr:
+        # assim nem print do Python nem escrita nativa da DLL no stdout se misturam ao JSON.
+        sys.stdout.flush()
+        fd_protocolo = os.dup(1)
+        os.dup2(2, 1)
+        saida = os.fdopen(fd_protocolo, "w", encoding="utf-8", newline="\n")
+        stdout_original = sys.stdout
+        sys.stdout = sys.stderr
     trava = threading.Lock()
 
     def enviar(m: dict):

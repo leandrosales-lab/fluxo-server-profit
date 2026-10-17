@@ -2036,11 +2036,18 @@ def test_resumo_pregao():
     else:
         err(f"candles 900/3600: {c900} {c3600}")
 
+    g0 = e.get_state()["geracao"]
     e.reset()
     if e.get_resumo()["ultimo"] is None and e.get_resumo()["saldo_corretoras"] == []:
         ok("reset zera o resumo")
     else:
         err(f"resumo depois do reset: {e.get_resumo()}")
+    # Com o mercado rodando, o /state seguinte já tem negócios: a tela só percebe o reset pela geração
+    e.add_tick(Tick(2000, 11.0, 100, "A", Side.BUY))
+    if e.get_state()["geracao"] == g0 + 1:
+        ok("Cada reset avança a geração do /state (a tela limpa mesmo com negócios novos)")
+    else:
+        err(f"geração: {g0} → {e.get_state()['geracao']}")
 
 
 def test_log_memoria():
@@ -2115,6 +2122,34 @@ def test_log_memoria():
                 if e.code != 400:
                     err(f"{rota} devolveu {e.code}")
         ok("/log com nivel ou since inválidos → 400")
+
+        # Mesmo instante (resolução do relógio do Windows) e fora de ordem: o seq não perde nenhum
+        h2 = LogMemoria()
+        mesmo = time.time()
+        for i, criado in enumerate((mesmo, mesmo, mesmo - 1)):
+            r = logging.LogRecord("TesteSeq", logging.INFO, __file__, 0, f"msg {i}", None, None)
+            r.created = criado
+            h2.emit(r)
+        primeiro = h2.registros()[0]["seq"]
+        resto = [x["msg"] for x in h2.registros(apos=primeiro)]
+        if resto == ["msg 1", "msg 2"]:
+            ok("apos=seq devolve registros com o mesmo horário e fora de ordem")
+        else:
+            err(f"apos: {resto}")
+        with urllib.request.urlopen(base + f"/log?apos=0", timeout=3) as r:
+            corpo = json.loads(r.read())
+        maior = max(x["seq"] for x in corpo["registros"])
+        if corpo.get("ultimo_seq") == maior:
+            ok("GET /log?apos=N responde com o seq de cada registro e o último seq do servidor")
+        else:
+            err(f"/log sem seq/ultimo_seq: {corpo.get('ultimo_seq')} vs {maior}")
+        # Servidor reiniciado: o seq recomeça; a tela percebe porque ultimo_seq < o que ela já viu
+        with urllib.request.urlopen(base + f"/log?apos={maior + 1000}", timeout=3) as r:
+            corpo = json.loads(r.read())
+        if corpo["registros"] == [] and corpo["ultimo_seq"] < maior + 1000:
+            ok("apos além do último seq: lista vazia + ultimo_seq menor (a tela recomeça o log)")
+        else:
+            err(f"apos além do fim: {corpo}")
     finally:
         server.stop()
 
@@ -2143,6 +2178,42 @@ def test_api_health_modo():
         else:
             err(f"/health: {h}")
         porta += 1
+
+
+def test_main_fonte_dll():
+    print(f"\n{AMARELO}═══ TESTE 27: main.py — ponte da DLL fica registrada mesmo se a 1ª conexão falhar ═══{RESET}")
+
+    import argparse
+    import main as programa
+
+    class PonteQueFalha:
+        def __init__(self):
+            self.paradas = 0
+
+        def start(self):
+            return False
+
+        def stop(self):
+            self.paradas += 1
+
+    class ServidorFalso:
+        def __init__(self):
+            self.dll = None
+
+        def registrar_dll(self, ponte):
+            self.dll = ponte
+
+    ponte, servidor = PonteQueFalha(), ServidorFalso()
+    original = programa.setup_dll_mode
+    programa.setup_dll_mode = lambda engine, args: ponte
+    try:
+        devolvida = programa.iniciar_fonte_dll(None, argparse.Namespace(), servidor)
+    finally:
+        programa.setup_dll_mode = original
+    if devolvida is ponte and servidor.dll is ponte:
+        ok("Falha na 1ª conexão: a ponte continua registrada e é devolvida (o Ctrl+C chama stop() nela)")
+    else:
+        err(f"ponte perdida: devolvida={devolvida} registrada={servidor.dll}")
 
 
 def test_api_reconectar():
@@ -2243,6 +2314,26 @@ def test_api_reconectar():
             ok("Falha aparece com o motivo vindo de motivo_falha")
         else:
             err(f"falha: {rec}")
+
+        # Defesa em profundidade: um motivo com a credencial dentro sai mascarado no /state
+        antigo = os.environ.get("PROFITDLL_USER")
+        os.environ["PROFITDLL_USER"] = "eu@exemplo.com"
+        try:
+            ponte.stats = lambda: {"conectado": False, "motivo_falha": "login eu@exemplo.com recusado"}
+            ponte.motivo_falha = "login eu@exemplo.com recusado"
+            post("/dll/reconectar")
+            esperar_fim()
+            with urllib.request.urlopen(base + "/state", timeout=3) as r:
+                texto = r.read().decode()
+            if "eu@exemplo.com" not in texto and "•••" in texto:
+                ok("motivo_falha e resultado da reconexão saem mascarados no /state")
+            else:
+                err(f"/state vazou a credencial: {texto[-300:]}")
+        finally:
+            if antigo is None:
+                os.environ.pop("PROFITDLL_USER", None)
+            else:
+                os.environ["PROFITDLL_USER"] = antigo
     finally:
         server.stop()
 
@@ -2418,6 +2509,37 @@ def test_dll_processo_filho():
                 ok("main_filho: log, inicio, tick e stats no protocolo; EOF no stdin para a ponte")
             else:
                 err(f"main_filho: código {codigo}, tipos {tipos}, parou {criadas and criadas[0].parou}")
+
+            # Filho real (main_filho) cuja "DLL" escreve bytes nativos direto no fd 1, sem quebra de linha:
+            # o protocolo não pode ser corrompido
+            ruidoso = os.path.join(tmp, "filho_ruidoso.py")
+            with open(ruidoso, "w", encoding="utf-8") as f:
+                f.write(
+                    "import os, sys\n"
+                    f"sys.path.insert(0, {os.path.dirname(os.path.abspath(__file__))!r})\n"
+                    "from core.engine import Tick, Side\n"
+                    "from profitdll.processo import main_filho\n"
+                    "class Ponte:\n"
+                    "    def __init__(self, *a, **k): self.motivo_falha = None; self.on_tick = self.on_book = None\n"
+                    "    def start(self):\n"
+                    "        os.write(1, b'LIXO NATIVO SEM QUEBRA')\n"
+                    "        self.on_tick(Tick(1000.0, 10.0, 7, 'XP', Side.BUY)); return True\n"
+                    "    def stop(self): pass\n"
+                    "    def stats(self): return {'conectado': True, 'trades_recebidos': 1}\n"
+                    "sys.exit(main_filho(['--asset', 'WDOFUT'], fabrica_ponte=Ponte))\n")
+            p = PonteDLLProcesso("WDOFUT", timeout=5, comando=[sys.executable, ruidoso])
+            recebidos = []
+            p.on_tick = recebidos.append
+            conectou = p.start()
+            for _ in range(40):
+                if recebidos:
+                    break
+                time.sleep(0.05)
+            p.stop()
+            if conectou and [t.qty for t in recebidos] == [7]:
+                ok("Saída nativa no stdout do filho não corrompe o protocolo")
+            else:
+                err(f"protocolo corrompido: start={conectou} ticks={recebidos} motivo={p.motivo_falha}")
         finally:
             lg.removeHandler(captura)
             lg.setLevel(nivel_antigo)
@@ -2462,6 +2584,7 @@ def main():
     test_api_health_modo()
     test_api_reconectar()
     test_dll_processo_filho()
+    test_main_fonte_dll()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")

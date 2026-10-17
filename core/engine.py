@@ -375,6 +375,7 @@ class FlowEngine:
 
         # ── Resumo do pregão (faixa do Operar), incremental: nada aqui varre o pregão
         self._zerar_resumo()
+        self._geracao = 0   # sobe a cada reset(): a tela limpa mesmo que já haja negócios novos
 
         # ── Book: horário do último snapshot e profundidade já vista (none | top | full)
         self._book_updated: Optional[float] = None
@@ -1484,6 +1485,7 @@ class FlowEngine:
                 # 10 últimos negócios, do mais antigo ao mais novo (status e relógio das telas)
                 "recent_trades":      [self._trade_dict(t) for t in list(self._ticks)[-10:]],
                 "resumo":             self.get_resumo(),
+                "geracao":            self._geracao,
                 "signal":             self._current_signal.to_dict(),
             }
 
@@ -1512,6 +1514,7 @@ class FlowEngine:
                 self._candle_keys[tf].clear()
             self._signals_log.clear()
             self._zerar_resumo()
+            self._geracao += 1
             self._last_signal_key = None
             self._book_updated = None
             self._book_depth = "none"

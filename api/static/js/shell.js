@@ -27,6 +27,22 @@ export function aplicarTema(tema, salvar = false) {
  */
 export function latenciaValida(ms) { return ms != null && ms < 60000; }
 
+/**
+ * Estado do botão Reconectar.
+ * clique = { ate: ms, msg } do último clique nesta tela (ou null). Até `ate`, ele vale mais que o /state:
+ * um /state que saiu antes do clique ainda diz "livre", e uma resposta 409 precisa ficar visível.
+ */
+export function estadoReconectar(dll, clique, agora) {
+  const rec = dll.reconexao || {};
+  const servidorOcupado = !!rec.em_andamento || !!dll.ocupado;
+  const cliqueVale = !!clique && agora < clique.ate;
+  const desabilitado = servidorOcupado || (cliqueVale && !clique.msg);
+  const texto = !desabilitado ? "Reconectar" : dll.ocupado && !rec.em_andamento ? "conectando…" : "reconectando…";
+  const msg = cliqueVale && clique.msg ? clique.msg
+    : !servidorOcupado && rec.resultado?.startsWith("falhou") ? rec.resultado : "";
+  return { desabilitado, texto, msg };
+}
+
 /** Texto do status da ProfitDLL (ou da fonte fora do modo dll) e se é alerta (âmbar vazado). */
 export function textoStatus(dll, fonte) {
   if (!dll) return [`fonte: ${fonte || "—"}`, false];

@@ -179,6 +179,20 @@ def setup_dll_mode(engine: FlowEngine, args):
 # MODO REPLAY
 # ──────────────────────────────────────────────────────────────
 
+def iniciar_fonte_dll(engine: FlowEngine, args, server):
+    """
+    Cria a ponte da ProfitDLL, registra no servidor (contadores no /state, Reconectar)
+    e faz a 1ª conexão. A ponte é devolvida MESMO se essa conexão falhar: o Reconectar
+    da tela Conexão pode conectar depois, e o Ctrl+C precisa chamar stop() nela.
+    """
+    bridge = setup_dll_mode(engine, args)
+    server.registrar_dll(bridge)
+    if not bridge.start():
+        logger.error("Falha ao iniciar ProfitDLL — veja o log acima (dá para tentar de novo pelo "
+                     "Reconectar da tela Conexão)")
+    return bridge
+
+
 def fonte_da_captura(args) -> str:
     """Nome curto da fonte para o cabeçalho das telas (GET /health)."""
     if args.modo == "replay":
@@ -416,11 +430,7 @@ def main():
             logger.error("DDE não disponível — rodando em modo manual")
 
     elif args.modo == "dll":
-        data_source = setup_dll_mode(engine, args)
-        server.registrar_dll(data_source)   # contadores no GET /state
-        if not data_source.start():
-            logger.error("Falha ao iniciar ProfitDLL — veja o log acima")
-            data_source = None
+        data_source = iniciar_fonte_dll(engine, args, server)
 
     elif args.modo == "rtd":
         logger.info("Modo RTD — dados recebidos via Excel RTD Bridge (POST /tick)")

@@ -3,7 +3,7 @@ import { getJSON, laco } from "./api.js";
 import { montarShell } from "./shell.js";
 import { criarGrafico } from "./operar-grafico.js";
 import { criarPaineis } from "./operar-paineis.js";
-import { sinceCandles } from "./candles.js";
+import { sinceCandles, precisaLimpar } from "./candles.js";
 import { casasDoTick, preco, comSinal, inteiro, financeiro, pct } from "./formato.js";
 
 const $ = (id) => document.getElementById(id);
@@ -17,7 +17,7 @@ const paineis = criarPaineis();
 let sinais = [];
 let vistos = new Set();
 let ultimoSinalTs = null;
-let tinhaDados = false;
+let geracaoVista = null;     // geração do engine na última leitura (muda a cada reset)
 const chaveSinal = (s) => `${s.timestamp}|${s.signal}|${s.pattern}|${s.stop_price}`;
 
 function tfSalvo() {
@@ -71,12 +71,13 @@ async function passo() {
     grafico.definirCasas(casas, tick);
   }
 
-  const temDados = estado.resumo?.ultimo != null;
-  if (tinhaDados && !temDados) {           // POST /reset ou virada do dia: começa do zero sem recarregar
+  // POST /reset ou virada do dia: começa do zero sem recarregar. Pela geração, e não por "ficou vazio":
+  // com o mercado rodando, o /state seguinte ao reset já chega com negócios novos.
+  if (precisaLimpar(geracaoVista, estado.geracao)) {
     grafico.limpar();
     sinais = []; vistos = new Set(); ultimoSinalTs = null;
   }
-  tinhaDados = temDados;
+  geracaoVista = estado.geracao;
   atualizarFaixa(estado);
 
   const tfPedido = grafico.tf;

@@ -20,7 +20,7 @@ Endpoints:
   GET  /candles?tf=S&since=T → candles de S segundos (15, 60, 300, 900 ou 3600) a partir de T
   GET  /signals?since=T → sinais BUY/SELL novos a partir de T
   GET  /book            → último snapshot do book e a profundidade da fonte (none/top/full)
-  GET  /log?since=T&nivel=INFO → log do servidor em memória (credenciais mascaradas)
+  GET  /log?apos=SEQ&nivel=INFO → log do servidor em memória (credenciais mascaradas; também since=T)
   POST /config          → atualizar configurações em tempo real
   POST /reset           → reset do motor (início de dia)
   POST /dll/reconectar  → stop()+start() da ProfitDLL numa thread (202; 409 se já reconectando; 404 fora do modo dll)
@@ -155,6 +155,13 @@ class FlowHandler(BaseHTTPRequestHandler):
         if self.dll is not None:
             state["dll"] = self.dll.stats()
             state["dll"]["reconexao"] = dict(FlowHandler.reconexao)
+            # Defesa em profundidade: textos livres que vêm de exceções passam pela mesma máscara do /log
+            segredos = [os.environ.get(n, "") for n in log_memoria.VARIAVEIS_SECRETAS]
+            if state["dll"].get("motivo_falha"):
+                state["dll"]["motivo_falha"] = log_memoria.mascarar(state["dll"]["motivo_falha"], segredos)
+            if state["dll"]["reconexao"].get("resultado"):
+                state["dll"]["reconexao"]["resultado"] = log_memoria.mascarar(
+                    state["dll"]["reconexao"]["resultado"], segredos)
         return state
 
     def _read_body(self) -> dict:
@@ -253,11 +260,12 @@ class FlowHandler(BaseHTTPRequestHandler):
         elif path == "/log":
             try:
                 since = num("since")
-                registros = self.log.registros(since, qs.get("nivel", ["INFO"])[0])
+                apos = num("apos", None, int)
+                registros = self.log.registros(since, qs.get("nivel", ["INFO"])[0], apos)
             except ValueError as e:
                 self._send_json({"error": str(e)}, 400)
                 return
-            self._send_json({"registros": registros})
+            self._send_json({"registros": registros, "ultimo_seq": self.log.ultimo_seq})
 
         else:
             self._send_json({"error": "endpoint não encontrado"}, 404)
