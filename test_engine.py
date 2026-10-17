@@ -2832,6 +2832,80 @@ def test_defesas_classificacao():
         err("Negócio sem agressor deveria ser ignorado")
 
 
+def test_defesas_fila_e2():
+    print(f"\n{AMARELO}═══ TESTE 30: Defesas — fila formada e E2 ═══{RESET}")
+    from core.defesas import DefesaDetector
+
+    def sniper_morgan():
+        det = DefesaDetector(EngineConfig())
+        det.on_tick(_neg(0, 21.17, 800, "BTG", Side.SELL))
+        det.on_tick(_neg(10, 21.17, 1200, "MORGAN", Side.BUY))
+        return det
+
+    # Fila: a venda para no preço do sniper comprador; o próximo negócio não é ele limpando a fila
+    det = sniper_morgan()
+    det.on_book(21.16, 21.17)
+    det.on_tick(_neg(1000, 21.17, 300, "XP", Side.BUY, "UBS"))
+    fila = [e for e in _evs(det, "fila_formada") if e.corretora == "MORGAN"]
+    det2 = sniper_morgan()
+    det2.on_book(21.16, 21.17)
+    det2.on_tick(_neg(1000, 21.17, 300, "MORGAN", Side.BUY, "UBS"))
+    if fila and not [d for d in det.ativas() if d.corretora == "MORGAN"] \
+            and [d for d in det2.ativas() if d.corretora == "MORGAN"] and not _evs(det2, "fila_formada"):
+        ok("Venda parada no 21,17 e o próximo negócio não é o MORGAN → fila_formada; se ele limpa, continua")
+    else:
+        err(f"Fila: {[e.to_dict() for e in _evs(det)]} / {[e.to_dict() for e in _evs(det2)]}")
+
+    # Fantasma vendedor: compra parada no 22,40 e o próximo negócio não é a TULLETT vendendo ali
+    det = DefesaDetector(EngineConfig())
+    for i in range(3):
+        det.on_tick(_neg(i * 1000, 22.42, 100, "UBS", Side.BUY))
+        det.on_tick(_neg(i * 1000 + 100, 22.40, 300, "TULLETT", Side.SELL))
+    det.on_book(22.40, 22.42)
+    det.on_tick(_neg(5000, 22.42, 200, "CLEAR", Side.BUY, "XP"))
+    if [e for e in _evs(det, "fila_formada") if e.corretora == "TULLETT"]:
+        ok("Fantasma TULLETT: compra parada no 22,40 sem ela vender → fila_formada (aula 9393842)")
+    else:
+        err(f"Fila do fantasma: {[e.to_dict() for e in _evs(det)]}")
+
+    # E2 no mesmo preço: ÁGORA iceberg confirmado + TULLETT com 1 giro de 1.000 (aula 9393845 04:49–06:11)
+    det = DefesaDetector(EngineConfig())
+    det.on_tick(_neg(0, 22.05, 800, "XP", Side.SELL, "AGORA"))
+    det.on_tick(_neg(1000, 22.05, 700, "BTG", Side.SELL, "AGORA"))
+    det.on_tick(_neg(2000, 22.05, 1000, "JP MORGAN", Side.SELL, "TULLETT"))
+    e2 = _evs(det, "e2_formado")
+    if e2 and {e2[-1].corretora, e2[-1].parceiro} == {"AGORA", "TULLETT"}:
+        ok("E2 no 22,05: ÁGORA (iceberg) + TULLETT (alerta, player novo de 1.000)")
+    else:
+        err(f"E2 mesmo preço: {[e.to_dict() for e in _evs(det)]}")
+
+    # E2 próximo (1 tick): ÁGORA iceberg no 22,05 + MERRILL sniper no 22,06; a fila acaba com o MERRILL
+    det = DefesaDetector(EngineConfig())
+    det.on_tick(_neg(0, 22.05, 800, "XP", Side.SELL, "AGORA"))
+    det.on_tick(_neg(1000, 22.05, 700, "BTG", Side.SELL, "AGORA"))
+    det.on_tick(_neg(2000, 22.06, 1000, "UBS", Side.SELL, "MERRILL"))
+    det.on_tick(_neg(2010, 22.06, 1000, "MERRILL", Side.BUY, "ITAU"))
+    pares = sorted(f"{d.corretora}+{d.e2_com}" for d in det.ativas() if d.e2_com)
+    det.on_book(22.05, 22.06)
+    det.on_tick(_neg(3000, 22.06, 300, "XP", Side.BUY, "ITAU"))
+    acabou = _evs(det, "e2_uma_acabou")
+    agora_vivo = [d for d in det.ativas() if d.corretora == "AGORA"]
+    if pares == ["AGORA+MERRILL", "MERRILL+AGORA"] and acabou and acabou[-1].corretora == "AGORA" \
+            and agora_vivo and not agora_vivo[0].e2_com:
+        ok("E2 a 1 tick (ÁGORA 22,05 + MERRILL 22,06); MERRILL perde a fila → e2_uma_acabou, ÁGORA continua")
+    else:
+        err(f"E2 próximo: pares={pares} eventos={[e.to_dict() for e in _evs(det)]}")
+
+    # Mesma corretora em dois preços não é E2
+    det = DefesaDetector(EngineConfig())
+    for ms, p in ((0, 22.05), (1000, 22.05), (2000, 22.06), (3000, 22.06)):
+        det.on_tick(_neg(ms, p, 800, "XP", Side.SELL, "AGORA"))
+    if not _evs(det, "e2_formado"):
+        ok("ÁGORA no 22,05 e no 22,06: mesma corretora, não é E2")
+    else:
+        err(f"E2 com a mesma corretora: {[e.to_dict() for e in _evs(det)]}")
+
+
 def main():
     print(f"\n{AZUL}╔══════════════════════════════════════════════╗{RESET}")
     print(f"{AZUL}║   FLUXO SERVER — Suite de Testes Automáticos  ║{RESET}")
@@ -2874,6 +2948,7 @@ def main():
     test_main_fonte_dll()
     test_defesas_ordem_original()
     test_defesas_classificacao()
+    test_defesas_fila_e2()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")

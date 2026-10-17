@@ -169,6 +169,7 @@ class DefesaDetector:
         n = self.nivel(tick.price)
         ts = tick.timestamp
         ordem = chave_ordem(tick)
+        self._resolver_filas(tick, n, lado_agr)
         self._negocio_alem(n, ts)
         lado_pas = oposto(lado_agr)
 
@@ -198,6 +199,29 @@ class DefesaDetector:
                 d.agressoes_vazio += 1
         self._atividade(d, ts)
         self._registrar_agressao(lado_agr, _Agressao(n, ordem[0], tick.broker, tick.passive_broker))
+
+    def on_book(self, melhor_compra: Optional[float], melhor_venda: Optional[float]) -> None:
+        """Topo do book (sem corretora). Fila formada: o topo do lado oposto parou no preço de um
+        sniper/fantasma; o próximo negócio decide (aula-02 17:45–18:46; aula 9393842)."""
+        topo = {COMPRA: melhor_compra, VENDA: melhor_venda}
+        for d in self._confirmadas.values():
+            if d.tipo not in ("sniper", "fantasma"):
+                continue
+            p = topo[oposto(d.lado)]
+            d.fila_pendente = p is not None and self.nivel(p) == d.nivel
+
+    def _resolver_filas(self, tick, n: int, lado_agr: str):
+        """Depois de o book mostrar a fila, o próximo negócio: se não for o defensor agredindo do
+        lado dele no próprio preço, a fila se formou."""
+        for d in list(self._confirmadas.values()):
+            if not d.fila_pendente:
+                continue
+            d.fila_pendente = False
+            if tick.broker == d.corretora and lado_agr == d.lado and n == d.nivel:
+                continue
+            self._evento("fila_formada", d, tick.timestamp)
+            self._desfazer_e2(d, tick.timestamp)
+            self._remover(self._chave(d))
 
     # ── internos ───────────────────────────────────────────────
     def _registrar_agressao(self, lado: str, a: _Agressao):
@@ -325,11 +349,39 @@ class DefesaDetector:
                         self._desfazer_e2(d, ts)
                     self._remover(k)
 
+    def _vizinhas(self, d: Defesa):
+        """Defesas do mesmo lado a até defesa_e2_ticks de d (ordem estável)."""
+        r = self.cfg.defesa_e2_ticks
+        niveis = self._niveis[d.lado]
+        for L in niveis[bisect.bisect_left(niveis, d.nivel - r):bisect.bisect_right(niveis, d.nivel + r)]:
+            for k in self._por_nivel[d.lado].get(L, {}):
+                o = self._defesas[k]
+                if o is not d:
+                    yield o
+
     def _formar_e2(self, d: Defesa, ts: float):
-        """E2 — completado na Tarefa 3."""
+        """Duas defesas de corretoras diferentes, mesmo lado, a até defesa_e2_ticks (aulas 9393845/9393844).
+        Uma confirmada e a outra ao menos em alerta (decisão 4 do plano)."""
+        if d.e2_com or d.estado not in ("confirmada", "alerta"):
+            return
+        for o in self._vizinhas(d):
+            if o.corretora == d.corretora or o.e2_com or o.estado not in ("confirmada", "alerta"):
+                continue
+            if "confirmada" not in (d.estado, o.estado):
+                continue
+            d.e2_com, o.e2_com = o.corretora, d.corretora
+            self._evento("e2_formado", d, ts, f"com {o.corretora} @ {_fmt(o.preco)}", parceiro=o.corretora)
+            return
 
     def _desfazer_e2(self, d: Defesa, ts: float):
-        """E2 — completado na Tarefa 3."""
+        """Uma das duas acabou: a outra continua sozinha (aula 9393845 07:00–07:35)."""
+        if not d.e2_com:
+            return
+        for o in list(self._vizinhas(d)):
+            if o.corretora == d.e2_com and o.e2_com == d.corretora:
+                o.e2_com = ""
+                self._evento("e2_uma_acabou", o, ts, f"{d.corretora} acabou", parceiro=d.corretora)
+        d.e2_com = ""
 
     def _evento(self, evento: str, d: Defesa, ts: float, detalhe: str = "", parceiro: str = ""):
         self._eventos.append(EventoDefesa(ts, evento, d.tipo, d.corretora, d.lado, d.preco, detalhe, parceiro))
