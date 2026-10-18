@@ -160,6 +160,24 @@ def setup_dde_mode(engine: FlowEngine, args):
 # MODO PROFITDLL
 # ──────────────────────────────────────────────────────────────
 
+def livro_do_papel_aberto(engine, ativo_dll: str):
+    """O TinyBook vem só do papel com que a DLL subiu: depois de trocar o papel da Operar, o livro não vale."""
+    def entregar(niveis):
+        if engine.asset == ativo_dll:
+            engine.update_book(niveis)
+    return entregar
+
+
+def envolver_gravacao(engine, gravador, ativo: str):
+    """Grava só os negócios do papel com que o servidor subiu (o CSV não tem coluna de papel)."""
+    motor = engine.add_tick
+    gravando = gravador.envolver(motor)
+
+    def entregar(tick):
+        (gravando if tick.asset in ("", ativo) else motor)(tick)
+    engine.add_tick = entregar
+
+
 def setup_dll_mode(engine: FlowEngine, args):
     """
     Configura integração com a ProfitDLL (Market Data em tempo real).
@@ -172,7 +190,7 @@ def setup_dll_mode(engine: FlowEngine, args):
                    if getattr(args, "radar", False) else None)
     bridge = PonteDLLProcesso(asset=args.asset, agentes_path=args.agentes, radar=lista_radar)
     bridge.on_tick = engine.add_tick
-    bridge.on_book = engine.update_book   # topo do livro (TinyBook)
+    bridge.on_book = livro_do_papel_aberto(engine, bridge.asset)   # topo do livro (TinyBook)
     return bridge
 
 
@@ -436,7 +454,7 @@ def main():
         import atexit
         from replay.csv_ticks import GravadorTicks
         gravador = GravadorTicks(args.gravar)
-        engine.add_tick = gravador.envolver(engine.add_tick)
+        envolver_gravacao(engine, gravador, engine.asset)
         atexit.register(gravador.fechar)
 
     # ── Radar de fluxo: todo negócio vai ao radar; só o do papel aberto segue para o motor (e o gravador)

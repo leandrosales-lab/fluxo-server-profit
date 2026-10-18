@@ -29,8 +29,11 @@ class Radar:
 
     def reset(self):
         self._detectores: dict = {}      # papel → DefesaDetector
-        self._registros: dict = {}       # (papel, corretora, lado, nível) → registro
-        self._vivos: dict = {}           # chave do registro → Defesa (enquanto o detector a acompanha)
+        self._registros: dict = {}       # id → registro (um por iceberg confirmado, mesmo no mesmo nível)
+        self._atual: dict = {}           # (papel, corretora, lado, nível) → id do registro da defesa atual
+        self._chave_de: dict = {}        # id → (papel, corretora, lado, nível)
+        self._vivos: dict = {}           # (papel, corretora, lado, nível) → Defesa que o detector acompanha
+        self._seq = 0
         self._negocios = 0
         self._dia = None
 
@@ -53,28 +56,34 @@ class Radar:
     def envolver(self, add_tick, engine):
         """Entrega todo negócio ao radar e só o do papel aberto (engine.asset) ao motor."""
         def entregar(tick):
-            if not tick.asset:
-                tick.asset = engine.asset
-            self.on_tick(tick)
-            if tick.asset == engine.asset:
-                add_tick(tick)
+            # Sob o lock do engine: o GET /api/radar lê o radar com ele, e a troca de papel
+            # (POST /operar/ativo) não pode acontecer entre a comparação e a entrega ao motor
+            with engine._lock:
+                if not tick.asset:
+                    tick.asset = engine.asset
+                self.on_tick(tick)
+                if tick.asset == engine.asset:
+                    add_tick(tick)
         return entregar
 
     # ── eventos do detector
     def _ao_evento(self, ativo, ev, d):
         chave = (ativo, d.corretora, d.lado, d.nivel)
-        reg = self._registros.get(chave)
         if ev.evento == "confirmada" and d.tipo == "iceberg":
-            if reg is None:
-                reg = self._registros[chave] = {
-                    "ativo": ativo, "corretora": d.corretora, "lado": d.lado, "preco": d.preco,
-                    "giros": d.giros, "volume": d.vol_passivo, "confirmado_as": ev.ts,
-                    "situacao": "segurando", "desfecho_as": None, "segurou_as": None, "rompeu_as": None,
-                }
+            if self._vivos.get(chave) is d:
+                return
+            self._seq += 1
+            self._registros[self._seq] = {
+                "ativo": ativo, "corretora": d.corretora, "lado": d.lado, "preco": d.preco,
+                "giros": d.giros, "volume": d.vol_passivo, "confirmado_as": ev.ts,
+                "situacao": "segurando", "desfecho_as": None, "segurou_as": None, "rompeu_as": None,
+            }
+            self._atual[chave], self._chave_de[self._seq] = self._seq, chave
             self._vivos[chave] = d
             return
-        if reg is None:
-            return
+        if self._vivos.get(chave) is not d or chave not in self._atual:
+            return                       # evento de outra defesa (ex.: candidata nova no mesmo nível)
+        reg = self._registros[self._atual[chave]]
         reg["giros"], reg["volume"] = d.giros, d.vol_passivo
         if ev.evento == "segurou":
             reg["segurou_as"] = ev.ts
@@ -89,15 +98,16 @@ class Radar:
             self._vivos.pop(chave, None)
 
     # ── consultas
-    def _atualizar(self, chave, reg):
+    def _atualizar(self, idreg, reg):
+        chave = self._chave_de[idreg]
         d = self._vivos.get(chave)
-        if d is not None:
+        if d is not None and self._atual.get(chave) == idreg:
             reg["giros"], reg["volume"] = d.giros, d.vol_passivo
 
     def lista(self, situacao: str | None = None, limite: int = LIMITE_LISTA) -> list[dict]:
         segurando, resolvidos = [], []
-        for chave, reg in self._registros.items():
-            self._atualizar(chave, reg)
+        for idreg, reg in self._registros.items():
+            self._atualizar(idreg, reg)
             if situacao and reg["situacao"] != situacao:
                 continue
             (segurando if reg["situacao"] == "segurando" else resolvidos).append(reg)

@@ -3574,6 +3574,104 @@ def test_api_radar():
         FlowServer.registrar_radar(server, None)
 
 
+def test_radar_revisao():
+    print(f"\n{AMARELO}═══ TESTE 40: Radar — correções da revisão final ═══{RESET}")
+    import json
+    import types
+    import urllib.error
+    import urllib.request
+    from ctypes import Structure, c_ubyte, c_wchar_p
+    from profitdll.bridge import ticker_do_ativo
+    from core.radar import Radar
+    import main as programa
+
+    # 1) Callback de negócio da DLL: o campo é Ticker (T maiúsculo) no TConnectorAssetIdentifier (profitTypes.py)
+    class TConnectorAssetIdentifier(Structure):
+        _fields_ = [("Version", c_ubyte), ("Ticker", c_wchar_p), ("Exchange", c_wchar_p), ("FeedType", c_ubyte)]
+    real = TConnectorAssetIdentifier(0, "petr4", "B", 0)
+    if (ticker_do_ativo(real), ticker_do_ativo(types.SimpleNamespace(ticker="rent3")),
+            ticker_do_ativo(types.SimpleNamespace(Ticker=None))) == ("PETR4", "RENT3", ""):
+        ok("Papel lido do Ticker (struct da DLL) e do ticker (TAssetID do TinyBook)")
+    else:
+        err("ticker_do_ativo")
+
+    # 2) Iceberg novo no mesmo nível depois de o antigo sair: registro novo, não some
+    def neg(ms, preco, qtd, agr, lado, pas=""):
+        t = _neg(ms, preco, qtd, agr, lado, pas)
+        t.asset = "RENT3"
+        return t
+    radar = Radar(EngineConfig(), calibracao_tabela={})
+    for t in [neg(0, 50.36, 800, "XP", Side.SELL, "AGORA"), neg(1000, 50.36, 700, "BTG", Side.SELL, "AGORA"),
+              neg(2000, 50.35, 100, "UBS", Side.SELL, "ITAU"),              # rompe
+              neg(3000, 50.32, 100, "UBS", Side.SELL, "ITAU"),              # 4 ticks além: sai do detector
+              neg(4000, 50.36, 800, "XP", Side.SELL, "AGORA"), neg(5000, 50.36, 700, "BTG", Side.SELL, "AGORA")]:
+        radar.on_tick(t)
+    agora = [(r["situacao"], r["confirmado_as"]) for r in radar.lista() if r["corretora"] == "AGORA"]
+    if sorted(agora) == [("rompeu", 1_000_001.0), ("segurando", 1_000_005.0)]:
+        ok("Mesmo nível, iceberg novo depois do antigo sair: dois registros (rompeu e segurando)")
+    else:
+        err(f"Registros AGORA: {agora}")
+
+    # 3/4) Radar e motor recebem o negócio sob o lock do engine (GET /api/radar e troca de papel usam o mesmo lock)
+    engine = FlowEngine("RENT3", EngineConfig())
+    radar = Radar(EngineConfig(), calibracao_tabela={})
+    sob_lock = []
+    original = radar.on_tick
+    radar.on_tick = lambda t: (sob_lock.append(engine._lock._is_owned()), original(t))
+    entrega = radar.envolver(lambda t: sob_lock.append(engine._lock._is_owned()), engine)
+    entrega(neg(0, 50.36, 100, "XP", Side.BUY, "UBS"))
+    if sob_lock == [True, True]:
+        ok("Radar e motor recebem o negócio com o lock do engine")
+    else:
+        err(f"lock: {sob_lock}")
+
+    # 5a) Livro (TinyBook do --asset) só vai ao motor enquanto ele está nesse papel
+    chegou = []
+    falso = types.SimpleNamespace(asset="PETR4", update_book=lambda niveis: chegou.append(niveis))
+    entrega_livro = programa.livro_do_papel_aberto(falso, "PETR4")
+    entrega_livro(["n1"])
+    falso.asset = "RENT3"
+    entrega_livro(["n2"])
+    if chegou == [["n1"]]:
+        ok("Livro do papel da DLL não vai para a Operar depois da troca de papel")
+    else:
+        err(f"livro: {chegou}")
+
+    # 5b) Gravação só do papel com que o servidor subiu
+    gravados, ao_motor = [], []
+    grav = types.SimpleNamespace(envolver=lambda f: (lambda t: (gravados.append(t.asset), f(t))))
+    falso = types.SimpleNamespace(asset="RENT3", add_tick=lambda t: ao_motor.append(t.asset))
+    programa.envolver_gravacao(falso, grav, "RENT3")
+    for ativo in ("RENT3", "PETR4", ""):
+        t = _neg(0, 1.0, 100, "XP", Side.BUY, "UBS")
+        t.asset = ativo
+        falso.add_tick(t)
+    if gravados == ["RENT3", ""] and ao_motor == ["RENT3", "PETR4", ""]:
+        ok("Gravador grava só o papel original; o motor continua recebendo o que o radar entrega")
+    else:
+        err(f"gravação: {gravados} / {ao_motor}")
+
+    # 5c) Sem radar não há troca de papel (o motor rotularia o papel antigo como o novo)
+    from api.server import FlowServer
+    porta = 15583
+    server = FlowServer(FlowEngine("RENT3", EngineConfig()), host="127.0.0.1", port=porta)
+    server.registrar_radar(None)
+    server.start()
+    try:
+        pedido = urllib.request.Request(f"http://127.0.0.1:{porta}/operar/ativo", data=b'{"ativo": "PETR4"}',
+                                        method="POST", headers={"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(pedido)
+            err("Sem radar a troca deveria dar 409")
+        except urllib.error.HTTPError as e:
+            if e.code == 409:
+                ok("Sem --radar, POST /operar/ativo responde 409")
+            else:
+                err(f"código {e.code}")
+    finally:
+        server.stop()
+
+
 def main():
     print(f"\n{AZUL}╔══════════════════════════════════════════════╗{RESET}")
     print(f"{AZUL}║   FLUXO SERVER — Suite de Testes Automáticos  ║{RESET}")
@@ -3626,6 +3724,7 @@ def main():
     test_acoes_b3()
     test_dll_varios_papeis()
     test_api_radar()
+    test_radar_revisao()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")

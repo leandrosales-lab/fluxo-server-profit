@@ -114,6 +114,12 @@ BOLSA = "B"
 _PREFIXOS_FUTUROS = ("WIN", "WDO", "IND", "DOL", "BGI", "CCM", "ICF", "DI1", "WSP", "BIT")
 
 
+def ticker_do_ativo(asset) -> str:
+    """Papel de um identificador da DLL. Atenção: TConnectorAssetIdentifier (negócios) usa "Ticker",
+    com T maiúsculo (profitTypes.py); TAssetID (TinyBook) usa "ticker"."""
+    return str(getattr(asset, "Ticker", None) or getattr(asset, "ticker", None) or "").upper()
+
+
 def validar_ativo(ticker: str) -> str:
     """Ticker normalizado (maiúsculo); ValueError para contrato futuro."""
     t = ticker.strip().upper()
@@ -489,10 +495,10 @@ class ProfitDLLBridge:
             self.fila.put(("trade", int(trade.BuyAgent), int(trade.SellAgent),
                            int(trade.Quantity), float(trade.Price),
                            int(trade.TradeType), horario_negocio(trade.TradeDate),
-                           int(flags), int(trade.TradeNumber), str(asset.ticker or "")))
+                           int(flags), int(trade.TradeNumber), ticker_do_ativo(asset)))
 
         def on_tiny_book(asset, price, qty, side):
-            if (asset.ticker or "").upper() != self.asset:
+            if ticker_do_ativo(asset) != self.asset:
                 return              # radar: topo do livro só do papel principal
             # Só enfileira — o TinyBook não traz horário, marca a chegada
             self.fila.put(("book", int(side), float(price), int(qty), time.time()))

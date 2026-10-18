@@ -219,8 +219,9 @@ class FlowHandler(BaseHTTPRequestHandler):
                     self._send_json({"error": "limite inválido"}, 400)
                     return
                 sit = qs.get("situacao", [None])[0] or None
-                with self.engine._lock:
-                    self._send_json({"resumo": radar.resumo(), "lista": radar.lista(sit, max(1, limite))})
+                with self.engine._lock:          # o radar recebe negócios sob este lock (Radar.envolver)
+                    corpo = {"resumo": radar.resumo(), "lista": radar.lista(sit, max(1, limite))}
+                self._send_json(corpo)
 
         elif path in PAGINAS:
             arquivo = os.path.join(STATIC_DIR, PAGINAS[path])
@@ -362,6 +363,10 @@ class FlowHandler(BaseHTTPRequestHandler):
         elif path == "/operar/ativo":
             # Troca o papel da tela Operar: o motor zera e passa a receber o papel novo dali em diante
             from profitdll.bridge import validar_ativo
+            if FlowHandler.radar is None:
+                self._read_body()
+                self._send_json({"error": "trocar o papel só com o radar ligado (--radar)"}, 409)
+                return
             try:
                 ativo = validar_ativo(str(self._read_body().get("ativo") or ""))
                 if not ativo:
