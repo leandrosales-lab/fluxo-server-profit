@@ -342,6 +342,13 @@ class EngineConfig:
     defesa_e2_ticks:           int = 1
     # Sinal de iceberg: stop no 1º tick além do nível (aula-02 24:15; aula 9393845 06:30)
     defesa_stop_ticks:         int = 1
+    # Sinal de iceberg só quando a defesa já absorveu este volume (ações). CALIBRADO, não é regra do curso:
+    # 42 pregões reais (17/09–16/10/2026, DLL). O ganho por sinal cresce com o volume absorvido; o corte é onde
+    # passa de ~+1 tick (PETR4 ≥50 mil: +1,05; RENT3 ≥5 mil: +1,0 a +2,0). A defesa continua detectada e
+    # exibida abaixo do corte; só o sinal espera. Papel sem medida usa o padrão (os icebergs das aulas
+    # absorveram de 13 mil a 58 mil).
+    defesa_iceberg_vol_sinal:  dict = field(default_factory=lambda: {"PETR4": 50000, "RENT3": 5000})
+    defesa_iceberg_vol_sinal_padrao: int = 5000
 
     # Confiança mínima para emitir sinal
     min_confidence:         float = 0.60
@@ -1018,6 +1025,10 @@ class FlowEngine:
             if ic.passive:
                 # Sem tempo de expiração (decisão de 17/10): o sinal só vale com o preço no nível
                 if self._defesas.nivel(ic.price) != nivel_atual:
+                    continue
+                # Corte calibrado de volume absorvido (ver EngineConfig.defesa_iceberg_vol_sinal)
+                if ic.total_vol < self.cfg.defesa_iceberg_vol_sinal.get(
+                        self.asset, self.cfg.defesa_iceberg_vol_sinal_padrao):
                     continue
                 # Corretora passiva real: suporte (compra passiva) → BUY, resistência → SELL
                 cand = self._iceberg_passive_candidate(ic, pct_buy, pct_sell, best_ask_brokers,

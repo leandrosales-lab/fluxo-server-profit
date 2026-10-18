@@ -37,6 +37,8 @@ def test_iceberg_buy():
         iceberg_lot_tolerance = 20.0,
         tick_size            = 0.01,
         min_confidence       = 0.50,
+        defesa_iceberg_vol_sinal        = {},   # testes antigos: sem corte de volume do sinal
+        defesa_iceberg_vol_sinal_padrao = 0,
     )
     engine = FlowEngine("PETR4", cfg)
 
@@ -1070,6 +1072,8 @@ def _cfg_iceberg() -> EngineConfig:
         iceberg_min_share    = 0.5,
         tick_size            = 0.01,
         min_confidence       = 0.50,
+        defesa_iceberg_vol_sinal        = {},   # testes antigos: sem corte de volume do sinal
+        defesa_iceberg_vol_sinal_padrao = 0,
     )
 
 
@@ -1999,8 +2003,8 @@ def test_api_grafico_tt_book():
     finally:
         server.stop()
 
-    # Sinais: só as trocas entram no registro (direto no engine, com um pregão conhecido)
-    e = FlowEngine("PETR4", EngineConfig())
+    # Sinais: só as trocas entram no registro (direto no engine, com um pregão conhecido; sem o corte calibrado)
+    e = FlowEngine("PETR4", EngineConfig(defesa_iceberg_vol_sinal={}, defesa_iceberg_vol_sinal_padrao=0))
     vistos, ultima = [], None
     for i in range(60):
         lado = Side.SELL if i % 5 else Side.BUY
@@ -3122,6 +3126,33 @@ def test_defesas_engine():
         err(f"reset() deixou defesas: {engine.get_state()['defesas']}")
 
 
+def test_iceberg_corte_volume():
+    print(f"\n{AMARELO}═══ TESTE 33: Sinal de iceberg só a partir do volume calibrado ═══{RESET}")
+
+    def rodar(ativo, vol_por_ordem, n=6):
+        cfg = EngineConfig(min_confidence=0.50, flow_pct_threshold=60.0)
+        engine = FlowEngine(ativo, cfg)
+        ts = _base_negocios(engine, 1_000_000.0)
+        for i in range(n):
+            ts += 1.0
+            engine.add_tick(Tick(ts, 19.04, vol_por_ordem, f"V{i}", Side.SELL, passive_broker="JP MORGAN"))
+        ativas = [d["tipo"] for d in engine.get_state()["defesas"]["ativas"] if d["corretora"] == "JP MORGAN"]
+        return ativas, engine.get_signal().pattern.value
+
+    cfg = EngineConfig()
+    if cfg.defesa_iceberg_vol_sinal.get("PETR4") == 50000 and cfg.defesa_iceberg_vol_sinal.get("RENT3") == 5000             and cfg.defesa_iceberg_vol_sinal_padrao == 5000:
+        ok("Cortes calibrados: PETR4 50 mil, RENT3 5 mil, demais 5 mil")
+    else:
+        err(f"Cortes: {cfg.defesa_iceberg_vol_sinal} / {cfg.defesa_iceberg_vol_sinal_padrao}")
+    a, p = rodar("RENT3", 300)            # 1.800 absorvidas: defesa sim, sinal não
+    b, q = rodar("RENT3", 1000)           # 6.000 absorvidas: sinal
+    c, r = rodar("PETR4", 1000)           # 6.000 em PETR4: abaixo de 50 mil, sem sinal
+    if a == ["iceberg"] and p != "Iceberg" and b == ["iceberg"] and q == "Iceberg" and c == ["iceberg"] and r != "Iceberg":
+        ok("Defesa detectada sempre; sinal só com o volume do papel (RENT3 6 mil sim, 1,8 mil não; PETR4 6 mil não)")
+    else:
+        err(f"Corte de volume: RENT3 1,8k {a}/{p}; RENT3 6k {b}/{q}; PETR4 6k {c}/{r}")
+
+
 def test_defesas_aulas():
     print(f"\n{AMARELO}═══ TESTE 32: Defesas nas sequências das aulas (material local) ═══{RESET}")
     pasta = _pasta_aulas()
@@ -3258,6 +3289,7 @@ def main():
     test_defesas_fila_e2()
     test_defesas_engine()
     test_defesas_aulas()
+    test_iceberg_corte_volume()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")
