@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import * as f from "../api/static/js/formato.js";
 import { textoStatus, estadoReconectar } from "../api/static/js/shell.js";
-import { tituloSinal, LOTE_GRANDE_PADRAO, textoEvento, duracao, ordenarDefesas } from "../api/static/js/operar-paineis.js";
+import { tituloSinal, LOTE_GRANDE_PADRAO, textoEvento, duracao, medidaSinal, ordenarDefesas } from "../api/static/js/operar-paineis.js";
 import { sinceCandles, juntarCandles, precisaLimpar } from "../api/static/js/candles.js";
 
 assert.equal(f.preco(38.47), "38,47");
@@ -102,5 +102,12 @@ assert.equal(ordenarDefesas(dez, 25.1).length, 8);
 assert.deepEqual(ordenarDefesas(dez, null, 2).map((x) => x.preco), [20, 21]);
 assert.deepEqual(ordenarDefesas(undefined, 25, 8), []);
 assert.equal(dez[0].preco, 20);   // não altera a lista recebida
+
+// Iceberg mostra o acerto histórico medido; os outros padrões, a força (só ordena)
+const acerto = { taxa: 0.408, ganho: 1.044, n: 1217, faixa: "5-10k", base: "RENT3" };
+assert.deepEqual(medidaSinal({ pattern: "Iceberg", confidence: 0.84, acerto }), ["acerto", "41% · +1,0 tick", "41%"]);
+assert.deepEqual(medidaSinal({ pattern: "Iceberg", confidence: 0.84, acerto: { ...acerto, ganho: -0.07 } }),
+  ["acerto", "41% · −0,1 tick", "41%"]);
+assert.deepEqual(medidaSinal({ pattern: "Absorção", confidence: 0.84, acerto: null }), ["força", "84%", "84%"]);
 
 console.log("test_telas.mjs: tudo certo");

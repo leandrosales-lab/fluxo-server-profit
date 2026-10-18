@@ -28,6 +28,7 @@ from enum import Enum
 from typing import Optional
 
 from core.defesas import DefesaDetector
+from core import calibracao
 
 logger = logging.getLogger("FlowEngine")
 
@@ -212,9 +213,10 @@ class FlowSignal:
     price:          float
     stop_price:     float
     broker:         str
-    confidence:     float       # 0.0 a 1.0
+    confidence:     float       # 0.0 a 1.0 (só ordena os sinais entre si)
     reason:         str
     timestamp:      float = field(default_factory=time.time)
+    acerto:         Optional[dict] = None   # iceberg: acerto histórico medido (core/calibracao.py)
 
     def to_dict(self) -> dict:
         return {
@@ -227,6 +229,7 @@ class FlowSignal:
             "confidence": round(self.confidence, 3),
             "reason":     self.reason,
             "timestamp":  self.timestamp,
+            "acerto":     self.acerto,
         }
 
 
@@ -349,6 +352,8 @@ class EngineConfig:
     # absorveram de 13 mil a 58 mil).
     defesa_iceberg_vol_sinal:  dict = field(default_factory=lambda: {"PETR4": 50000, "RENT3": 5000})
     defesa_iceberg_vol_sinal_padrao: int = 5000
+    # Tabela do acerto histórico do iceberg (tools/calibrar_iceberg.py); "" = config/calibracao_iceberg.json
+    calibracao_iceberg: str = ""
 
     # Confiança mínima para emitir sinal
     min_confidence:         float = 0.60
@@ -421,6 +426,7 @@ class FlowEngine:
 
         # ── Defesas (iceberg pela passiva, sniper, fantasma, E2): core/defesas.py
         self._defesas = DefesaDetector(self.cfg)
+        self._calibracao = calibracao.carregar(self.cfg.calibracao_iceberg or calibracao.CAMINHO_PADRAO)
         self._avg_lot_cache = None        # (último tick, relógio, valor) de _iceberg_avg_lot
         self._fonte_com_passiva = False   # vira True no 1º tick com passive_broker; reset() não zera (mesma fonte)
 
@@ -1268,6 +1274,7 @@ class FlowEngine:
             "stop_price": round(ic.price - offset if buy else ic.price + offset, 2),
             "confidence": min(0.95, conf),
             "reason":     reason,
+            "acerto":     calibracao.acerto_iceberg(self._calibracao, self.asset, ic.total_vol),
         }
 
     def _calc_confidence(self, ic: IcebergCandidate, flow_pct: float,
@@ -1312,7 +1319,7 @@ class FlowEngine:
             signal=sig, pattern=best["pattern"], direction=dir_,
             price=best["price"], stop_price=best["stop_price"],
             broker=best["broker"], confidence=best["confidence"],
-            reason=best["reason"], timestamp=self._now(),
+            reason=best["reason"], timestamp=self._now(), acerto=best.get("acerto"),
         )
 
     # ──────────────────────────────────────────────────────────
@@ -1425,7 +1432,7 @@ class FlowEngine:
         self._signals_log.append({
             "timestamp": sig.timestamp, "signal": sig.signal.value, "pattern": sig.pattern.value,
             "price": sig.price, "stop_price": sig.stop_price, "confidence": round(sig.confidence, 3),
-            "broker": sig.broker, "reason": sig.reason,
+            "broker": sig.broker, "reason": sig.reason, "acerto": sig.acerto,
         })
 
     @staticmethod

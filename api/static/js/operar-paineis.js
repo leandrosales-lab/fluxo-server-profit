@@ -16,6 +16,21 @@ export function ordenarDefesas(ativas, preco, limite = DEFESAS_NA_TELA) {
   return lista.slice(0, limite);
 }
 
+/**
+ * O que a tela mostra sobre o sinal: iceberg → acerto histórico medido em pregões reais
+ * (taxa de alvo antes do stop e ganho médio em ticks); demais → força (fórmula antiga, só ordena).
+ * Devolve [rótulo, texto da manchete, texto curto da lista].
+ */
+export function medidaSinal(s) {
+  if (s.acerto) {
+    const taxa = pct(100 * s.acerto.taxa, 0);
+    const g = s.acerto.ganho;
+    return ["acerto", `${taxa} · ${g < 0 ? "−" : "+"}${preco(Math.abs(g), 1)} tick`, taxa];
+  }
+  const forca = pct(100 * s.confidence, 0);
+  return ["força", forca, forca];
+}
+
 /** "45 s", "3 min", "2 h": há quanto tempo a defesa está ativa. */
 export function duracao(seg) {
   const s = Math.max(0, Math.round(seg));
@@ -83,7 +98,12 @@ export function criarPaineis() {
     const det = $("m-det");
     det.textContent = "";
     const vela = Math.floor(sinal.timestamp / tf) * tf;
-    for (const [rotulo, valor] of [["força", pct(100 * sinal.confidence, 0)], ["stop", preco(sinal.stop_price, casas)],
+    const [rotuloMedida, valorMedida] = medidaSinal(sinal);
+    const a = sinal.acerto;
+    det.title = a ? `Acerto histórico: ${inteiro(a.n)} sinais de iceberg com ${a.faixa} ações absorvidas `
+      + `(${a.base === "TODOS" ? "todos os papéis medidos" : a.base}); alvo de 4 ticks antes do stop em 5 min, sem custos`
+      : "Força: fórmula do motor que só ordena os sinais entre si (não é taxa de acerto)";
+    for (const [rotulo, valor] of [[rotuloMedida, valorMedida], ["stop", preco(sinal.stop_price, casas)],
                                    ["VWAP", preco(vwap, casas)], ["vela", hm(vela)], ["hora", horaB3(sinal.timestamp)]]) {
       det.append(rotulo, Object.assign(document.createElement("b"), { textContent: valor }));
     }
@@ -93,7 +113,7 @@ export function criarPaineis() {
     atualizarLinhas($("sinais-anteriores"), lista, (s) => {
       const compra = s.signal === "BUY";
       return { celulas: [{ t: compra ? "▲" : "▼", c: compra ? "compra" : "venda" }, { t: tituloSinal(s) },
-        { t: preco(s.price, casas), c: "num" }, { t: pct(100 * s.confidence, 0), c: "num faint" },
+        { t: preco(s.price, casas), c: "num" }, { t: medidaSinal(s)[2], c: "num faint" },
         { t: s.reason || "" }, { t: horaB3(s.timestamp), c: "num faint" }] };
     });
   }

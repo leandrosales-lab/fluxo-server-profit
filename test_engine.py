@@ -3153,6 +3153,51 @@ def test_iceberg_corte_volume():
         err(f"Corte de volume: RENT3 1,8k {a}/{p}; RENT3 6k {b}/{q}; PETR4 6k {c}/{r}")
 
 
+def test_acerto_iceberg():
+    print(f"\n{AMARELO}═══ TESTE 34: Acerto histórico do iceberg no lugar da força ═══{RESET}")
+    import json, tempfile
+    from core.calibracao import faixa_volume, acerto_iceberg, agregar
+
+    if (faixa_volume(1999), faixa_volume(2000), faixa_volume(49999), faixa_volume(50000)) == \
+            ("1-2k", "2-5k", "20-50k", "50k+"):
+        ok("Faixas de volume com limite superior exclusivo")
+    else:
+        err("Faixas de volume erradas")
+    dias = [{"ativo": "RENT3", "faixas": {"5-10k": {"n": 40, "alvo": 20, "stop": 20, "ganho": 60.0}}},
+            {"ativo": "PETR4", "faixas": {"5-10k": {"n": 10, "alvo": 1, "stop": 9, "ganho": -5.0}}}]
+    tabela = agregar(dias, "teste", 4, 300)
+    r = acerto_iceberg(tabela, "RENT3", 6000)
+    p = acerto_iceberg(tabela, "PETR4", 6000)      # só 10 sinais de PETR4: usa todos os papéis
+    nada = acerto_iceberg(tabela, "RENT3", 60000)
+    if r == {"taxa": 0.5, "ganho": 1.5, "n": 40, "faixa": "5-10k", "base": "RENT3"} \
+            and p["base"] == "TODOS" and p["n"] == 50 and nada is None:
+        ok("Acerto pela faixa do papel; com menos de 30 sinais, pela de todos; sem medida, nada")
+    else:
+        err(f"acerto_iceberg: {r} / {p} / {nada}")
+
+    fd, caminho = tempfile.mkstemp(suffix=".json")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(agregar([{"ativo": "PETR4", "faixas": {"1-2k": {"n": 100, "alvo": 44, "stop": 56, "ganho": 120.0}}}],
+                          "teste", 4, 300), f)
+    try:
+        cfg = _cfg_iceberg()
+        cfg.calibracao_iceberg = caminho
+        engine = FlowEngine("PETR4", cfg)
+        ts = _base_negocios(engine, 1_000_000.0)
+        for i, agr in enumerate(["BRADESCO", "RICO", "CLEAR", "XP INC", "TORO", "GENIAL"]):
+            ts += 1.0
+            engine.add_tick(Tick(ts, 19.04, 200, agr, Side.SELL, passive_broker="JP MORGAN"))
+        sig = engine.get_signal().to_dict()
+        reg = engine.get_signals()[-1]
+    finally:
+        os.unlink(caminho)
+    esperado = {"taxa": 0.44, "ganho": 1.2, "n": 100, "faixa": "1-2k", "base": "PETR4"}
+    if sig["pattern"] == "Iceberg" and sig["acerto"] == esperado and reg["acerto"] == esperado:
+        ok("Sinal de iceberg traz o acerto histórico (no /signal e no registro de sinais)")
+    else:
+        err(f"Acerto no sinal: {sig.get('acerto')} / {reg.get('acerto')}")
+
+
 def test_defesas_aulas():
     print(f"\n{AMARELO}═══ TESTE 32: Defesas nas sequências das aulas (material local) ═══{RESET}")
     pasta = _pasta_aulas()
@@ -3290,6 +3335,7 @@ def main():
     test_defesas_engine()
     test_defesas_aulas()
     test_iceberg_corte_volume()
+    test_acerto_iceberg()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")
