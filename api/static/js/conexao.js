@@ -123,6 +123,11 @@ function contadores(dll) {
     ["Fila pendente", dll.fila_pendente, ""],
     ["Atualizações do livro", dll.book_atualizacoes, ""],
   ];
+  if (dll.papeis && dll.papeis.pedidos > 1) {
+    const rec = dll.papeis.recusados || [];
+    linhas.push(["Papéis assinados (radar)", dll.papeis.assinados,
+      rec.length ? `${rec.length} recusados: ${rec.slice(0, 5).join(", ")}${rec.length > 5 ? "…" : ""}` : `de ${dll.papeis.pedidos}`]);
+  }
   $("contadores-meta").textContent = "acumulam no dia, inclusive entre reconexões";
   atualizarLinhas($("contadores"), linhas, ([rotulo, valor, nota]) => ({
     celulas: [{ t: rotulo }, { t: inteiro(valor), c: "num" }, { t: nota, c: "faint" }] }));

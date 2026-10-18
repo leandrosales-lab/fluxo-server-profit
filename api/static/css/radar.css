@@ -1,0 +1,12 @@
+/* Tela Radar: uma seção só (a lista ocupa o corpo inteiro). */
+.corpo.radar { grid-template-columns: minmax(0, 1fr); }
+.lista-radar col:nth-child(1) { width: 92px; }
+.lista-radar col:nth-child(2) { width: 170px; }
+.lista-radar col:nth-child(3) { width: 80px; }
+.lista-radar col:nth-child(4) { width: 90px; }
+.lista-radar col:nth-child(5) { width: 70px; }
+.lista-radar col:nth-child(6) { width: 110px; }
+.lista-radar col:nth-child(7) { width: 100px; }
+.lista-radar col:nth-child(9) { width: 80px; }
+#lista tr { cursor: pointer; }
+#lista tr:hover { background: var(--raise); }

@@ -131,7 +131,7 @@ verificacoes.push(["operar: reset com a tela aberta", async (page) => {
 verificacoes.push(["telas cabem no notebook", async (page) => {
   for (const [w, h] of [[1536, 864], [1280, 720]]) {
     await page.setViewportSize({ width: w, height: h });
-    for (const rota of ["operar", "conexao"]) {
+    for (const rota of ["operar", "conexao", "radar"]) {
       await page.goto(`${BASE}/${rota}`);
       await esperar(2500);
       const m = await page.evaluate(() => {
@@ -148,6 +148,19 @@ verificacoes.push(["telas cabem no notebook", async (page) => {
     }
   }
   await page.setViewportSize({ width: 1920, height: 1080 });
+}]);
+
+verificacoes.push(["radar sem --radar", async (page) => {
+  await page.goto(`${BASE}/radar`);
+  await page.waitForFunction(() => !document.getElementById("radar-vazio").hidden);
+  checar((await page.textContent("#radar-vazio")).includes("Radar desligado"), "radar avisa que está desligado");
+  checar(await page.locator('.aba[aria-current="page"]').textContent() === "Radar", "aba Radar marcada");
+  await page.keyboard.press("F1");
+  await page.waitForURL("**/operar");
+  await page.keyboard.press("F3");
+  await page.waitForURL("**/radar");
+  checar(true, "F3 abre o Radar");
+  await page.screenshot({ path: path.join(SAIDA, "radar-desligado.png") });
 }]);
 
 verificacoes.push(["conexão", async (page) => {

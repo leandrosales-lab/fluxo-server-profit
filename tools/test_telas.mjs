@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import * as f from "../api/static/js/formato.js";
 import { textoStatus, estadoReconectar } from "../api/static/js/shell.js";
 import { tituloSinal, LOTE_GRANDE_PADRAO, textoEvento, duracao, medidaSinal, ordenarDefesas } from "../api/static/js/operar-paineis.js";
+import { textoSituacao, linhaRadar } from "../api/static/js/radar-lista.js";
 import { sinceCandles, juntarCandles, precisaLimpar } from "../api/static/js/candles.js";
 
 assert.equal(f.preco(38.47), "38,47");
@@ -109,5 +110,18 @@ assert.deepEqual(medidaSinal({ pattern: "Iceberg", confidence: 0.84, acerto }), 
 assert.deepEqual(medidaSinal({ pattern: "Iceberg", confidence: 0.84, acerto: { ...acerto, ganho: -0.07 } }),
   ["acerto", "41% · −0,1 tick", "41%"]);
 assert.deepEqual(medidaSinal({ pattern: "Absorção", confidence: 0.84, acerto: null }), ["força", "84%", "84%"]);
+
+// Radar: texto da situação de cada iceberg
+const reg = { situacao: "segurou", segurou_as: 1792155600, rompeu_as: null, desfecho_as: 1792155600 };
+assert.equal(textoSituacao(reg), "segurou às 10:00:00");
+assert.equal(textoSituacao({ ...reg, rompeu_as: 1792159200 }), "segurou às 10:00:00, rompeu às 11:00:00");
+assert.equal(textoSituacao({ situacao: "rompeu", segurou_as: null, rompeu_as: 1792155600, desfecho_as: 1792155600 }),
+  "rompeu às 10:00:00");
+assert.equal(textoSituacao({ situacao: "segurando" }), "segurando");
+assert.equal(textoSituacao({ situacao: "virou sniper", desfecho_as: 1792155600 }), "virou sniper às 10:00:00");
+const lr = linhaRadar({ ativo: "RENT3", corretora: "AGORA", lado: "compra", preco: 50.36, giros: 20, volume: 8500,
+  confirmado_as: 1792155600, situacao: "segurando", acerto: { taxa: 0.408 } });
+assert.equal(lr.classe, "destaque");
+assert.deepEqual(lr.celulas.map((c) => c.t), ["RENT3", "AGORA", "compra", "50,36", "20", "8.500", "10:00:00", "segurando", "41%"]);
 
 console.log("test_telas.mjs: tudo certo");
