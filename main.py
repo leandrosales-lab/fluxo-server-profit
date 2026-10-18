@@ -168,7 +168,9 @@ def setup_dll_mode(engine: FlowEngine, args):
     """
     from profitdll.processo import PonteDLLProcesso
 
-    bridge = PonteDLLProcesso(asset=args.asset, agentes_path=args.agentes)
+    lista_radar = (os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "acoes_b3.txt")
+                   if getattr(args, "radar", False) else None)
+    bridge = PonteDLLProcesso(asset=args.asset, agentes_path=args.agentes, radar=lista_radar)
     bridge.on_tick = engine.add_tick
     bridge.on_book = engine.update_book   # topo do livro (TinyBook)
     return bridge
@@ -195,8 +197,47 @@ def iniciar_fonte_dll(engine: FlowEngine, args, server):
 def fonte_da_captura(args) -> str:
     """Nome curto da fonte para o cabeçalho das telas (GET /health)."""
     if args.modo == "replay":
+        if getattr(args, "radar", False) and getattr(args, "arquivos", None):
+            return f"radar ({len(args.arquivos)} pregões)"
         return os.path.basename(args.arquivo or "")
     return {"dll": "ProfitDLL", "rtd": "rtd", "dde": "dde", "ocr": "ocr"}.get(args.modo, "manual")
+
+
+def rodar_replay_radar(engine: FlowEngine, args, radar):
+    """Replay de vários pregões juntos (papel pelo nome do arquivo) alimentando o radar e a Operar."""
+    import heapq
+    from replay.csv_ticks import ler_ticks
+    from replay.player import ReplayPlayer
+
+    listas = []
+    for arq in args.arquivos:
+        ativo = os.path.basename(arq).split("_")[0].upper()
+        ticks = ler_ticks(arq)
+        for t in ticks:
+            t.asset = ativo
+        listas.append(ticks)
+        logger.info(f"Radar replay: {len(ticks)} negócios de {ativo} ({arq})")
+    todos = list(heapq.merge(*listas, key=lambda t: t.timestamp))
+    server = None
+    if not args.sem_servidor:
+        server = FlowServer(engine, host=args.host, port=args.port, modo="replay", fonte=fonte_da_captura(args))
+        server.registrar_radar(radar)
+        server.start()
+        print(f"  Radar: http://{args.host}:{args.port}/radar   Operar: http://{args.host}:{args.port}/operar")
+    try:
+        ReplayPlayer(engine, todos, velocidade=args.velocidade).rodar()
+    except KeyboardInterrupt:
+        logger.info("Replay interrompido")
+    print(f"  Radar: {radar.resumo()}")
+    sys.stdout.flush()
+    if server:
+        print("  Replay terminou. O servidor continua no ar (Ctrl+C para sair).")
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+        server.stop()
 
 
 def rodar_modo_replay(engine: FlowEngine, args):
@@ -334,6 +375,10 @@ def parse_args():
                    help="Grava cada negócio entregue ao engine neste CSV (qualquer modo)")
     p.add_argument("--arquivo",     default=None,
                    help="CSV do pregão a reproduzir (modo replay)")
+    p.add_argument("--radar",       action="store_true",
+                   help="Radar de fluxo: icebergs de todas as ações (dll: config/acoes_b3.txt; replay: --arquivos)")
+    p.add_argument("--arquivos",    nargs="+", default=None,
+                   help="Replay com --radar: vários pregões (papel pelo nome, ex.: rent3_2026-10-16.csv)")
     p.add_argument("--velocidade",  default=0.0, type=float,
                    help="Replay: 0 = máximo, 1 = tempo real, N = N vezes mais rápido")
     p.add_argument("--sem-servidor", action="store_true",
@@ -394,9 +439,19 @@ def main():
         engine.add_tick = gravador.envolver(engine.add_tick)
         atexit.register(gravador.fechar)
 
+    # ── Radar de fluxo: todo negócio vai ao radar; só o do papel aberto segue para o motor (e o gravador)
+    radar = None
+    if args.radar:
+        from core.radar import Radar
+        radar = Radar(engine.cfg)
+        engine.add_tick = radar.envolver(engine.add_tick, engine)
+
     # ── Modo replay: roda o arquivo e sai (não precisa de captura nem reset diário)
     if args.modo == "replay":
-        rodar_modo_replay(engine, args)
+        if radar is not None and args.arquivos:
+            rodar_replay_radar(engine, args, radar)
+        else:
+            rodar_modo_replay(engine, args)
         if gravador:
             gravador.fechar()
         return
@@ -410,6 +465,8 @@ def main():
 
     # ── Iniciar servidor HTTP
     server = FlowServer(engine, host=args.host, port=args.port, modo=args.modo, fonte=fonte_da_captura(args))
+    if radar is not None:
+        server.registrar_radar(radar)
     server.start()
 
     # ── Iniciar modo de captura

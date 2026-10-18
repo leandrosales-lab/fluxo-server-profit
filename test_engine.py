@@ -3517,6 +3517,63 @@ def test_dll_varios_papeis():
         err(f"msg sem papel: {tick_para_msg(chegou[0])}")
 
 
+def test_api_radar():
+    print(f"\n{AMARELO}═══ TESTE 39: API do radar e troca de papel da Operar ═══{RESET}")
+    import json
+    import urllib.error
+    import urllib.request
+    from api.server import FlowServer
+    from core.radar import Radar
+
+    engine = FlowEngine("RENT3", EngineConfig())
+    radar = Radar(EngineConfig(), calibracao_tabela={})
+    engine.add_tick = radar.envolver(engine.add_tick, engine)
+    porta = 15581
+    server = FlowServer(engine, host="127.0.0.1", port=porta)
+    server.registrar_radar(radar)
+    server.start()
+    base = f"http://127.0.0.1:{porta}"
+    try:
+        for ms, preco, qtd, agr in ((0, 50.36, 800, "XP"), (1000, 50.36, 700, "BTG")):
+            t = _neg(ms, preco, qtd, agr, Side.SELL, "AGORA")
+            t.asset = "RENT3"
+            engine.add_tick(t)
+        corpo = json.loads(urllib.request.urlopen(f"{base}/api/radar").read())
+        if corpo["resumo"]["segurando"] == 1 and corpo["lista"][0]["corretora"] == "AGORA":
+            ok("GET /api/radar traz resumo e lista")
+        else:
+            err(f"/api/radar: {corpo}")
+        vazio = json.loads(urllib.request.urlopen(f"{base}/api/radar?situacao=rompeu").read())
+        if vazio["lista"] == []:
+            ok("GET /api/radar?situacao filtra")
+        else:
+            err(f"/api/radar filtro: {vazio}")
+        pagina = urllib.request.urlopen(f"{base}/radar")
+        if "text/html" in pagina.headers.get("Content-Type", ""):
+            ok("GET /radar serve a tela")
+        else:
+            err(f"/radar: {pagina.headers.get('Content-Type')}")
+        pedido = urllib.request.Request(f"{base}/operar/ativo", data=b'{"ativo": "petr4"}', method="POST",
+                                        headers={"Content-Type": "application/json"})
+        resp = json.loads(urllib.request.urlopen(pedido).read())
+        if resp == {"ativo": "PETR4"} and engine.asset == "PETR4" and engine.get_state()["tick_count"] == 0:
+            ok("POST /operar/ativo troca o papel da Operar e zera o motor")
+        else:
+            err(f"troca de papel: {resp} / {engine.asset}")
+        ruim = urllib.request.Request(f"{base}/operar/ativo", data=b'{"ativo": "WDOFUT"}', method="POST")
+        try:
+            urllib.request.urlopen(ruim)
+            err("Futuro deveria dar 400")
+        except urllib.error.HTTPError as e:
+            if e.code == 400:
+                ok("Futuro recusado com 400")
+            else:
+                err(f"código {e.code}")
+    finally:
+        server.stop()
+        FlowServer.registrar_radar(server, None)
+
+
 def main():
     print(f"\n{AZUL}╔══════════════════════════════════════════════╗{RESET}")
     print(f"{AZUL}║   FLUXO SERVER — Suite de Testes Automáticos  ║{RESET}")
@@ -3568,6 +3625,7 @@ def main():
     test_radar()
     test_acoes_b3()
     test_dll_varios_papeis()
+    test_api_radar()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")

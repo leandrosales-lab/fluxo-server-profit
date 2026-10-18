@@ -76,7 +76,7 @@ _SUBPASTAS = ("css", "js", "fonts")
 
 # Rota → página em STATIC_DIR
 PAGINAS = {"/": "operar.html", "/dashboard": "operar.html", "/operar": "operar.html",
-           "/conexao": "conexao.html"}
+           "/conexao": "conexao.html", "/radar": "radar.html"}
 
 
 def caminho_estatico(nome: str):
@@ -106,6 +106,7 @@ class FlowHandler(BaseHTTPRequestHandler):
     engine: FlowEngine = None   # referência estática, preenchida no start
     rtd: RTDTradeInferer = None
     dll = None                  # ProfitDLLBridge no modo dll (contadores no /state)
+    radar = None                # core.radar.Radar quando o servidor sobe com --radar (GET /api/radar)
     log: "log_memoria.LogMemoria" = None   # GET /log (tela Conexão)
     modo = "manual"             # GET /health: modo do main.py
     fonte = None                # GET /health: nome da fonte (ex.: exemplo_petr4.csv, ProfitDLL)
@@ -206,6 +207,20 @@ class FlowHandler(BaseHTTPRequestHandler):
                 "fonte": self.fonte,
                 "tick_size": self.engine.cfg.tick_size,
             })
+
+        elif path == "/api/radar":
+            radar = FlowHandler.radar
+            if radar is None:
+                self._send_json({"resumo": None, "lista": []})
+            else:
+                try:
+                    limite = num("limite", 300, int)
+                except ValueError:
+                    self._send_json({"error": "limite inválido"}, 400)
+                    return
+                sit = qs.get("situacao", [None])[0] or None
+                with self.engine._lock:
+                    self._send_json({"resumo": radar.resumo(), "lista": radar.lista(sit, max(1, limite))})
 
         elif path in PAGINAS:
             arquivo = os.path.join(STATIC_DIR, PAGINAS[path])
@@ -344,6 +359,22 @@ class FlowHandler(BaseHTTPRequestHandler):
                     logger.info(f"Config atualizada: {k} = {v}")
             self._send_json({"ok": True})
 
+        elif path == "/operar/ativo":
+            # Troca o papel da tela Operar: o motor zera e passa a receber o papel novo dali em diante
+            from profitdll.bridge import validar_ativo
+            try:
+                ativo = validar_ativo(str(self._read_body().get("ativo") or ""))
+                if not ativo:
+                    raise ValueError("papel vazio")
+            except (ValueError, json.JSONDecodeError, AttributeError) as e:
+                self._send_json({"error": str(e) or "papel inválido"}, 400)
+                return
+            with self.engine._lock:
+                self.engine.asset = ativo
+                self.engine.reset()
+            logger.info(f"Operar: papel trocado para {ativo}")
+            self._send_json({"ativo": ativo})
+
         elif path == "/reset":
             self.engine.reset()
             self.rtd.reset()
@@ -390,6 +421,10 @@ class FlowServer:
         FlowHandler.fonte  = fonte
         FlowHandler.reconexao = {"em_andamento": False, "ultima": None, "resultado": None}
         FlowHandler.log    = log_memoria.instalar()
+
+    def registrar_radar(self, radar):
+        """Expõe o radar de fluxo no GET /api/radar (None desliga)."""
+        FlowHandler.radar = radar
 
     def registrar_dll(self, bridge):
         """Expõe os contadores da ProfitDLL no GET /state (bloco "dll")."""
