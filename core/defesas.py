@@ -140,6 +140,7 @@ class DefesaDetector:
     def __init__(self, cfg):
         self.cfg = cfg
         self.ao_evento: Optional[Callable] = None   # radar: recebe (EventoDefesa, Defesa)
+        self.escrever_log = True                    # radar desliga: os eventos ficam na lista dele
         self.reset()
 
     def reset(self):
@@ -433,6 +434,8 @@ class DefesaDetector:
         self._eventos.append(ev)
         if self.ao_evento:
             self.ao_evento(ev, d)
+        if not self.escrever_log:
+            return
         nivel_log = logging.DEBUG if evento == "alerta" else logging.INFO
         logger.log(nivel_log, f"Defesa {d.tipo or 'candidata'} {d.corretora} {d.lado} @ {_fmt(d.preco)}: "
                               f"{evento}" + (f" ({detalhe})" if detalhe else ""))

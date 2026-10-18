@@ -3335,6 +3335,132 @@ def test_defesas_segurou():
         err("reset() do detector")
 
 
+def test_radar():
+    print(f"\n{AMARELO}═══ TESTE 36: Radar — icebergs de vários papéis ═══{RESET}")
+    from core.radar import Radar
+
+    def neg(ativo, ms, preco, qtd, agr, lado, pas=""):
+        t = _neg(ms, preco, qtd, agr, lado, pas)
+        t.asset = ativo
+        return t
+
+    radar = Radar(EngineConfig(), calibracao_tabela={})
+    for t in [neg("RENT3", 0, 50.36, 800, "XP", Side.SELL, "AGORA"),
+              neg("PETR4", 10, 38.00, 900, "BTG", Side.BUY, "ITAU"),
+              neg("RENT3", 1000, 50.36, 700, "BTG", Side.SELL, "AGORA"),     # iceberg RENT3 AGORA compra
+              neg("PETR4", 1010, 38.00, 600, "XP", Side.BUY, "ITAU"),        # iceberg PETR4 ITAU venda
+              neg("RENT3", 2000, 50.40, 100, "UBS", Side.BUY, "XP"),         # RENT3: 4 ticks a favor → segurou
+              neg("PETR4", 3000, 38.01, 100, "UBS", Side.BUY, "XP")]:        # PETR4: 1 além → rompeu
+        radar.on_tick(t)
+    lst = radar.lista()
+    resumo = radar.resumo()
+    por = {(r["ativo"], r["corretora"]): r for r in lst}
+    rent, petr = por.get(("RENT3", "AGORA")), por.get(("PETR4", "ITAU"))
+    if rent and petr and rent["situacao"] == "segurou" and rent["segurou_as"] == 1_000_002.0 \
+            and petr["situacao"] == "rompeu" and petr["rompeu_as"] == 1_000_003.0 \
+            and rent["giros"] == 2 and rent["volume"] == 1500 and rent["lado"] == "compra":
+        ok("Um detector por papel; RENT3 segurou, PETR4 rompeu, com giros e volume")
+    else:
+        err(f"Lista do radar: {lst}")
+    if resumo == {"segurando": 0, "seguraram": 1, "romperam": 1, "viraram_sniper": 0, "papeis": 2, "negocios": 6}:
+        ok("Resumo do radar")
+    else:
+        err(f"Resumo: {resumo}")
+    if [r["corretora"] for r in radar.lista("rompeu")] == ["ITAU"]:
+        ok("Filtro por situação")
+    else:
+        err(f"Filtro: {radar.lista('rompeu')}")
+
+    # Ordem: segurando primeiro (maior volume), depois os resolvidos (mais recente primeiro)
+    radar = Radar(EngineConfig(), calibracao_tabela={})
+    for t in [neg("VALE3", 0, 60.00, 600, "XP", Side.SELL, "UBS"), neg("VALE3", 1000, 60.00, 600, "BTG", Side.SELL, "UBS"),
+              neg("TAEE11", 0, 35.00, 2000, "XP", Side.SELL, "BTG"), neg("TAEE11", 1000, 35.00, 2000, "XP", Side.SELL, "BTG"),
+              neg("ABEV3", 0, 13.00, 600, "XP", Side.BUY, "ITAU"), neg("ABEV3", 1000, 13.00, 600, "XP", Side.BUY, "ITAU"),
+              neg("ABEV3", 2000, 13.01, 100, "XP", Side.BUY, "UBS")]:
+        radar.on_tick(t)
+    ordem = [(r["ativo"], r["situacao"]) for r in radar.lista()]
+    if ordem == [("TAEE11", "segurando"), ("VALE3", "segurando"), ("ABEV3", "rompeu")]:
+        ok("Ordem: segurando por volume, depois resolvidos")
+    else:
+        err(f"Ordem: {ordem}")
+
+    # Troca de dia zera sozinho
+    radar.on_tick(neg("VALE3", 86_400_000, 60.00, 100, "XP", Side.SELL, "UBS"))
+    if radar.lista() == [] and radar.resumo()["papeis"] == 1:
+        ok("Primeiro negócio de um dia novo zera o radar")
+    else:
+        err(f"Troca de dia: {radar.lista()} {radar.resumo()}")
+
+    # envolver: todo negócio vai ao radar; só o do papel aberto vai ao motor
+    radar = Radar(EngineConfig(), calibracao_tabela={})
+    engine = FlowEngine("RENT3", EngineConfig())
+    recebidos = []
+    entrega = radar.envolver(lambda t: recebidos.append((t.asset, t.price)), engine)
+    entrega(neg("PETR4", 0, 38.00, 100, "XP", Side.BUY, "UBS"))
+    entrega(neg("RENT3", 10, 50.00, 100, "XP", Side.BUY, "UBS"))
+    sem = _neg(20, 50.01, 100, "XP", Side.BUY, "UBS")                       # sem papel = papel aberto
+    entrega(sem)
+    if recebidos == [("RENT3", 50.00), ("RENT3", 50.01)] and radar.resumo()["negocios"] == 3:
+        ok("envolver: o motor só recebe o papel aberto; o radar recebe tudo")
+    else:
+        err(f"envolver: {recebidos} / {radar.resumo()}")
+
+    # Os detectores do radar não escrevem cada evento no log (com ~650 papéis inundaria o log e a tela Conexão)
+    import logging as _logging
+    linhas = []
+
+    class _Pega(_logging.Handler):
+        def emit(self, r):
+            linhas.append(r.getMessage())
+    pega = _Pega(_logging.DEBUG)
+    _logging.getLogger("Defesas").addHandler(pega)
+    try:
+        radar = Radar(EngineConfig(), calibracao_tabela={})
+        radar.on_tick(neg("RENT3", 0, 50.36, 800, "XP", Side.SELL, "AGORA"))
+        radar.on_tick(neg("RENT3", 1000, 50.36, 700, "BTG", Side.SELL, "AGORA"))
+    finally:
+        _logging.getLogger("Defesas").removeHandler(pega)
+    if radar.resumo()["segurando"] == 1 and not linhas:
+        ok("Eventos do radar ficam na lista, não no log")
+    else:
+        err(f"log do radar: {linhas}")
+
+    # Mesmo resultado de papéis juntos e separados; desempenho (material local)
+    import os as _os
+    arqs = ["historico/petr4_2026-10-16.csv", "historico/rent3_2026-10-16.csv"]
+    if not all(_os.path.exists(a) for a in arqs):
+        info("Pregões de 16/10 não encontrados em historico/: parte multi-ativo pulada")
+        return
+    import heapq
+    from replay.csv_ticks import ler_ticks
+    porpapel = {}
+    for a in arqs:
+        ativo = _os.path.basename(a).split("_")[0].upper()
+        ticks = ler_ticks(a)
+        for t in ticks:
+            t.asset = ativo
+        porpapel[ativo] = ticks
+    sozinhos = {}
+    for ativo, ticks in porpapel.items():
+        r = Radar(EngineConfig(), calibracao_tabela={})
+        for t in ticks:
+            r.on_tick(t)
+        sozinhos[ativo] = [(x["corretora"], x["preco"], x["situacao"]) for x in r.lista(limite=10**6) if x["ativo"] == ativo]
+    juntos = Radar(EngineConfig(), calibracao_tabela={})
+    inicio = time.perf_counter()
+    for t in heapq.merge(*porpapel.values(), key=lambda t: t.timestamp):
+        juntos.on_tick(t)
+    dur = time.perf_counter() - inicio
+    iguais = all(sorted(sozinhos[a]) == sorted((x["corretora"], x["preco"], x["situacao"])
+                                               for x in juntos.lista(limite=10**6) if x["ativo"] == a)
+                 for a in porpapel)
+    total = sum(len(v) for v in porpapel.values())
+    if iguais and dur < 60:
+        ok(f"PETR4 + RENT3 juntos = cada um sozinho; {total:,} negócios em {dur:.1f}s")
+    else:
+        err(f"Multi-ativo: iguais={iguais} tempo={dur:.1f}s")
+
+
 def main():
     print(f"\n{AZUL}╔══════════════════════════════════════════════╗{RESET}")
     print(f"{AZUL}║   FLUXO SERVER — Suite de Testes Automáticos  ║{RESET}")
@@ -3383,6 +3509,7 @@ def main():
     test_iceberg_corte_volume()
     test_acerto_iceberg()
     test_defesas_segurou()
+    test_radar()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")
