@@ -48,12 +48,12 @@ CONTADORES = ("trades_recebidos", "trades_editados", "trades_ignorados", "horari
 
 def tick_para_msg(t: Tick) -> dict:
     return {"tipo": "tick", "ts": t.timestamp, "preco": t.price, "qtd": t.qty,
-            "corretora": t.broker, "lado": t.side.value, "passiva": t.passive_broker}
+            "corretora": t.broker, "lado": t.side.value, "passiva": t.passive_broker, "ativo": t.asset}
 
 
 def msg_para_tick(m: dict) -> Tick:
     return Tick(timestamp=m["ts"], price=m["preco"], qty=m["qtd"], broker=m["corretora"],
-                side=Side(m["lado"]), passive_broker=m.get("passiva") or "")
+                side=Side(m["lado"]), passive_broker=m.get("passiva") or "", asset=m.get("ativo") or "")
 
 
 def book_para_msg(niveis: list[BookLevel], ts: float) -> dict:
@@ -76,7 +76,7 @@ class PonteDLLProcesso:
     """
 
     def __init__(self, asset: str, agentes_path: Optional[str] = None, timeout: int = 30,
-                 comando: Optional[list] = None, folga: float = 15.0):
+                 comando: Optional[list] = None, folga: float = 15.0, radar: Optional[str] = None):
         self.asset = validar_ativo(asset)
         self.exchange = BOLSA
         self.timeout = timeout
@@ -89,6 +89,8 @@ class PonteDLLProcesso:
                        "--timeout", str(timeout)]
             if agentes_path:
                 comando += ["--agentes", agentes_path]
+            if radar:
+                comando += ["--radar", radar]
         self._comando = comando
         self._proc: Optional[subprocess.Popen] = None
         self._leitor: Optional[threading.Thread] = None
@@ -267,6 +269,7 @@ def main_filho(argv=None, fabrica_ponte=None, entrada=None, saida=None) -> int:
     p.add_argument("--asset", required=True)
     p.add_argument("--agentes", default=None)
     p.add_argument("--timeout", default=30, type=int)
+    p.add_argument("--radar", default=None, help="lista de ações a assinar além do --asset (config/acoes_b3.txt)")
     args = p.parse_args(argv)
 
     entrada = entrada or sys.stdin
@@ -300,7 +303,13 @@ def main_filho(argv=None, fabrica_ponte=None, entrada=None, saida=None) -> int:
     if raiz.level > logging.INFO or raiz.level == logging.NOTSET:
         raiz.setLevel(logging.INFO)
     try:
-        bridge = fabrica_ponte(args.asset, args.agentes, timeout=args.timeout)
+        extras = None
+        if args.radar:
+            sys.path.insert(0, os.path.join(RAIZ, "tools"))
+            from acoes_b3 import carregar_lista
+            extras = carregar_lista(args.radar)
+        bridge = (fabrica_ponte(args.asset, args.agentes, timeout=args.timeout, extras=extras)
+                  if extras is not None else fabrica_ponte(args.asset, args.agentes, timeout=args.timeout))
         bridge.on_tick = lambda t: enviar(tick_para_msg(t))
         bridge.on_book = lambda niveis: enviar(book_para_msg(niveis, time.time()))
         ok = bridge.start()

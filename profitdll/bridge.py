@@ -263,9 +263,22 @@ class ProfitDLLBridge:
       ("book",  lado (0 bid / 1 ask), price, qty, time.time() da chegada)
     """
 
-    def __init__(self, asset: str, agentes_path: Optional[str] = None, timeout: int = 30):
+    def __init__(self, asset: str, agentes_path: Optional[str] = None, timeout: int = 30,
+                 extras: Optional[list] = None):
         self.asset    = validar_ativo(asset)
         self.exchange = BOLSA
+        # Radar: além do papel principal, a lista de ações (papel inválido/futuro vai para recusados)
+        self.papeis: list[str] = [self.asset]
+        self.recusados: list[str] = []
+        for p in extras or []:
+            try:
+                p = validar_ativo(p)
+            except ValueError:
+                self.recusados.append(p.strip().upper())
+                continue
+            if p not in self.papeis:
+                self.papeis.append(p)
+        self.assinados = 0
         self.timeout  = timeout
         self.nomes    = carregar_nomes_agentes(agentes_path)
         self.on_tick: Optional[Callable[[Tick], None]] = None
@@ -323,6 +336,8 @@ class ProfitDLLBridge:
                 "market":   _estado_nomeado(self.resultado_market, NOMES_MARKET),
             },
             "latencia_ms":       self.latencia_ms,
+            "papeis":            {"pedidos": len(self.papeis), "assinados": self.assinados,
+                                  "recusados": list(self.recusados)},
             "ativo":             self.asset,
             "bolsa":             self.exchange,
             "dll_path":          mascarar_caminho(os.getenv("PROFITDLL_PATH", CAMINHO_PADRAO_DLL)),
@@ -351,7 +366,15 @@ class ProfitDLLBridge:
             logger.error(f"SubscribeTicker({self.asset}, {self.exchange}) falhou: código {ret}")
             self.stop()
             return False
-        logger.info(f"ProfitDLL: assinatura ativa em {self.asset} (bolsa {self.exchange})")
+        self.assinados = 1
+        for p in self.papeis[1:]:
+            if self.dll.SubscribeTicker(p, self.exchange) == 0:
+                self.assinados += 1
+            else:
+                self.recusados.append(p)
+        logger.info(f"ProfitDLL: assinatura ativa em {self.asset}"
+                    + (f" + {self.assinados - 1} papéis do radar ({len(self.recusados)} recusados)"
+                       if len(self.papeis) > 1 else "") + f" (bolsa {self.exchange})")
         return True
 
     def stop(self):
@@ -363,7 +386,8 @@ class ProfitDLLBridge:
             # Cancelar a assinatura ANTES de finalizar a DLL
             try:
                 if self._consumidor:
-                    self.dll.UnsubscribeTicker(self.asset, self.exchange)
+                    for p in self.papeis:
+                        self.dll.UnsubscribeTicker(p, self.exchange)
                 self.dll.DLLFinalize()
             except Exception as e:
                 logger.warning(f"Erro ao finalizar ProfitDLL: {e}")
@@ -465,9 +489,11 @@ class ProfitDLLBridge:
             self.fila.put(("trade", int(trade.BuyAgent), int(trade.SellAgent),
                            int(trade.Quantity), float(trade.Price),
                            int(trade.TradeType), horario_negocio(trade.TradeDate),
-                           int(flags), int(trade.TradeNumber)))
+                           int(flags), int(trade.TradeNumber), str(asset.ticker or "")))
 
         def on_tiny_book(asset, price, qty, side):
+            if (asset.ticker or "").upper() != self.asset:
+                return              # radar: topo do livro só do papel principal
             # Só enfileira — o TinyBook não traz horário, marca a chegada
             self.fila.put(("book", int(side), float(price), int(qty), time.time()))
 
@@ -626,7 +652,7 @@ class ProfitDLLBridge:
                 logger.warning(f"GetAgentName({codigo}) falhou: {e}")
         return nome
 
-    def _processar_trade(self, buy, sell, qty, price, ttype, ts, flags=0, numero=None):
+    def _processar_trade(self, buy, sell, qty, price, ttype, ts, flags=0, numero=None, ativo=""):
         if flags & TC_IS_EDIT:
             # Edição de um negócio já enviado. O manual não diz como casar com o
             # original no V2; até confirmar no teste real, descarta e conta.
@@ -644,6 +670,7 @@ class ProfitDLLBridge:
             self.trades_ignorados += 1
             self.ignorados_por_tipo[ttype] = self.ignorados_por_tipo.get(ttype, 0) + 1
             return
+        tick.asset = (ativo or self.asset).upper()
         self._ultimo_ts_negocio = tick.timestamp
         if self.on_tick:
             try:

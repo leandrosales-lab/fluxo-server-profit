@@ -3487,6 +3487,36 @@ def test_acoes_b3():
         err(f"Lista: {len(lista)} papéis")
 
 
+def test_dll_varios_papeis():
+    print(f"\n{AMARELO}═══ TESTE 38: ProfitDLL assinando vários papéis ═══{RESET}")
+    from profitdll.bridge import ProfitDLLBridge, AGRESSAO_COMPRA
+    from profitdll.processo import tick_para_msg, msg_para_tick
+
+    b = ProfitDLLBridge("RENT3", extras=["PETR4", "rent3", "WDOFUT", "VALE3"])
+    if b.papeis == ["RENT3", "PETR4", "VALE3"] and b.recusados == ["WDOFUT"]:
+        ok("Papel principal primeiro, sem repetição; futuro recusado na lista (não derruba os outros)")
+    else:
+        err(f"papeis={b.papeis} recusados={b.recusados}")
+    chegou = []
+    b.on_tick = chegou.append
+    b._processar_trade(3, 8, 100, 38.0, AGRESSAO_COMPRA, 1000.0, 0, 1, "PETR4")
+    b._processar_trade(3, 8, 100, 50.0, AGRESSAO_COMPRA, 1001.0, 0, 2)
+    if [t.asset for t in chegou] == ["PETR4", "RENT3"]:
+        ok("Cada negócio leva o papel (sem papel = o principal)")
+    else:
+        err(f"ativos: {[t.asset for t in chegou]}")
+    st = b.stats()
+    if st["papeis"] == {"pedidos": 3, "assinados": 0, "recusados": ["WDOFUT"]}:
+        ok("stats() traz papéis pedidos, assinados e recusados")
+    else:
+        err(f"stats papeis: {st.get('papeis')}")
+    t = msg_para_tick(tick_para_msg(chegou[0]))
+    if t.asset == "PETR4":
+        ok("Protocolo filho → pai leva o papel")
+    else:
+        err(f"msg sem papel: {tick_para_msg(chegou[0])}")
+
+
 def main():
     print(f"\n{AZUL}╔══════════════════════════════════════════════╗{RESET}")
     print(f"{AZUL}║   FLUXO SERVER — Suite de Testes Automáticos  ║{RESET}")
@@ -3537,6 +3567,7 @@ def main():
     test_defesas_segurou()
     test_radar()
     test_acoes_b3()
+    test_dll_varios_papeis()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")
