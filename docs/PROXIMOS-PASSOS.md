@@ -16,6 +16,10 @@
 ## O que já está pronto (no `main`)
 
 - **Engine:** detecta absorção por volume, exaustão, delta acumulado e iceberg pela **corretora passiva**. Usa o horário do negócio, não o relógio do computador.
+- **Radar de fluxo (17/10/2026):** `--radar` assina as ações de `config/acoes_b3.txt` (cadastro da B3,
+  `tools/acoes_b3.py`) e lista os icebergs do dia com giros, volume e desfecho (segurou a 4 ticks / rompeu / virou
+  sniper) na tela Radar (F3). Clique troca o papel da Operar. Falta confirmar ao vivo quantos papéis a licença
+  aceita (tela Conexão mostra assinados e recusados).
 - **Defesas (17/10/2026):** `core/defesas.py` reconhece iceberg (pela passiva), sniper, fantasma e E2 pelas regras do
   professor, com eventos de fim (rompida, fila formada, defensor ausente). Painel "Defesas" no Operar. Spec:
   `docs/superpowers/specs/2026-10-17-defesas-design.md`.

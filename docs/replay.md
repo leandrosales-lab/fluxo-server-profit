@@ -238,3 +238,18 @@ No fim de cada dia o log mostra algo como:
 A pasta `historico/` está no `.gitignore`: os pregões baixados não vão para o repositório.
 
 **Status:** a parte de conversão, ordem, dias úteis e gravação tem testes (`python test_engine.py`, teste 16). O download em si **não foi testado com a DLL real** ainda.
+
+---
+
+## 8. Radar em replay (vários pregões juntos)
+
+Com `--radar`, o replay aceita vários pregões em `--arquivos` (o papel vem do nome do arquivo, ex.:
+`rent3_2026-10-16.csv`). Os negócios são tocados em ordem de horário; todos vão para o radar e só os do `--asset`
+vão para a tela Operar.
+
+```
+python main.py --asset RENT3 --modo replay --radar --arquivos historico/petr4_2026-10-16.csv historico/rent3_2026-10-16.csv --velocidade 30
+```
+
+Telas: `http://127.0.0.1:5000/radar` (F3) e `/operar`. Sem `--sem-servidor`, o servidor fica no ar no fim.
+
