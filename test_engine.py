@@ -3461,6 +3461,32 @@ def test_radar():
         err(f"Multi-ativo: iguais={iguais} tempo={dur:.1f}s")
 
 
+def test_acoes_b3():
+    print(f"\n{AMARELO}═══ TESTE 37: Lista de ações à vista (cadastro da B3) ═══{RESET}")
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools"))
+    from acoes_b3 import filtrar, carregar_lista
+    cab = "RptDt;TckrSymb;Asst;AsstDesc;SgmtNm;MktNm;SctyCtgyNm;SpcfctnCd"
+    linhas = [cab,
+              "2026-10-16;PETR4;PETR;PETR;CASH;EQUITY-CASH;SHARES;PN      N2",
+              "2026-10-16;RENT3;RENT;RENT;CASH;EQUITY-CASH;SHARES;ON      NM",
+              "2026-10-16;TAEE11;TAEE;TAEE;CASH;EQUITY-CASH;UNIT;UNT     N2",
+              "2026-10-16;TAXA100;TAXA;TAXA;CASH;EQUITY-CASH;SHARES;DIA LIVR",       # não é ação
+              "2026-10-16;A1AP34;A1AP;A1AP;CASH;EQUITY-CASH;BDR;DRN",                # BDR
+              "2026-10-16;003H11;003H;003H;CASH;EQUITY-CASH;FUNDS;CI",              # FII
+              "2026-10-16;PETR4F;PETR;PETR;ODD LOT;EQUITY-CASH;SHARES;PN      N2",   # fracionário
+              "2026-10-16;ABCB10;ABCB;ABCB;CASH;EQUITY-CASH;RECEIPTS;PN REC NN2"]   # recibo
+    if filtrar(linhas) == ["PETR4", "RENT3", "TAEE11"]:
+        ok("Só ações ON/PN/UNIT do lote padrão (sem BDR, FII, fracionário, recibo, taxa)")
+    else:
+        err(f"Filtro: {filtrar(linhas)}")
+    caminho = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "acoes_b3.txt")
+    lista = carregar_lista(caminho)
+    if len(lista) > 300 and {"PETR4", "RENT3", "VALE3"} <= set(lista) and lista == sorted(set(lista)):
+        ok(f"config/acoes_b3.txt com {len(lista)} ações, ordenadas e sem repetição")
+    else:
+        err(f"Lista: {len(lista)} papéis")
+
+
 def main():
     print(f"\n{AZUL}╔══════════════════════════════════════════════╗{RESET}")
     print(f"{AZUL}║   FLUXO SERVER — Suite de Testes Automáticos  ║{RESET}")
@@ -3510,6 +3536,7 @@ def main():
     test_acerto_iceberg()
     test_defesas_segurou()
     test_radar()
+    test_acoes_b3()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")
