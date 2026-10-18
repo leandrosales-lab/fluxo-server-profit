@@ -3289,6 +3289,52 @@ def test_defesas_aulas():
             err(f"{nome}: {recebidos}/{len(ticks)} negócios; rompimentos {[e.to_dict() for e in evs if e.evento == 'rompida']}")
 
 
+def test_defesas_segurou():
+    print(f"\n{AMARELO}═══ TESTE 35: Iceberg que segurou o preço (4 ticks a favor) ═══{RESET}")
+    from core.defesas import DefesaDetector
+
+    def iceberg_compra():
+        det = DefesaDetector(EngineConfig())
+        det.on_tick(_neg(0, 19.04, 800, "XP", Side.SELL, "AGORA"))
+        det.on_tick(_neg(1000, 19.04, 700, "BTG", Side.SELL, "AGORA"))      # iceberg AGORA compra 19,04
+        return det
+
+    vistos = []
+    det = iceberg_compra()
+    det.ao_evento = lambda ev, d: vistos.append((ev.evento, d.corretora))
+    det.on_tick(_neg(2000, 19.07, 100, "UBS", Side.BUY, "ITAU"))            # 3 ticks: ainda não
+    antes = [e for e in det.eventos(50) if e.evento == "segurou"]
+    det.on_tick(_neg(3000, 19.08, 100, "UBS", Side.BUY, "ITAU"))            # 4 ticks a favor
+    seg = [e for e in det.eventos(50) if e.evento == "segurou"]
+    ag = [d for d in det.ativas() if d.corretora == "AGORA"]
+    if not antes and len(seg) == 1 and ag and ag[0].segurou_em == 1_000_003.0 and ("segurou", "AGORA") in vistos:
+        ok("Iceberg comprador segura a 4 ticks (19,08), não a 3; continua ativo; gancho ao_evento chamado")
+    else:
+        err(f"segurou: antes={antes} depois={[e.to_dict() for e in seg]} ativas={[d.to_dict() for d in ag]}")
+
+    det.on_tick(_neg(4000, 19.09, 100, "UBS", Side.BUY, "ITAU"))
+    det.on_tick(_neg(5000, 19.03, 100, "CLEAR", Side.SELL, "XP"))           # rompe depois de segurar
+    evs = [e.evento for e in det.eventos(50) if e.corretora == "AGORA"]
+    if evs.count("segurou") == 1 and "rompida" in evs:
+        ok("Segura uma vez só; romper depois fica registrado também")
+    else:
+        err(f"Sequência AGORA: {evs}")
+
+    det = DefesaDetector(EngineConfig())
+    det.on_tick(_neg(0, 22.40, 800, "XP", Side.BUY, "TULLETT"))
+    det.on_tick(_neg(1000, 22.40, 700, "BTG", Side.BUY, "TULLETT"))       # iceberg TULLETT venda 22,40
+    det.on_tick(_neg(2000, 22.36, 100, "UBS", Side.SELL, "ITAU"))           # 4 ticks abaixo = a favor
+    if [e.corretora for e in det.eventos(50) if e.evento == "segurou"] == ["TULLETT"]:
+        ok("Iceberg vendedor segura com o preço 4 ticks abaixo")
+    else:
+        err(f"segurou vendedor: {[e.to_dict() for e in det.eventos(50)]}")
+    det.reset()
+    if det.ao_evento is None and not det.eventos():
+        ok("reset() limpa os eventos e mantém o gancho como estava")
+    else:
+        err("reset() do detector")
+
+
 def main():
     print(f"\n{AZUL}╔══════════════════════════════════════════════╗{RESET}")
     print(f"{AZUL}║   FLUXO SERVER — Suite de Testes Automáticos  ║{RESET}")
@@ -3336,6 +3382,7 @@ def main():
     test_defesas_aulas()
     test_iceberg_corte_volume()
     test_acerto_iceberg()
+    test_defesas_segurou()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")

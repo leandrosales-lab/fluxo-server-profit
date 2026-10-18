@@ -354,6 +354,9 @@ class EngineConfig:
     defesa_iceberg_vol_sinal_padrao: int = 5000
     # Tabela do acerto histórico do iceberg (tools/calibrar_iceberg.py); "" = config/calibracao_iceberg.json
     calibracao_iceberg: str = ""
+    # Radar: iceberg "segurou" quando o preço anda N ticks a favor sem romper. CALIBRAÇÃO, não regra do curso:
+    # é o mesmo alvo de 4 ticks usado na medida dos 42 pregões (config/calibracao_iceberg.json).
+    defesa_segurou_ticks:      int = 4
 
     # Confiança mínima para emitir sinal
     min_confidence:         float = 0.60

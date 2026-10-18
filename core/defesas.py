@@ -16,7 +16,7 @@ import heapq
 import logging
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 logger = logging.getLogger("Defesas")
 
@@ -94,6 +94,7 @@ class Defesa:
     fila_pendente: bool = False
     ordem_passiva: tuple = ()
     ordem_agressora: tuple = ()
+    segurou_em: Optional[float] = None    # radar: hora em que o preço andou defesa_segurou_ticks a favor
 
     @property
     def ativa(self) -> bool:
@@ -104,7 +105,8 @@ class Defesa:
                 "preco": self.preco, "desde": self.desde, "ultima": self.ultima,
                 "vol_passivo": self.vol_passivo, "giros": self.giros, "vol_agredido": self.vol_agredido,
                 "agressoes": self.agressoes, "reacoes": self.reacoes, "alem_max": self.alem_max,
-                "niveis_anteriores": list(self.niveis), "e2_com": self.e2_com}
+                "niveis_anteriores": list(self.niveis), "e2_com": self.e2_com,
+                "segurou_em": self.segurou_em}
 
 
 @dataclass
@@ -137,6 +139,7 @@ class DefesaDetector:
 
     def __init__(self, cfg):
         self.cfg = cfg
+        self.ao_evento: Optional[Callable] = None   # radar: recebe (EventoDefesa, Defesa)
         self.reset()
 
     def reset(self):
@@ -190,6 +193,7 @@ class DefesaDetector:
         ordem = chave_ordem(tick)
         self._resolver_filas(tick, n, lado_agr)
         self._negocio_alem(n, ts)
+        self._checar_segurou(n, ts)
         lado_pas = oposto(lado_agr)
 
         # Lado passivo: quem estava no book segurou a agressão
@@ -355,6 +359,15 @@ class DefesaDetector:
             self._remover(self._chave(a))
         return True
 
+    def _checar_segurou(self, n: int, ts: float):
+        """Iceberg confirmado com negócio a defesa_segurou_ticks a favor e nada além: segurou (radar)."""
+        alvo = self.cfg.defesa_segurou_ticks
+        for d in list(self._icebergs.values()):
+            if d.segurou_em is None and d.estado == "confirmada" and d.alem_max == 0 and (
+                    (d.lado == COMPRA and n >= d.nivel + alvo) or (d.lado == VENDA and n <= d.nivel - alvo)):
+                d.segurou_em = ts
+                self._evento("segurou", d, ts, f"preço a {alvo} ticks a favor")
+
     def _negocio_alem(self, n: int, ts: float):
         """Negócio além do nível: suporte (compra) abaixo dele, resistência (venda) acima."""
         compra, venda = self._niveis[COMPRA], self._niveis[VENDA]
@@ -416,7 +429,10 @@ class DefesaDetector:
         d.e2_par, d.e2_com = (), ""
 
     def _evento(self, evento: str, d: Defesa, ts: float, detalhe: str = "", parceiro: str = ""):
-        self._eventos.append(EventoDefesa(ts, evento, d.tipo, d.corretora, d.lado, d.preco, detalhe, parceiro))
+        ev = EventoDefesa(ts, evento, d.tipo, d.corretora, d.lado, d.preco, detalhe, parceiro)
+        self._eventos.append(ev)
+        if self.ao_evento:
+            self.ao_evento(ev, d)
         nivel_log = logging.DEBUG if evento == "alerta" else logging.INFO
         logger.log(nivel_log, f"Defesa {d.tipo or 'candidata'} {d.corretora} {d.lado} @ {_fmt(d.preco)}: "
                               f"{evento}" + (f" ({detalhe})" if detalhe else ""))
