@@ -36,12 +36,22 @@
     </section>
     <section class="secao book" id="book">
       <div class="cab"><h2>Book</h2><span class="acoes meta" id="book-fonte"></span></div>
-      <table class="book-tab book-cab" aria-hidden="true"><colgroup><col><col><col><col></colgroup>
-        <thead><tr><th class="num">Preço</th><th class="num">Qtd</th><th class="num">Ord</th><th title="Corretoras">Corr.</th></tr></thead></table>
-      <p class="book-msg meta" id="book-msg" hidden></p>
-      <div class="book-lado asks"><table class="book-tab" aria-label="Book, ofertas de venda: preço, quantidade, ordens e corretoras"><colgroup><col><col><col><col></colgroup><tbody id="book-asks"></tbody></table></div>
       <div class="book-meio" id="book-meio"><span class="b-ultimo mono" id="book-ultimo" title="Último negócio">—</span><span class="meta" id="book-spread">—</span></div>
-      <div class="book-lado bids"><table class="book-tab" aria-label="Book, ofertas de compra: preço, quantidade, ordens e corretoras"><colgroup><col><col><col><col></colgroup><tbody id="book-bids"></tbody></table></div>
+      <p class="book-msg meta" id="book-msg" hidden></p>
+      <div class="book-grade">
+        <div class="book-col compra">
+          <table class="book-tab book-cab" aria-hidden="true"><colgroup><col><col><col><col></colgroup>
+            <thead><tr><th title="Corretoras">Corr.</th><th class="num">Ord</th><th class="num">Qtd</th><th class="num">Preço</th></tr></thead></table>
+          <div class="book-lado"><table class="book-tab" aria-label="Book, ofertas de compra: corretoras, ordens, quantidade e preço"><colgroup><col><col><col><col></colgroup><tbody id="book-bids"></tbody></table></div>
+          <div class="book-tot meta" id="book-tot-bids"></div>
+        </div>
+        <div class="book-col venda">
+          <table class="book-tab book-cab" aria-hidden="true"><colgroup><col><col><col><col></colgroup>
+            <thead><tr><th class="num">Preço</th><th class="num">Qtd</th><th class="num">Ord</th><th title="Corretoras">Corr.</th></tr></thead></table>
+          <div class="book-lado"><table class="book-tab" aria-label="Book, ofertas de venda: preço, quantidade, ordens e corretoras"><colgroup><col><col><col><col></colgroup><tbody id="book-asks"></tbody></table></div>
+          <div class="book-tot meta" id="book-tot-asks"></div>
+        </div>
+      </div>
     </section>
     <section class="secao direita">
       <div class="bloco-sinais">

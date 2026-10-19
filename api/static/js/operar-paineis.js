@@ -56,7 +56,7 @@ export function textoEvento(ev, casas = 2) {
 }
 const $ = (id) => document.getElementById(id);
 
-const ALTURA_LINHA_BOOK = 20, NIVEIS_MAX_BOOK = 15, NIVEIS_MIN_BOOK = 3;
+const ALTURA_LINHA_BOOK = 20, NIVEIS_MAX_BOOK = 20, NIVEIS_MIN_BOOK = 3;
 
 /** Quantos níveis cabem num lado do Book (sem rolagem); sem medida ainda (altura 0), 12. */
 export function linhasQueCabem(altura) {
@@ -162,7 +162,8 @@ export function criarPaineis() {
     });
   }
 
-  // Book: escada de preços. A quantidade de cada preço guarda-se para piscar só o que mudou.
+  // Book: compra (esquerda) e venda (direita), melhor preço na 1ª linha de cada coluna. A quantidade de cada preço
+  // fica guardada entre ciclos para piscar só o que mudou.
   const qtdAnterior = new Map();
   function painelBook(b, ultimo, casas) {
     const bids = b.bids || [], asks = b.asks || [];
@@ -173,31 +174,31 @@ export function criarPaineis() {
     const msg = $("book-msg");
     msg.hidden = total > 0;
     msg.textContent = total > 0 ? "" : b.depth === "none" ? "Sem livro nesta fonte." : "Livro vazio.";
-    const nome = $("book-asks").closest(".book-lado");
-    const n = linhasQueCabem(nome.clientHeight);
-    const so1 = $("book").clientWidth < 260;      // coluna estreita: só a maior corretora de cada nível
-    const vis = { asks: asks.slice(0, n), bids: bids.slice(0, n) };
+    const n = linhasQueCabem($("book-bids").closest(".book-lado").clientHeight);
+    const so1 = $("book-bids").closest(".book-col").clientWidth < 230;   // coluna estreita: só a maior corretora
+    const vis = { bids: bids.slice(0, n), asks: asks.slice(0, n) };
     const maior = Math.max(1, ...vis.asks.map((x) => x.qty), ...vis.bids.map((x) => x.qty));
     const novas = new Map();
-    for (const [lado, tbody, classe] of [["asks", $("book-asks"), "venda"], ["bids", $("book-bids"), "compra"]]) {
-      const niveis = lado === "asks" ? [...vis.asks].reverse() : vis.bids;   // maior preço no topo nos dois lados
+    for (const [lado, tbody, classe] of [["bids", $("book-bids"), "compra"], ["asks", $("book-asks"), "venda"]]) {
+      const niveis = vis[lado];
+      const iq = lado === "bids" ? 2 : 1, ic = lado === "bids" ? 0 : 3;   // bids espelhado: corr | ord | qtd | preço
       atualizarLinhas(tbody, niveis, (x) => {
         const chave = `${lado}|${x.price}`;
         novas.set(chave, x.qty);
         const mudou = qtdAnterior.has(chave) && qtdAnterior.get(chave) !== x.qty;
-        return { classe: `${classe}-n${mudou ? " mudou" : ""}`, celulas: [
-          { t: preco(x.price, casas), c: `num ${classe}` },
-          { t: qtdBook(x.qty), c: "num qtd" },
-          { t: x.ordens == null ? "—" : inteiro(x.ordens), c: "num" },
-          { t: corretorasBook(x.corretoras, so1), c: "corr" }] };
+        const cel = [{ t: preco(x.price, casas), c: `num ${classe}` }, { t: qtdBook(x.qty), c: "num qtd" },
+          { t: x.ordens == null ? "—" : inteiro(x.ordens), c: "num ord" }, { t: corretorasBook(x.corretoras, so1), c: "corr" }];
+        return { classe: `${classe}-n${mudou ? " mudou" : ""}`, celulas: lado === "bids" ? cel.reverse() : cel };
       });
       niveis.forEach((x, i) => {
         const tr = tbody.rows[i];
         const w = `${Math.max(2, Math.round(100 * x.qty / maior))}%`;
-        if (tr.cells[1].style.getPropertyValue("--w") !== w) tr.cells[1].style.setProperty("--w", w);
+        if (tr.cells[iq].style.getPropertyValue("--w") !== w) tr.cells[iq].style.setProperty("--w", w);
         const dica = (x.corretoras || []).map(([c, q]) => `${c} ${inteiro(q)}`).join(" · ");
-        if (tr.cells[3].title !== dica) tr.cells[3].title = dica;
+        if (tr.cells[ic].title !== dica) tr.cells[ic].title = dica;
       });
+      const soma = niveis.reduce((t, x) => t + x.qty, 0);
+      $(`book-tot-${lado}`).textContent = niveis.length ? `${niveis.length} níveis · ${qtdBook(soma)}` : "";
     }
     qtdAnterior.clear();
     novas.forEach((q, k) => qtdAnterior.set(k, q));
