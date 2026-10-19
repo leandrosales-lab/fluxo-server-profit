@@ -81,6 +81,8 @@ class BookLevel:
     broker:     str
     side:       Side        # BUY = oferta de compra, SELL = oferta de venda
     timestamp:  float = field(default_factory=time.time)
+    ordens:     int = 0                                   # nº de ordens no nível (livro de ofertas; 0 = fonte não informa)
+    corretoras: list = field(default_factory=list)        # [[nome, qtd], ...] as maiores do nível (livro de ofertas)
 
 
 @dataclass
@@ -1465,12 +1467,19 @@ class FlowEngine:
             return [dict(s) for s in self._signals_log if since is None or s["timestamp"] >= since]
 
     def get_book(self) -> dict:
-        """Último snapshot do book. depth: none (nunca recebeu), top (só o 1º nível) ou full."""
+        """
+        Último snapshot do book. depth: none (nunca recebeu), top (só o 1º nível) ou full.
+        fonte: "ofertas" quando algum nível traz nº de ordens ou corretoras (livro de ofertas da DLL),
+        senão "topo" (só preço/quantidade: TinyBook, RTD, injeção simples).
+        """
         def nivel(l: BookLevel) -> dict:
-            return {"price": l.price, "qty": l.qty, "broker": l.broker}
+            return {"price": l.price, "qty": l.qty, "broker": l.broker,
+                    "ordens": l.ordens, "corretoras": [list(c) for c in l.corretoras]}
         with self._lock:
+            niveis = list(self._book_buy.values()) + list(self._book_sell.values())
             return {
                 "depth":   self._book_depth,
+                "fonte":   "ofertas" if any(l.ordens > 0 or l.corretoras for l in niveis) else "topo",
                 "bids":    [nivel(self._book_buy[p]) for p in sorted(self._book_buy, reverse=True)],
                 "asks":    [nivel(self._book_sell[p]) for p in sorted(self._book_sell)],
                 "updated": self._book_updated,

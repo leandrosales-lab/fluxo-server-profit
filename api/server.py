@@ -320,10 +320,12 @@ class FlowHandler(BaseHTTPRequestHandler):
                         qty    = int(row["qty"]),
                         broker = str(row.get("broker", "")),
                         side   = side,
+                        ordens = int(row.get("ordens", 0)),
+                        corretoras = [[str(nome), int(q)] for nome, q in row.get("corretoras", [])],
                     ))
                 self.engine.update_book(levels)
                 self._send_json({"ok": True, "levels": len(levels)})
-            except (KeyError, ValueError) as e:
+            except (KeyError, ValueError, TypeError) as e:
                 self._send_json({"error": str(e)}, 400)
 
         elif path == "/rtd":

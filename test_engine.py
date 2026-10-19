@@ -3672,6 +3672,412 @@ def test_radar_revisao():
         server.stop()
 
 
+
+# ──────────────────────────────────────────────────────────────
+# LIVRO DE OFERTAS (book completo por ordem, sem DLL)
+# ──────────────────────────────────────────────────────────────
+
+def _array_v2(entradas, flags, datas=None):
+    """Monta um array V2 da DLL: cabeçalho (Q, tamanho) + entradas =dqiqH com data de tamanho variável + rodapé de flags."""
+    import struct
+    corpo = b""
+    for i, (preco, qtd, agente, oid) in enumerate(entradas):
+        d = (datas[i] if datas else "19/10/2026 10:00:00.123").encode("latin-1")
+        corpo += struct.pack("=dqiqH", preco, qtd, agente, oid, len(d)) + d
+    corpo += struct.pack("=I", flags)
+    return struct.pack("=ii", len(entradas), 8 + len(corpo)) + corpo
+
+
+def test_livro_decodificador():
+    print(f"\n{AMARELO}═══ TESTE 40: Livro de ofertas — decodificador do array V2 ═══{RESET}")
+    from profitdll.livro import decodifica_array_v2
+
+    arr = _array_v2([(30.01, 5000, 3, 111), (30.00, 12_000_000_000, 8, 222)], flags=3,
+                    datas=["19/10/2026 10:00:00.1", "19/10/2026 10:00:00.123456"])
+    entradas, flags = decodifica_array_v2(arr)
+    if [(e[0], e[1], e[2], e[3]) for e in entradas] == [(30.01, 5000, 3, 111), (30.00, 12_000_000_000, 8, 222)] and flags == 3:
+        ok("1 pacote com datas de tamanhos diferentes: parse sequencial, qtd int64 preservada, flags=3")
+    else:
+        err(f"decodificação: {entradas} flags={flags}")
+
+    e0, f0 = decodifica_array_v2(_array_v2([], flags=3))
+    if e0 == [] and f0 == 3:
+        ok("Q=0 devolve lista vazia e as flags do rodapé")
+    else:
+        err(f"Q=0: {e0} {f0}")
+
+    primeiro, f1 = decodifica_array_v2(_array_v2([(30.0, 1, 1, 1)], flags=2))
+    ultimo, f2 = decodifica_array_v2(_array_v2([(29.99, 2, 2, 2)], flags=1))
+    if f1 == 2 and f2 == 1 and len(primeiro) == 1 and len(ultimo) == 1:
+        ok("Flags de pacote: 2 = primeiro, 1 = último")
+    else:
+        err(f"flags: {f1} {f2}")
+
+    for nome, ruim in (("truncado", arr[:-9]), ("vazio", b""), ("só cabeçalho parcial", arr[:5]),
+                       ("Q absurdo", b"\xff\xff\xff\x7f" + arr[4:])):
+        try:
+            decodifica_array_v2(ruim)
+        except ValueError:
+            continue
+        err(f"array {nome} deveria levantar ValueError")
+    ok("Array corrompido/truncado levanta ValueError (quem chama conta e ignora)")
+
+
+def test_livro_operacoes():
+    print(f"\n{AMARELO}═══ TESTE 41: Livro de ofertas — add/edit/delete/deleteFrom/fullbook ═══{RESET}")
+    from profitdll import livro as lv
+    from profitdll.livro import LivroOfertas, AT_ADD, AT_EDIT, AT_DELETE, AT_DELETE_FROM, LADO_COMPRA, LADO_VENDA
+
+    L = LivroOfertas()
+    # Posição contada do FIM da lista: add com posição 0 entra no fim (melhor nível)
+    L.aplicar(AT_ADD, 0, LADO_COMPRA, 29.98, 100, 1, 1001)
+    L.aplicar(AT_ADD, 0, LADO_COMPRA, 29.99, 200, 2, 1002)   # fim = melhor
+    L.aplicar(AT_ADD, 1, LADO_COMPRA, 29.985, 50, 3, 1003)   # tamanho 2 − 1 = índice 1 (antes do último)
+    precos = [o[0] for o in L.compra]
+    if precos == [29.98, 29.985, 29.99]:
+        ok("atAdd insere em tamanho − posição (posição 0 = fim da lista)")
+    else:
+        err(f"ordem após adds: {precos}")
+
+    L.aplicar(AT_EDIT, 0, LADO_COMPRA, 0.0, 30, 0, 0)         # edita o último (índice tamanho − 0 − 1)
+    if L.compra[-1][1] == 230 and L.compra[-1][0] == 29.99 and L.compra[-1][2] == 2:
+        ok("atEdit (EDIT_SOMA=True) soma a quantidade no item da posição contada do fim; agente/preço ausentes preservados")
+    else:
+        err(f"edit soma: {L.compra[-1]}")
+    lv.EDIT_SOMA = False
+    try:
+        L.aplicar(AT_EDIT, 0, LADO_COMPRA, 0.0, 77, 0, 0)
+        if L.compra[-1][1] == 77:
+            ok("Com EDIT_SOMA=False o edit substitui a quantidade (fácil de inverter após validar ao vivo)")
+        else:
+            err(f"edit substitui: {L.compra[-1]}")
+    finally:
+        lv.EDIT_SOMA = True
+
+    L.aplicar(AT_DELETE, 1, LADO_COMPRA, 0, 0, 0, 0)          # índice 3 − 1 − 1 = 1 (29.985)
+    if [o[0] for o in L.compra] == [29.98, 29.99]:
+        ok("atDelete remove tamanho − posição − 1")
+    else:
+        err(f"delete: {L.compra}")
+
+    for i, p in enumerate((30.03, 30.02, 30.01, 30.00)):      # vendas: melhor (menor) no fim
+        L.aplicar(AT_ADD, 0, LADO_VENDA, p, 100, 5, 2000 + i)
+    L.aplicar(AT_DELETE_FROM, 1, LADO_VENDA, 0, 0, 0, 0)      # índice 4 − 1 − 1 = 2 → apaga do índice 2 em diante
+    if [o[0] for o in L.venda] == [30.03, 30.02]:
+        ok("atDeleteFrom apaga da posição em diante (até o fim da lista)")
+    else:
+        err(f"deleteFrom: {L.venda}")
+    if L.erros == 0 and L.ordens_total == 4:
+        ok("Sem erros; ordens_total soma os dois lados")
+    else:
+        err(f"erros={L.erros} total={L.ordens_total}")
+
+    # FullBook em vários pacotes: o livro só troca quando fecha o último
+    from profitdll.livro import decodifica_array_v2
+    p1 = decodifica_array_v2(_array_v2([(10.0, 1, 1, 1)], flags=2))[0]
+    p2 = decodifica_array_v2(_array_v2([(10.1, 2, 1, 2)], flags=0))[0]
+    p3 = decodifica_array_v2(_array_v2([(10.2, 3, 1, 3)], flags=1))[0]
+    L2 = LivroOfertas()
+    L2.aplicar(AT_ADD, 0, LADO_COMPRA, 9.0, 9, 9, 9)
+    L2.full_book(compra=p1, flags_compra=2)
+    L2.full_book(compra=p2, flags_compra=0)
+    antes = [o[0] for o in L2.compra]
+    L2.full_book(compra=p3, flags_compra=1)
+    depois = [o[0] for o in L2.compra]
+    if antes == [9.0] and depois == [10.0, 10.1, 10.2]:
+        ok("FullBook em 3 pacotes: acumula entre primeiro e último; livro antigo vale até fechar")
+    else:
+        err(f"fullbook multipacote: antes={antes} depois={depois}")
+    L2.full_book(compra=p1, flags_compra=3, venda=[], flags_venda=3)
+    if len(L2.compra) == 1 and L2.venda == [] and L2.erros == 0:
+        ok("FullBook de pacote único (flags=3) troca na hora; lado vazio (Q=0) esvazia")
+    else:
+        err(f"fullbook único: {L2.compra} {L2.venda} erros={L2.erros}")
+    L2.full_book(compra=p2, flags_compra=0)   # pacote do meio sem começo
+    if L2.erros == 1 and len(L2.compra) == 1:
+        ok("Pacote do meio/último sem o primeiro é descartado e contado em erros")
+    else:
+        err(f"pacote órfão: erros={L2.erros} compra={L2.compra}")
+
+
+def test_livro_snapshot_e_erros():
+    print(f"\n{AMARELO}═══ TESTE 42: Livro de ofertas — agregação por preço, corretoras e posição inválida ═══{RESET}")
+    from profitdll.livro import LivroOfertas, AT_ADD, AT_EDIT, AT_DELETE, AT_DELETE_FROM, LADO_COMPRA, LADO_VENDA
+
+    L = LivroOfertas()
+    L.compra = [[59.04, 1000, 8, 1], [59.05, 3000, 8, 2], [59.05, 2000, 3, 3], [59.05, 1500, 8, 4],
+                [59.05, 900, 9, 5], [59.05, 800, 10, 6]]
+    L.venda = [[59.07, 400, 3, 7], [59.06, 700, 3, 8], [59.06, 300, 9, 9]]
+    nomes = {8: "UBS", 3: "XP INC", 9: "BTG"}
+    snap = L.snapshot(n=15, nomes=nomes)
+    b0, b1 = snap["bids"][0], snap["bids"][1]
+    if b0["price"] == 59.05 and b0["qty"] == 8200 and b0["ordens"] == 5 and b1["price"] == 59.04:
+        ok("Bids agregados por preço, do maior para o menor (qtd e nº de ordens somados)")
+    else:
+        err(f"bids: {snap['bids']}")
+    if b0["corretoras"] == [["UBS", 4500], ["XP INC", 2000], ["BTG", 900]]:
+        ok("Top 3 corretoras do nível (qtd somada por corretora, nome pelo mapa)")
+    else:
+        err(f"corretoras: {b0['corretoras']}")
+    if [a["price"] for a in snap["asks"]] == [59.06, 59.07] and snap["asks"][0]["qty"] == 1000 and snap["asks"][0]["ordens"] == 2:
+        ok("Asks agregados do menor para o maior preço")
+    else:
+        err(f"asks: {snap['asks']}")
+    sem_nome = L.snapshot(n=1, nomes={})
+    if sem_nome["bids"][0]["corretoras"][0][0] == "8" and len(sem_nome["bids"]) == 1:
+        ok("Sem nome no mapa usa o código como texto; n limita os níveis")
+    else:
+        err(f"sem nome: {sem_nome['bids']}")
+    por_funcao = L.snapshot(n=1, nomes=lambda c: f"C{c}")
+    if por_funcao["bids"][0]["corretoras"][0][0] == "C8":
+        ok("nomes também aceita função código → nome (resolve só os que aparecem)")
+    else:
+        err(f"nomes por função: {por_funcao['bids'][0]}")
+
+    # posição inválida: ignora, conta, nunca levanta
+    L3 = LivroOfertas()
+    resultados = [
+        L3.aplicar(AT_EDIT, 0, LADO_COMPRA, 1.0, 1, 1, 1),        # lista vazia
+        L3.aplicar(AT_DELETE, 5, LADO_VENDA, 0, 0, 0, 0),
+        L3.aplicar(AT_DELETE_FROM, 3, LADO_COMPRA, 0, 0, 0, 0),
+        L3.aplicar(AT_ADD, 4, LADO_COMPRA, 1.0, 1, 1, 1),         # posição > tamanho
+        L3.aplicar(AT_ADD, -1, LADO_COMPRA, 1.0, 1, 1, 1),
+        L3.aplicar(9, 0, LADO_COMPRA, 1.0, 1, 1, 1),              # ação desconhecida
+        L3.aplicar(AT_ADD, 0, 7, 1.0, 1, 1, 1),                   # lado desconhecido
+    ]
+    if resultados == [False] * 7 and L3.erros == 7 and L3.ordens_total == 0:
+        ok("Posição/ação/lado inválidos: ignorados, contados em erros, sem exceção")
+    else:
+        err(f"inválidos: {resultados} erros={L3.erros}")
+    if L3.aplicar(AT_ADD, 0, LADO_COMPRA, 1.0, 1, 1, 1) and L3.erros == 7:
+        ok("Livro segue utilizável depois dos erros")
+    else:
+        err("livro quebrou depois dos erros")
+
+
+def test_livro_bridge():
+    print(f"\n{AMARELO}═══ TESTE 43: Livro de ofertas na ponte — taxa, fallback do TinyBook, cópia do array ═══{RESET}")
+    import ctypes
+    from profitdll.bridge import ProfitDLLBridge, copiar_array_v2
+    from profitdll.livro import AT_ADD, AT_FULLBOOK
+
+    # cópia do array dentro do callback (ponteiro só vale ali)
+    bruto = _array_v2([(30.0, 100, 3, 1)], flags=3)
+    buf = (ctypes.c_ubyte * len(bruto)).from_buffer_copy(bruto)
+    ptr = ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte))
+    copia = copiar_array_v2(ptr)
+    buf[0] = 99   # o buffer original muda: a cópia não
+    if copia == bruto and copiar_array_v2(ctypes.POINTER(ctypes.c_ubyte)()) is None:
+        ok("copiar_array_v2 copia 'tamanho' bytes do cabeçalho; ponteiro nulo devolve None")
+    else:
+        err("cópia do array")
+
+    def monta(livro_ativo=True):
+        b = ProfitDLLBridge("PETR4", intervalo_livro=0.2)
+        relogio = {"t": 100.0}
+        b._agora = lambda: relogio["t"]
+        b.livro_ativo = livro_ativo
+        entregues = []
+        b.on_book = entregues.append
+        b.nomes = {3: "XP INC", 8: "UBS"}
+        return b, relogio, entregues
+
+    compra = _array_v2([(29.98, 500, 3, 1), (29.99, 1000, 8, 2), (29.99, 700, 3, 3)], flags=3)
+    venda = _array_v2([(30.02, 400, 3, 4), (30.01, 900, 8, 5)], flags=3)
+    ev_full = ("oferta", AT_FULLBOOK, 0, 0, 0.0, 0, 0, 0, venda, compra, 1.0)
+
+    b, rel, got = monta()
+    b._processar_evento(ev_full)
+    n = got[-1]
+    bids = [l for l in n if l.side == Side.BUY]
+    asks = [l for l in n if l.side == Side.SELL]
+    topo_b = max(bids, key=lambda l: l.price)
+    if len(bids) == 2 and len(asks) == 2 and topo_b.price == 29.99 and topo_b.qty == 1700 and topo_b.ordens == 2 \
+            and topo_b.corretoras == [["UBS", 1000], ["XP INC", 700]] and topo_b.broker == "":
+        ok("FullBook vira BookLevel com ordens e corretoras (broker vazio: não alimenta o detector de Best Offer)")
+    else:
+        err(f"níveis: {[(l.price, l.qty, l.ordens, l.corretoras) for l in n]}")
+
+    # limitação de taxa: várias atualizações dentro do intervalo → 1 entrega; o resto sai no descarregar
+    for i in range(10):
+        rel["t"] += 0.01
+        b._processar_evento(("oferta", AT_ADD, 0, 0, 29.99 + 0.0001 * i, 10, 3, 900 + i, None, None, 1.0))
+    if len(got) == 1:
+        ok("Taxa limitada: 10 atualizações em 0,1 s não geram entregas extras (intervalo 0,2 s)")
+    else:
+        err(f"entregas dentro do intervalo: {len(got)}")
+    rel["t"] += 0.3
+    b._descarregar_livro()
+    if len(got) == 2 and b.stats()["livro_atualizacoes"] == 2:
+        ok("Pendente é entregue quando o intervalo vence (nada se perde)")
+    else:
+        err(f"depois de descarregar: {len(got)} {b.stats()}")
+    b._descarregar_livro()
+    if len(got) == 2:
+        ok("Sem nada novo não reenvia")
+    else:
+        err("reenviou sem mudança")
+
+    # fallback: TinyBook diverge por mais de 1 s
+    b, rel, got = monta()
+    b._processar_evento(("book", 0, 29.99, 1700, 1.0))
+    b._processar_evento(("book", 1, 30.01, 900, 1.0))
+    b._processar_evento(ev_full)
+    if got and any(l.ordens for l in got[-1]):
+        ok("TinyBook coerente com o livro: entrega o livro completo")
+    else:
+        err("deveria entregar o livro completo")
+    rel["t"] += 0.5
+    b._processar_evento(("book", 0, 29.50, 100, 2.0))       # TinyBook diz outro bid
+    antes = len(got)
+    if any(l.ordens for l in got[-1]):
+        ok("Divergência < 1 s: tolera (latência) e continua no livro")
+    else:
+        err("não deveria cair no topo antes de 1 s")
+    rel["t"] += 1.2
+    b._descarregar_livro()
+    if len(got) > antes and not any(l.ordens or l.corretoras for l in got[-1]) \
+            and {l.price for l in got[-1]} == {29.50, 30.01}:
+        ok("Divergência > 1 s: volta ao topo do TinyBook (sem corretoras)")
+    else:
+        err(f"fallback: {[(l.price, l.ordens) for l in got[-1]]}")
+    st = b.stats()
+    if st["livro_divergencias"] == 1:
+        ok("Divergência contada em livro_divergencias")
+    else:
+        err(f"divergencias: {st['livro_divergencias']}")
+    rel["t"] += 0.3
+    b._processar_evento(("book", 0, 29.99, 1700, 3.0))      # TinyBook volta a bater
+    b._descarregar_livro()
+    if any(l.ordens for l in got[-1]):
+        ok("TinyBook voltou a bater: retoma o livro completo")
+    else:
+        err("não retomou o livro")
+
+    # livro_ativo False: só o TinyBook, como antes
+    b, rel, got = monta(livro_ativo=False)
+    b._processar_evento(ev_full)
+    b._processar_evento(("book", 0, 29.99, 1700, 1.0))
+    if got and not any(l.ordens for l in got[-1]) and [l.price for l in got[-1]] == [29.99]:
+        ok("livro_ativo=False: continua entregando só o topo do TinyBook")
+    else:
+        err(f"sem livro ativo: {[(l.price, l.ordens) for l in got[-1]] if got else got}")
+
+    # array corrompido: conta erro e não derruba
+    b, rel, got = monta()
+    b._processar_evento(("oferta", AT_FULLBOOK, 0, 0, 0.0, 0, 0, 0, b"\x01\x02", compra, 1.0))
+    st = b.stats()
+    if st["livro_erros"] >= 1 and st["livro_ativo"] is True:
+        ok("Array corrompido: livro_erros sobe, sem exceção")
+    else:
+        err(f"stats com array ruim: {st}")
+    for k in ("livro_ordens", "livro_erros", "livro_ativo", "livro_atualizacoes"):
+        if k not in st:
+            err(f"stats sem {k}")
+    ok("stats() traz livro_ordens, livro_erros, livro_ativo, livro_atualizacoes")
+
+
+def test_livro_protocolo_e_api():
+    print(f"\n{AMARELO}═══ TESTE 44: Livro de ofertas — protocolo do processo filho, get_book e POST /book ═══{RESET}")
+    import json
+    import urllib.error
+    import urllib.request
+    from profitdll.processo import book_para_msg, msg_para_book, PonteDLLProcesso
+    from api.server import FlowServer
+
+    # formato antigo continua valendo (níveis [preco, qtd, lado])
+    antigo = {"tipo": "book", "ts": 1000.0, "niveis": [[5078.0, 10, "compra"], [5078.5, 7, "venda"]]}
+    n = msg_para_book(antigo)
+    if [(x.price, x.qty, x.side, x.ordens, x.corretoras) for x in n] == \
+            [(5078.0, 10, Side.BUY, 0, []), (5078.5, 7, Side.SELL, 0, [])]:
+        ok("Mensagem no formato antigo [preco, qtd, lado] é lida (ordens=0, corretoras=[])")
+    else:
+        err(f"formato antigo: {n}")
+    sem_extra = book_para_msg([BookLevel(5078.0, 10, "", Side.BUY, 1000.0)], 1000.0)
+    if sem_extra["niveis"] == [[5078.0, 10, "compra"]]:
+        ok("Nível sem ordens/corretoras continua saindo no formato antigo (3 campos)")
+    else:
+        err(f"msg sem extra: {sem_extra}")
+    novo_niveis = [BookLevel(59.05, 8200, "", Side.BUY, 1000.0, ordens=5, corretoras=[["UBS", 4500], ["XP INC", 2000]]),
+                   BookLevel(59.06, 1000, "", Side.SELL, 1000.0, ordens=2, corretoras=[])]
+    msg = json.loads(json.dumps(book_para_msg(novo_niveis, 1000.0)))
+    n2 = msg_para_book(msg)
+    if [(x.price, x.qty, x.side, x.ordens, x.corretoras) for x in n2] == \
+            [(59.05, 8200, Side.BUY, 5, [["UBS", 4500], ["XP INC", 2000]]), (59.06, 1000, Side.SELL, 2, [])]:
+        ok("Níveis com ordens e corretoras vão e voltam pelo JSON do protocolo")
+    else:
+        err(f"ida e volta novo: {n2}")
+
+    p = PonteDLLProcesso("PETR4", comando=["x"])
+    st = p.stats()
+    if st["livro_ativo"] is False and st["livro_ordens"] == 0 and st["livro_erros"] == 0 and st["livro_atualizacoes"] == 0:
+        ok("Stats do pai trazem os contadores do livro mesmo sem filho")
+    else:
+        err(f"stats do pai: {st}")
+    p._ultimo = {"livro_ativo": True, "livro_ordens": 40, "livro_erros": 2, "livro_atualizacoes": 9}
+    st = p.stats()
+    if st["livro_ativo"] is True and st["livro_ordens"] == 40 and st["livro_erros"] == 2 and st["livro_atualizacoes"] == 9:
+        ok("Stats novas passam pelo canal de stats existente")
+    else:
+        err(f"stats do filho: {st}")
+
+    # get_book com campos novos
+    engine = FlowEngine("PETR4", EngineConfig())
+    engine.update_book([BookLevel(59.05, 100, "", Side.BUY, 1000.0)])
+    gb = engine.get_book()
+    if gb["fonte"] == "topo" and gb["bids"][0] == {"price": 59.05, "qty": 100, "broker": "", "ordens": 0, "corretoras": []}:
+        ok("get_book sem ordens/corretoras: fonte='topo' e campos novos com valor neutro")
+    else:
+        err(f"get_book topo: {gb}")
+    engine.update_book(novo_niveis)
+    gb = engine.get_book()
+    if gb["fonte"] == "ofertas" and gb["depth"] in ("top", "full") and gb["bids"][0]["ordens"] == 5 \
+            and gb["bids"][0]["corretoras"] == [["UBS", 4500], ["XP INC", 2000]] \
+            and set(gb) == {"depth", "fonte", "bids", "asks", "updated"}:
+        ok("get_book com níveis do livro: fonte='ofertas', ordens e corretoras nos níveis")
+    else:
+        err(f"get_book ofertas: {gb}")
+
+    # POST /book aceita ordens e corretoras; GET devolve o contrato
+    porta = 15599
+    server = FlowServer(FlowEngine("PETR4", EngineConfig()), host="127.0.0.1", port=porta)
+    server.start()
+    base = f"http://127.0.0.1:{porta}"
+    try:
+        time.sleep(0.3)
+        corpo = {"levels": [
+            {"side": "compra", "price": 59.05, "qty": 7900, "ordens": 6, "corretoras": [["UBS", 3000], ["XP", 2000]]},
+            {"side": "compra", "price": 59.04, "qty": 100},
+            {"side": "venda", "price": 59.06, "qty": 500, "ordens": 2, "corretoras": [["BTG", 500]]}]}
+        req = urllib.request.Request(base + "/book", data=json.dumps(corpo).encode(), method="POST",
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req) as r:
+            postado = json.loads(r.read())
+        with urllib.request.urlopen(base + "/book") as r:
+            livro = json.loads(r.read())
+        if postado.get("ok") and livro["fonte"] == "ofertas" and livro["depth"] == "full" \
+                and livro["bids"][0] == {"price": 59.05, "qty": 7900, "broker": "", "ordens": 6,
+                                         "corretoras": [["UBS", 3000], ["XP", 2000]]} \
+                and livro["bids"][1]["ordens"] == 0 and livro["asks"][0]["corretoras"] == [["BTG", 500]]:
+            ok("POST /book aceita ordens/corretoras opcionais e GET /book devolve o contrato novo")
+            print("  contrato GET /book:", json.dumps(livro, ensure_ascii=False))
+        else:
+            err(f"GET /book: {livro}")
+        ruim = {"levels": [{"side": "compra", "price": 1.0, "qty": 1, "corretoras": ["so-um-texto-solto-x"]}]}
+        req = urllib.request.Request(base + "/book", data=json.dumps(ruim).encode(), method="POST",
+                                     headers={"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(req)
+            err("corretoras malformadas deveriam dar 400")
+        except urllib.error.HTTPError as e:
+            if e.code == 400:
+                ok("POST /book com corretoras malformadas responde 400")
+            else:
+                err(f"status {e.code}")
+    finally:
+        server.stop()
+
+
 def main():
     print(f"\n{AZUL}╔══════════════════════════════════════════════╗{RESET}")
     print(f"{AZUL}║   FLUXO SERVER — Suite de Testes Automáticos  ║{RESET}")
@@ -3725,6 +4131,11 @@ def main():
     test_dll_varios_papeis()
     test_api_radar()
     test_radar_revisao()
+    test_livro_decodificador()
+    test_livro_operacoes()
+    test_livro_snapshot_e_erros()
+    test_livro_bridge()
+    test_livro_protocolo_e_api()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")
