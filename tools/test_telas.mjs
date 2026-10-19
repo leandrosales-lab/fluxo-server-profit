@@ -2,7 +2,8 @@
 import assert from "node:assert/strict";
 import * as f from "../api/static/js/formato.js";
 import { textoStatus, estadoReconectar } from "../api/static/js/shell.js";
-import { tituloSinal, LOTE_GRANDE_PADRAO, textoEvento, duracao, medidaSinal, ordenarDefesas } from "../api/static/js/operar-paineis.js";
+import { tituloSinal, LOTE_GRANDE_PADRAO, textoEvento, duracao, medidaSinal, ordenarDefesas,
+  linhasQueCabem, rotuloFonteBook, qtdBook, corretorasBook } from "../api/static/js/operar-paineis.js";
 import { textoSituacao, linhaRadar } from "../api/static/js/radar-lista.js";
 import { sinceCandles, juntarCandles, precisaLimpar } from "../api/static/js/candles.js";
 
@@ -110,6 +111,24 @@ assert.deepEqual(medidaSinal({ pattern: "Iceberg", confidence: 0.84, acerto }), 
 assert.deepEqual(medidaSinal({ pattern: "Iceberg", confidence: 0.84, acerto: { ...acerto, ganho: -0.07 } }),
   ["acerto", "41% · −0,1 tick", "41%"]);
 assert.deepEqual(medidaSinal({ pattern: "Absorção", confidence: 0.84, acerto: null }), ["força", "84%", "84%"]);
+
+// Book: níveis que cabem, rótulo da fonte, quantidade e corretoras
+assert.equal(linhasQueCabem(0), 12);
+assert.equal(linhasQueCabem(240), 12);
+assert.equal(linhasQueCabem(600), 15);   // teto de 15 níveis por lado
+assert.equal(linhasQueCabem(30), 3);     // piso de 3
+assert.equal(rotuloFonteBook({ depth: "full", fonte: "ofertas" }), "livro completo");
+assert.equal(rotuloFonteBook({ depth: "top", fonte: "topo" }), "só topo");
+assert.equal(rotuloFonteBook({ depth: "none" }), "sem livro nesta fonte");
+assert.equal(rotuloFonteBook({ depth: "full" }), "níveis agregados");   // formato antigo, sem fonte
+assert.equal(qtdBook(7900), "7.900");
+assert.equal(qtdBook(250000), "250 mil");
+assert.equal(qtdBook(1250000), "1,3 mi");
+assert.equal(qtdBook(undefined), "—");
+assert.equal(corretorasBook([["UBS", 3000], ["XP", 2000], ["BTG", 900], ["ITAU", 10]]), "UBS, XP, BTG");
+assert.equal(corretorasBook([["UBS", 3000], ["XP", 2000]], true), "UBS");
+assert.equal(corretorasBook(undefined), "—");   // formato antigo {price, qty, broker}
+assert.equal(corretorasBook([]), "—");
 
 // Radar: texto da situação de cada iceberg
 const reg = { situacao: "segurou", segurou_as: 1792155600, rompeu_as: null, desfecho_as: 1792155600 };

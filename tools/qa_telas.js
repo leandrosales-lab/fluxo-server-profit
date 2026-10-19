@@ -111,9 +111,63 @@ verificacoes.push(["operar: painéis", async (page) => {
   const n2 = await page.locator("#tt tr").count();
   checar(n2 > 0 && n2 >= n1, `Times & Trades com ${n2} linhas`);
   checar((await page.textContent("#defesas-nota")).length > 0, `defesas: ${await page.textContent("#defesas-nota")}`);
-  checar((await page.textContent("#spread")).length > 0, `topo do livro: ${await page.textContent("#spread")}`);
+  checar((await page.textContent("#book-spread")).length > 0, `book: ${await page.textContent("#book-spread")}`);
   checar(await page.locator("#saldo tr").count() > 0, "saldo das corretoras preenchido");
   await page.screenshot({ path: path.join(SAIDA, "operar-com-sinal.png") });
+}]);
+
+// Book com dados SINTÉTICOS de teste, injetados pela rota (o replay de exemplo só tem o topo)
+function bookSintetico(n) {
+  const nomes = ["UBS", "XP", "BTG PACTUAL", "JP MORGAN", "AGORA", "ITAU"];
+  const lado = (base, dir) => Array.from({ length: n }, (_, i) => ({ price: +(base + dir * 0.01 * i).toFixed(2),
+    qty: 500 + ((i * 7919) % 9) * 1100, ordens: 1 + (i * 3) % 9,
+    corretoras: [[nomes[i % 6], 3000], [nomes[(i + 2) % 6], 2000], [nomes[(i + 4) % 6], 900]] }));
+  return { depth: "full", fonte: "ofertas", bids: lado(59.05, -1), asks: lado(59.07, 1), updated: 1 };
+}
+verificacoes.push(["operar: book", async (page) => {
+  let dados = bookSintetico(15);
+  await page.route("**/book", (r) => r.fulfill({ json: dados }));
+  for (const [w, h] of [[1920, 1080], [1536, 864], [1280, 720]]) {
+    await page.setViewportSize({ width: w, height: h });
+    await page.goto(`${BASE}/operar`);
+    await page.waitForFunction(() => document.querySelectorAll("#book-asks tr").length > 0, null, { timeout: 10000 });
+    const m = await page.evaluate(() => {
+      const d = document.documentElement, b = document.getElementById("book"), g = document.getElementById("grafico");
+      const topo = (id) => +document.querySelector(`#${id} tr`).cells[0].textContent.replace(",", ".");
+      const lados = [...document.querySelectorAll(".book-lado")];
+      return { sw: d.scrollWidth, w: innerWidth, asks: document.querySelectorAll("#book-asks tr").length,
+        bids: document.querySelectorAll("#book-bids tr").length, bw: b.clientWidth, cw: g.clientWidth,
+        cortado: lados.some((l) => l.scrollHeight > l.clientHeight + 1),
+        // asks: maior preço no topo e o menor colado ao meio; bids: maior preço colado ao meio
+        asksDesc: topo("book-asks") > +document.querySelector("#book-asks tr:last-child").cells[0].textContent.replace(",", "."),
+        bidsDesc: topo("book-bids") > +document.querySelector("#book-bids tr:last-child").cells[0].textContent.replace(",", "."),
+        fonte: document.getElementById("book-fonte").textContent, spread: document.getElementById("book-spread").textContent,
+        ordens: document.querySelector("#book-asks tr").cells[2].textContent,
+        corr: document.querySelector("#book-asks tr").cells[3].textContent,
+        rotulos: [...document.querySelectorAll(".book-tab[aria-label]")].length };
+    });
+    checar(m.sw <= m.w, `book ${w}×${h}: sem rolagem horizontal`);
+    checar(m.asks >= 8 && m.asks <= 15 && m.asks === m.bids, `book ${w}×${h}: ${m.asks} níveis por lado, sem rolagem`);
+    checar(!m.cortado, `book ${w}×${h}: nenhum nível cortado`);
+    checar(m.asksDesc && m.bidsDesc, `book ${w}×${h}: maior preço no topo nos dois lados`);
+    checar(m.fonte === "livro completo" && m.spread === "spread 0,02", `book ${w}×${h}: fonte "${m.fonte}", ${m.spread}`);
+    checar(/^\d+$/.test(m.ordens) && m.corr.length > 0 && m.rotulos === 2, `book ${w}×${h}: ordens, corretoras e aria-label`);
+    checar(m.cw >= 440, `book ${w}×${h}: gráfico ainda com ${m.cw}px`);
+    for (const tema of ["escuro", "claro"]) {
+      await page.evaluate((t) => { document.documentElement.dataset.tema = t; }, tema);
+      await page.screenshot({ path: path.join(SAIDA, `book-${w}x${h}-${tema}.png`) });
+    }
+  }
+  // formato antigo (só topo, sem ordens/corretoras) e fonte sem livro
+  dados = { depth: "top", fonte: "topo", bids: [{ price: 59.05, qty: 7900, broker: "" }], asks: [{ price: 59.07, qty: 5100, broker: "" }], updated: 1 };
+  await page.waitForFunction(() => document.getElementById("book-fonte").textContent === "só topo", null, { timeout: 5000 });
+  checar(await page.locator("#book-asks tr").count() === 1, "só topo: um nível por lado");
+  checar((await page.locator("#book-asks tr").first().locator("td").nth(3).textContent()) === "—", "só topo: corretoras como —");
+  dados = { depth: "none", bids: [], asks: [], updated: 0 };
+  await page.waitForFunction(() => document.getElementById("book-fonte").textContent === "sem livro nesta fonte", null, { timeout: 5000 });
+  checar(await page.locator("#book-asks tr").count() === 0 && await page.isVisible("#book-msg"), "sem livro: níveis somem e a mensagem aparece");
+  await page.unroute("**/book");
+  await page.setViewportSize({ width: 1920, height: 1080 });
 }]);
 
 verificacoes.push(["operar: reset com a tela aberta", async (page) => {
