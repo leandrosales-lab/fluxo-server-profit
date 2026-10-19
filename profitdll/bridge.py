@@ -17,6 +17,12 @@ negócio é perdido e o lado agressor vem pronto no TradeType.
     (side 0) e melhor venda (side 1). A ponte guarda o último bid/ask e
     entrega ao callback on_book (normalmente engine.update_book) dois
     BookLevel sem corretora (o TinyBook não informa o agente).
+  - Livro de ofertas (book completo por ordem, com corretora): SetOfferBookCallbackV2 +
+    SubscribeOfferBook do papel principal. O callback só copia os bytes dos arrays e enfileira
+    ("oferta", ...); a thread consumidora aplica em profitdll.livro.LivroOfertas e entrega
+    on_book(níveis com ordens/corretoras) no máximo ~5 vezes por segundo. O TinyBook continua
+    como fallback: se a assinatura falhar, o livro estiver vazio ou divergir do TinyBook por
+    mais de 1 s, o topo do TinyBook é entregue como antes.
   - Negócios e book passam pela MESMA fila, preservando a ordem de chegada.
   - Contadores em stats() (expostos no GET /state, bloco "dll").
 
@@ -42,12 +48,15 @@ import json
 import time
 import logging
 import threading
+import ctypes
 from datetime import datetime, timedelta, timezone
 from queue import Queue, Empty
 from typing import Optional, Callable
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.engine import Tick, Side, BookLevel
+from profitdll.livro import (LivroOfertas, decodifica_array_v2, CABECALHO_V2, AT_FULLBOOK,
+                             LADO_COMPRA, LADO_VENDA)
 
 logger = logging.getLogger("ProfitDLL")
 
@@ -103,6 +112,31 @@ def _estado_nomeado(codigo: Optional[int], nomes: dict) -> Optional[dict]:
 # Lado do TinyBook (TTinyBookCallback)
 TINYBOOK_BID = 0
 TINYBOOK_ASK = 1
+
+# Livro de ofertas
+INTERVALO_LIVRO_PADRAO = 0.2     # s entre snapshots entregues (~5 por segundo)
+NIVEIS_LIVRO_PADRAO    = 15      # níveis por lado entregues ao engine
+TOLERANCIA_DIVERGENCIA = 1.0     # s que o livro pode divergir do TinyBook antes de voltar ao topo
+MAX_ARRAY_BYTES        = 64 * 1024 * 1024
+
+
+def copiar_array_v2(ptr) -> Optional[bytes]:
+    """
+    Copia o array V2 (POINTER(c_ubyte)) da DLL para bytes. O ponteiro só vale DENTRO do callback,
+    então a cópia é feita ali; o tamanho vem do cabeçalho (int32 Q, int32 tamanho). Ponteiro nulo
+    -> None. Cabeçalho com tamanho absurdo -> só os 8 bytes do cabeçalho (o decodificador rejeita).
+    """
+    if not ptr:
+        return None
+    endereco = ctypes.cast(ptr, ctypes.c_void_p).value
+    if not endereco:
+        return None
+    cabecalho = ctypes.string_at(endereco, CABECALHO_V2.size)
+    _q, tamanho = CABECALHO_V2.unpack(cabecalho)
+    if tamanho < CABECALHO_V2.size or tamanho > MAX_ARRAY_BYTES:
+        return cabecalho
+    return ctypes.string_at(endereco, tamanho)
+
 
 # Horário da B3 = horário de Brasília. Fuso fixo UTC-3 (o Brasil não tem
 # horário de verão desde 2019) — não depende de tzdata no Windows.
@@ -267,10 +301,13 @@ class ProfitDLLBridge:
       ("trade", buy_agent, sell_agent, qty, price, trade_type, epoch_ou_None, flags, trade_number)
         (flags e trade_number são opcionais; flags com TC_IS_EDIT = edição, descartada)
       ("book",  lado (0 bid / 1 ask), price, qty, time.time() da chegada)
+      ("oferta", acao, posicao, lado, price, qty, agente, offer_id, bytes_array_venda|None,
+                 bytes_array_compra|None, time.time() da chegada)      livro de ofertas (V2)
     """
 
     def __init__(self, asset: str, agentes_path: Optional[str] = None, timeout: int = 30,
-                 extras: Optional[list] = None):
+                 extras: Optional[list] = None, intervalo_livro: float = INTERVALO_LIVRO_PADRAO,
+                 niveis_livro: int = NIVEIS_LIVRO_PADRAO):
         self.asset    = validar_ativo(asset)
         self.exchange = BOLSA
         # Radar: além do papel principal, a lista de ações (papel inválido/futuro vai para recusados)
@@ -317,6 +354,22 @@ class ProfitDLLBridge:
         self.bid: Optional[tuple] = None
         self.ask: Optional[tuple] = None
         self._ultimo_ts_negocio: Optional[float] = None
+        # Livro de ofertas (book completo por ordem)
+        self.livro = LivroOfertas()
+        self.intervalo_livro = intervalo_livro
+        self.niveis_livro = niveis_livro
+        self.livro_ativo = False             # SubscribeOfferBook aceito (False = só TinyBook)
+        self.livro_atualizacoes = 0          # snapshots do livro entregues ao on_book
+        self.livro_divergencias = 0          # vezes que o livro divergiu do TinyBook > 1 s (voltou ao topo)
+        self._livro_disponivel = False       # SetOfferBookCallbackV2 registrado
+        self._livro_pendente = False         # há atualização retida pela limitação de taxa
+        self._ultimo_envio_livro = float("-inf")
+        self._modo_book: Optional[str] = None   # o que foi entregue por último: "ofertas" | "topo"
+        self._tiny_visto = False
+        self._diverge_desde: Optional[float] = None
+        self._em_divergencia = False
+        self._nomes_falha: dict[int, float] = {}   # código sem nome na DLL: quando tentou (evita insistir)
+        self._agora = time.monotonic         # relógio da limitação de taxa (trocável nos testes)
 
     def stats(self) -> dict:
         """Contadores da ponte (bloco "dll" do GET /state)."""
@@ -332,6 +385,12 @@ class ProfitDLLBridge:
                                    for t, n in sorted(self.ignorados_por_tipo.items())},
             "horarios_fallback": self.horarios_fallback,
             "book_atualizacoes": self.book_atualizacoes,
+            "livro_ativo":       self.livro_ativo,
+            "livro_ordens":      self.livro.ordens_total,
+            "livro_erros":       self.livro.erros,
+            "livro_atualizacoes": self.livro_atualizacoes,
+            "livro_divergencias": self.livro_divergencias,
+            "livro_fonte":       self._modo_book,
             "fila_pendente":     self.fila.qsize(),
             "bid":               list(self.bid) if self.bid else None,
             "ask":               list(self.ask) if self.ask else None,
@@ -373,6 +432,7 @@ class ProfitDLLBridge:
             self.stop()
             return False
         self.assinados = 1
+        self._assinar_livro()
         for p in self.papeis[1:]:
             if self.dll.SubscribeTicker(p, self.exchange) == 0:
                 self.assinados += 1
@@ -392,6 +452,11 @@ class ProfitDLLBridge:
             # Cancelar a assinatura ANTES de finalizar a DLL
             try:
                 if self._consumidor:
+                    if self.livro_ativo:
+                        try:
+                            self.dll.UnsubscribeOfferBook(self.asset, self.exchange)
+                        except Exception as e:
+                            logger.warning(f"UnsubscribeOfferBook falhou: {e}")
                     for p in self.papeis:
                         self.dll.UnsubscribeTicker(p, self.exchange)
                 self.dll.DLLFinalize()
@@ -418,6 +483,14 @@ class ProfitDLLBridge:
         self._conectado = False
         self.resultado_market = self.resultado_login = self.resultado_ativacao = None
         self.bid = self.ask = None
+        self.livro.limpar()            # os contadores (erros) acumulam; o livro recomeça vazio
+        self.livro_ativo = False
+        self._livro_disponivel = False
+        self._livro_pendente = False
+        self._modo_book = None
+        self._tiny_visto = False
+        self._diverge_desde = None
+        self._em_divergencia = False
         while True:
             try:
                 self.fila.get_nowait()
@@ -446,7 +519,7 @@ class ProfitDLLBridge:
             sys.path.insert(0, types_dir)
 
         from ctypes import (WINFUNCTYPE, POINTER, WinDLL, Structure, byref,
-                            c_int, c_uint, c_size_t, c_double, c_wchar_p)
+                            c_int, c_uint, c_size_t, c_double, c_wchar_p, c_longlong, c_ubyte)
         try:
             from profitTypes import TConnectorAssetIdentifier, TConnectorTrade
         except ImportError:
@@ -464,6 +537,12 @@ class ProfitDLLBridge:
         TTradeCallback = WINFUNCTYPE(None, TConnectorAssetIdentifier, c_size_t, c_uint)
         # Topo do livro: (ativo por valor, preço, quantidade, lado 0 = bid / 1 = ask)
         TTinyBookCallback = WINFUNCTYPE(None, TAssetID, c_double, c_int, c_int)
+        # Livro de ofertas V2 (igual ao exemplo oficial): ação, posição, lado, qtd, agente, offer_id,
+        # preço, bHas* (preço, qtd, data, offer_id, agente), data e os arrays FullBook (venda, compra).
+        # nQtd vem em 32 bits aqui (pode truncar): no FullBook vale a quantidade int64 dos arrays.
+        TOfferBookCallbackV2 = WINFUNCTYPE(None, TAssetID, c_int, c_int, c_int, c_int, c_int, c_longlong,
+                                           c_double, c_int, c_int, c_int, c_int, c_int, c_wchar_p,
+                                           POINTER(c_ubyte), POINTER(c_ubyte))
 
         # stdcall → WinDLL (CDLL corromperia a pilha silenciosamente)
         dll = WinDLL(dll_path)
@@ -477,6 +556,12 @@ class ProfitDLLBridge:
         dll.SetTradeCallbackV2.restype = c_int
         dll.TranslateTrade.argtypes = [c_size_t, POINTER(TConnectorTrade)]
         dll.TranslateTrade.restype = c_int
+        dll.SubscribeOfferBook.argtypes = [c_wchar_p, c_wchar_p]
+        dll.SubscribeOfferBook.restype = c_int
+        dll.UnsubscribeOfferBook.argtypes = [c_wchar_p, c_wchar_p]
+        dll.UnsubscribeOfferBook.restype = c_int
+        dll.SetOfferBookCallbackV2.argtypes = [TOfferBookCallbackV2]
+        dll.SetOfferBookCallbackV2.restype = c_int
         dll.GetAgentNameLength.argtypes = [c_int, c_uint]
         dll.GetAgentNameLength.restype = c_int
         dll.GetAgentName.argtypes = [c_int, c_int, c_wchar_p, c_uint]
@@ -503,10 +588,27 @@ class ProfitDLLBridge:
             # Só enfileira — o TinyBook não traz horário, marca a chegada
             self.fila.put(("book", int(side), float(price), int(qty), time.time()))
 
+        def on_oferta(asset, acao, posicao, lado, qtd, agente, offer_id, preco, tem_preco, tem_qtd,
+                      tem_data, tem_offer_id, tem_agente, data, p_venda, p_compra):
+            # Roda na thread da DLL: só copia os bytes dos arrays (o ponteiro só vale aqui) e enfileira
+            try:
+                if ticker_do_ativo(asset) != self.asset:
+                    return          # radar: livro só do papel principal
+                arr_venda = arr_compra = None
+                if acao == AT_FULLBOOK:
+                    arr_venda, arr_compra = copiar_array_v2(p_venda), copiar_array_v2(p_compra)
+                self.fila.put(("oferta", int(acao), int(posicao), int(lado),
+                               float(preco) if tem_preco else 0.0, int(qtd) if tem_qtd else 0,
+                               int(agente) if tem_agente else 0, int(offer_id) if tem_offer_id else 0,
+                               arr_venda, arr_compra, time.time()))
+            except Exception:
+                self.livro.erros += 1
+
         cb_estado = TStateCallback(on_estado)
         cb_trade  = TTradeCallback(on_trade)
         cb_tiny   = TTinyBookCallback(on_tiny_book)
-        self._callbacks += [cb_estado, cb_trade, cb_tiny]
+        cb_oferta = TOfferBookCallbackV2(on_oferta)
+        self._callbacks += [cb_estado, cb_trade, cb_tiny, cb_oferta]
 
         ret = dll.DLLInitializeMarketLogin(
             key, user, pwd,
@@ -524,6 +626,12 @@ class ProfitDLLBridge:
         self.dll = dll
 
         dll.SetTradeCallbackV2(cb_trade)
+        try:
+            self._livro_disponivel = dll.SetOfferBookCallbackV2(cb_oferta) == 0
+        except Exception as e:      # DLL sem a função: segue só com o TinyBook
+            logger.warning(f"SetOfferBookCallbackV2 indisponível: {e}")
+        if not self._livro_disponivel:
+            logger.warning("ProfitDLL: livro de ofertas não registrado - usando só o topo (TinyBook)")
         self._aguardar_conexao()
 
     # ──────────────────────────────────────────────────────────
@@ -614,18 +722,25 @@ class ProfitDLLBridge:
     def _consumir(self):
         while not self._parar.is_set():
             try:
-                evento = self.fila.get(timeout=0.5)
+                # com atualização retida pela taxa, acorda a tempo de entregá-la
+                evento = self.fila.get(timeout=max(0.01, self.intervalo_livro) if self._livro_pendente else 0.5)
             except Empty:
+                try:
+                    self._descarregar_livro()
+                except Exception as e:
+                    logger.error(f"Erro ao entregar o livro de ofertas: {e}")
                 continue
             self._processar_evento(evento)
 
     def _processar_evento(self, evento: tuple):
-        """Despacha um evento da fila (trade ou book) — sem DLL, testável."""
+        """Despacha um evento da fila (trade, book ou oferta) - sem DLL, testável."""
         try:
             if evento[0] == "trade":
                 self._processar_trade(*evento[1:])
             elif evento[0] == "book":
                 self._processar_book(*evento[1:])
+            elif evento[0] == "oferta":
+                self._processar_oferta(*evento[1:])
             else:
                 logger.warning(f"Evento desconhecido na fila da DLL: {evento[0]!r}")
         except Exception as e:
@@ -686,10 +801,11 @@ class ProfitDLLBridge:
 
     def _processar_book(self, lado, price, qty, ts_chegada):
         """
-        Atualiza o topo do livro e entrega o snapshot (bid + ask) ao engine.
+        Atualiza o topo do livro (TinyBook) e entrega o snapshot ao engine: o livro de ofertas
+        quando está ativo e coerente com o TinyBook, senão o próprio topo (bid + ask).
         Preço ou quantidade <= 0 = lado sem oferta (ex.: leilão).
-        O timestamp é o do último negócio (relógio da B3), para não
-        misturar com o relógio local; sem negócio ainda, usa a chegada.
+        O timestamp é o do último negócio (relógio da B3), para não misturar com o relógio
+        local; sem negócio ainda, usa a chegada.
         """
         topo = (float(price), int(qty)) if price > 0 and qty > 0 else None
         if lado == TINYBOOK_BID:
@@ -698,10 +814,156 @@ class ProfitDLLBridge:
             self.ask = topo
         else:
             return
+        self._tiny_visto = True
         self.book_atualizacoes += 1
-        ts = self._ultimo_ts_negocio if self._ultimo_ts_negocio is not None else ts_chegada
+        self._publicar(ts_chegada, do_tinybook=True)
+
+    # ──────────────────────────────────────────────────────────
+    # LIVRO DE OFERTAS (sem DLL, testável)
+    # ──────────────────────────────────────────────────────────
+
+    def _assinar_livro(self):
+        """SubscribeOfferBook do papel principal. Retorno != 0 é só aviso: o TinyBook segue valendo."""
+        if not self._livro_disponivel or self.dll is None:
+            return
+        try:
+            ret = self.dll.SubscribeOfferBook(self.asset, self.exchange)
+        except Exception as e:
+            ret = -1
+            logger.warning(f"SubscribeOfferBook({self.asset}, {self.exchange}) levantou: {e}")
+        if ret != 0:
+            self.livro_ativo = False
+            logger.warning(f"SubscribeOfferBook({self.asset}, {self.exchange}) falhou: código {ret} "
+                           f"- livro de ofertas desligado, usando só o topo (TinyBook)")
+        else:
+            self.livro_ativo = True
+            logger.info(f"ProfitDLL: livro de ofertas assinado em {self.asset}")
+
+    def _processar_oferta(self, acao, posicao, lado, preco, qtd, agente, offer_id,
+                          arr_venda, arr_compra, ts_chegada):
+        """Aplica um evento do livro de ofertas no LivroOfertas e entrega (com limite de taxa)."""
+        if not self.livro_ativo:
+            return
+        if acao == AT_FULLBOOK:
+            lados = {}
+            for nome, bruto in (("venda", arr_venda), ("compra", arr_compra)):
+                if bruto is None:
+                    lados[nome] = (None, 0)
+                    continue
+                try:
+                    lados[nome] = decodifica_array_v2(bruto)
+                except ValueError as e:
+                    self.livro.erros += 1
+                    logger.warning(f"Livro de ofertas: array {nome} corrompido ({e}) - ignorado")
+                    lados[nome] = (None, 0)
+            self.livro.full_book(compra=lados["compra"][0], flags_compra=lados["compra"][1],
+                                 venda=lados["venda"][0], flags_venda=lados["venda"][1])
+        else:
+            self.livro.aplicar(acao, posicao, lado, preco, qtd, agente, offer_id)
+        self._livro_pendente = True
+        self._publicar(ts_chegada)
+
+    def _livro_utilizavel(self, agora: float) -> bool:
+        """
+        O livro de ofertas vale como book? Precisa estar ativo, ter algum nível e bater com o TinyBook
+        (melhor compra e melhor venda). Divergência é tolerada por TOLERANCIA_DIVERGENCIA (latência
+        entre os dois canais); passando disso volta ao topo até voltarem a bater.
+        """
+        if not self.livro_ativo:
+            return False
+        melhor_c, melhor_v = self.livro.melhor(LADO_COMPRA), self.livro.melhor(LADO_VENDA)
+        if melhor_c is None and melhor_v is None:
+            return False
+        if self._tiny_visto:
+            tiny_c = round(self.bid[0], 2) if self.bid else None
+            tiny_v = round(self.ask[0], 2) if self.ask else None
+            if (tiny_c, tiny_v) != (melhor_c, melhor_v):
+                if self._diverge_desde is None:
+                    self._diverge_desde = agora
+                if agora - self._diverge_desde > TOLERANCIA_DIVERGENCIA:
+                    if not self._em_divergencia:
+                        self._em_divergencia = True
+                        self.livro_divergencias += 1
+                        logger.warning(f"Livro de ofertas diverge do TinyBook há mais de "
+                                       f"{TOLERANCIA_DIVERGENCIA:g} s - voltando ao topo")
+                    return False
+                return True
+        self._diverge_desde = None
+        self._em_divergencia = False
+        return True
+
+    def _nome_para(self, codigo: int) -> str:
+        """Nome da corretora para o livro: JSON (--agentes) > DLL (em cache) > o código como texto."""
+        nome = self.nomes.get(codigo)
+        if nome:
+            return nome
+        if codigo in self._nomes_dll:
+            return self._nomes_dll[codigo]
+        agora = self._agora()
+        if agora - self._nomes_falha.get(codigo, float("-inf")) < 10.0:
+            return str(codigo)          # a DLL acabou de não saber: não insiste a cada snapshot
+        nome = self._nome_agente(codigo)
+        if nome == str(codigo):
+            self._nomes_falha[codigo] = agora
+        return nome
+
+    def _ts_book(self, ts_chegada: float) -> float:
+        """Horário do book: o do último negócio (relógio da B3) para não misturar relógios; senão a chegada."""
+        return self._ultimo_ts_negocio if self._ultimo_ts_negocio is not None else ts_chegada
+
+    def _niveis_do_livro(self, ts: float) -> list[BookLevel]:
+        """
+        Snapshot agregado do livro como BookLevel. O broker fica "" de propósito: o detector de Best
+        Offer do engine é alimentado pela corretora do 1º nível a cada snapshot, e aqui o nível tem
+        várias corretoras; elas vão em `corretoras`.
+        """
+        snap = self.livro.snapshot(self.niveis_livro, self._nome_para)
+        niveis = []
+        for itens, lado in ((snap["bids"], Side.BUY), (snap["asks"], Side.SELL)):
+            for n in itens:
+                niveis.append(BookLevel(price=n["price"], qty=n["qty"], broker="", side=lado, timestamp=ts,
+                                        ordens=n["ordens"], corretoras=n["corretoras"]))
+        return niveis
+
+    def _publicar(self, ts_chegada: Optional[float] = None, do_tinybook: bool = False):
+        """
+        Entrega o book ao engine. Livro de ofertas utilizável -> snapshot completo, no máximo uma vez a
+        cada `intervalo_livro` (o excedente fica pendente e sai em _descarregar_livro). Senão o topo do
+        TinyBook, a cada evento dele (como antes do livro de ofertas existir).
+        """
+        agora = self._agora()
+        if ts_chegada is None:
+            ts_chegada = time.time()
+        ts = self._ts_book(ts_chegada)
+        if self._livro_utilizavel(agora):
+            if agora - self._ultimo_envio_livro < self.intervalo_livro:
+                self._livro_pendente = True
+                return
+            niveis = self._niveis_do_livro(ts)
+            self._ultimo_envio_livro = agora
+            self._livro_pendente = False
+            self._modo_book = "ofertas"
+            self.livro_atualizacoes += 1
+        else:
+            self._livro_pendente = False
+            niveis = topo_para_niveis(self.bid, self.ask, ts)
+            if not niveis and not do_tinybook:
+                return          # sem topo para entregar: não apaga o book do engine
+            self._modo_book = "topo"
         if self.on_book:
             try:
-                self.on_book(topo_para_niveis(self.bid, self.ask, ts))
+                self.on_book(niveis)
             except Exception as e:
                 logger.error(f"Erro ao processar book: {e}")
+
+    def _descarregar_livro(self):
+        """
+        Chamado quando a fila fica ociosa: entrega a atualização retida pela taxa e reavalia a
+        coerência com o TinyBook (volta ao topo / retoma o livro sem esperar o próximo evento).
+        """
+        if not self.livro_ativo:
+            return
+        utilizavel = self._livro_utilizavel(self._agora())
+        if (utilizavel and (self._livro_pendente or self._modo_book != "ofertas")) \
+                or (not utilizavel and self._modo_book == "ofertas"):
+            self._publicar()

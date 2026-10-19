@@ -10,7 +10,9 @@ Protocolo (uma linha JSON por mensagem):
   filho → pai (stdout):
     {"tipo": "inicio", "ok": bool, "motivo": str|None}   resultado do start()
     {"tipo": "tick", "ts", "preco", "qtd", "corretora", "lado": "compra"|"venda", "passiva"}
-    {"tipo": "book", "ts", "niveis": [[preco, qtd, "compra"|"venda"], ...]}
+    {"tipo": "book", "ts", "niveis": [[preco, qtd, "compra"|"venda"(, ordens, corretoras)], ...]}
+        ordens (int) e corretoras ([[nome, qtd], ...]) são OPCIONAIS (livro de ofertas); o formato
+        antigo de 3 campos (TinyBook) continua valendo nos dois sentidos.
     {"tipo": "stats", "dados": {...ProfitDLLBridge.stats()}}   a cada 0,5 s
     {"tipo": "log", "nivel", "origem", "msg"}                  registros de log do filho
   pai → filho (stdin):
@@ -39,7 +41,8 @@ RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Contadores que acumulam no dia, somados entre processos filhos
 CONTADORES = ("trades_recebidos", "trades_editados", "trades_ignorados", "horarios_fallback",
-              "book_atualizacoes", "quedas_market", "avisos_partial")
+              "book_atualizacoes", "quedas_market", "avisos_partial",
+              "livro_atualizacoes", "livro_erros", "livro_divergencias")
 
 
 # ──────────────────────────────────────────────────────────────
@@ -56,13 +59,25 @@ def msg_para_tick(m: dict) -> Tick:
                 side=Side(m["lado"]), passive_broker=m.get("passiva") or "", asset=m.get("ativo") or "")
 
 
+def _nivel_para_msg(n: BookLevel) -> list:
+    base = [n.price, n.qty, n.side.value]
+    if n.ordens or n.corretoras:       # só o livro de ofertas leva os campos extras
+        base += [n.ordens, [list(c) for c in n.corretoras]]
+    return base
+
+
 def book_para_msg(niveis: list[BookLevel], ts: float) -> dict:
-    return {"tipo": "book", "ts": ts, "niveis": [[n.price, n.qty, n.side.value] for n in niveis]}
+    return {"tipo": "book", "ts": ts, "niveis": [_nivel_para_msg(n) for n in niveis]}
 
 
 def msg_para_book(m: dict) -> list[BookLevel]:
-    return [BookLevel(price=p, qty=q, broker="", side=Side(lado), timestamp=m["ts"])
-            for p, q, lado in m["niveis"]]
+    saida = []
+    for p, q, lado, *extra in m["niveis"]:
+        ordens = int(extra[0]) if extra else 0
+        corretoras = [[str(c[0]), int(c[1])] for c in extra[1]] if len(extra) > 1 and extra[1] else []
+        saida.append(BookLevel(price=p, qty=q, broker="", side=Side(lado), timestamp=m["ts"],
+                               ordens=ordens, corretoras=corretoras))
+    return saida
 
 
 # ──────────────────────────────────────────────────────────────
@@ -235,6 +250,7 @@ class PonteDLLProcesso:
         vivo = proc is not None and proc.poll() is None
         st = {
             "conectado": False, "estado_market": None, "fila_pendente": 0, "bid": None, "ask": None,
+            "livro_ativo": False, "livro_ordens": 0,
             "estados": {"login": None, "ativacao": None, "market": None}, "latencia_ms": None,
             "ativo": self.asset, "bolsa": self.exchange,
             "dll_path": mascarar_caminho(os.getenv("PROFITDLL_PATH", CAMINHO_PADRAO_DLL)),
