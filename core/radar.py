@@ -1,9 +1,10 @@
 """
 RADAR DE FLUXO — icebergs de todas as ações
 ===========================================
-Um DefesaDetector por papel (criado no primeiro negócio dele). Cada iceberg confirmado vira um
-registro do dia, atualizado pelos eventos do detector: segurou (4 ticks a favor), rompida, virou
-sniper. Spec: docs/superpowers/specs/2026-10-17-radar-design.md.
+Um DefesaDetector por papel (criado no primeiro negócio dele). O giro do iceberg é a
+corretora repondo o lote no mesmo preço (on_renovacao), não cada agressão. Cada iceberg
+confirmado vira um registro do dia, atualizado pelos eventos do detector: segurou
+(4 ticks a favor), rompida, virou sniper. Spec: docs/superpowers/specs/2026-10-17-radar-design.md.
 """
 
 from __future__ import annotations
@@ -44,14 +45,27 @@ class Radar:
             self.reset()
         self._dia = dia
         ativo = tick.asset
+        self._negocios += 1
+        self._detector(ativo).on_tick(tick)
+
+    def _detector(self, ativo: str):
         det = self._detectores.get(ativo)
         if det is None:
             det = DefesaDetector(self.cfg)
             det.ao_evento = lambda ev, d, ativo=ativo: self._ao_evento(ativo, ev, d)
             det.escrever_log = False      # com ~650 papéis inundaria o log; os eventos ficam na lista
             self._detectores[ativo] = det
-        self._negocios += 1
-        det.on_tick(tick)
+        return det
+
+    def on_renovacao(self, ativo: str, corretora: str, lado: str, preco: float, ts: float) -> None:
+        """Giro vindo do livro de ofertas: a corretora repôs o lote neste preço."""
+        if not ativo:
+            return
+        dia = _dia(ts)
+        if self._dia is not None and dia != self._dia:
+            self.reset()
+        self._dia = dia
+        self._detector(ativo).on_renovacao(corretora, lado, preco, ts)
 
     def envolver(self, add_tick, engine):
         """Entrega todo negócio ao radar e só o do papel aberto (engine.asset) ao motor."""

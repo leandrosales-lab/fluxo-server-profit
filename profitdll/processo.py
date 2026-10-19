@@ -65,6 +65,11 @@ def msg_para_book(m: dict) -> list[BookLevel]:
             for p, q, lado in m["niveis"]]
 
 
+def renovacao_para_msg(ativo: str, corretora: str, lado: str, preco: float, ts: float) -> dict:
+    return {"tipo": "renovacao", "ativo": ativo, "corretora": corretora, "lado": lado,
+            "preco": preco, "ts": ts}
+
+
 # ──────────────────────────────────────────────────────────────
 # PAI: mesma interface da ProfitDLLBridge para o main.py e o server.py
 # ──────────────────────────────────────────────────────────────
@@ -83,6 +88,7 @@ class PonteDLLProcesso:
         self.folga = folga                         # além do timeout da DLL: subir o Python e carregar a DLL
         self.on_tick: Optional[Callable[[Tick], None]] = None
         self.on_book: Optional[Callable[[list[BookLevel]], None]] = None
+        self.on_renovacao: Optional[Callable[..., None]] = None
         self.motivo_falha: Optional[str] = None
         if comando is None:
             comando = [sys.executable, "-X", "utf8", "-m", "profitdll.processo", "--asset", self.asset,
@@ -213,6 +219,10 @@ class PonteDLLProcesso:
         elif tipo == "book":
             if self.on_book:
                 self.on_book(msg_para_book(m))
+        elif tipo == "renovacao":
+            if self.on_renovacao:
+                self.on_renovacao(m.get("ativo") or "", m.get("corretora") or "", m.get("lado") or "",
+                                  float(m.get("preco") or 0), float(m.get("ts") or 0))
         elif tipo == "stats":
             with self._trava:
                 self._ultimo = m.get("dados") or {}
@@ -312,6 +322,7 @@ def main_filho(argv=None, fabrica_ponte=None, entrada=None, saida=None) -> int:
                   if extras is not None else fabrica_ponte(args.asset, args.agentes, timeout=args.timeout))
         bridge.on_tick = lambda t: enviar(tick_para_msg(t))
         bridge.on_book = lambda niveis: enviar(book_para_msg(niveis, time.time()))
+        bridge.on_renovacao = lambda *a: enviar(renovacao_para_msg(*a))
         ok = bridge.start()
         enviar({"tipo": "inicio", "ok": ok, "motivo": bridge.motivo_falha})
         if not ok:

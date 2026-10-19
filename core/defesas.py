@@ -79,7 +79,7 @@ class Defesa:
     tipo: str = ""                 # "" | iceberg | sniper | fantasma
     estado: str = "candidata"      # candidata | alerta | confirmada | rompida
     vol_passivo: int = 0
-    giros: int = 0                 # ordens originais executadas contra ela no preço
+    giros: int = 0                 # vezes que a corretora repôs o lote no mesmo preço (livro de ofertas)
     vol_agredido: int = 0
     agressoes: int = 0             # ordens originais dela no preço, do lado defendido
     agressoes_vazio: int = 0       # agressões com o lado dela vazio no preço (fantasma)
@@ -201,10 +201,12 @@ class DefesaDetector:
         if tick.passive_broker:
             d = self._obter(tick.passive_broker, lado_pas, n, tick.price, ts)
             d.vol_passivo += tick.qty
+            # Giro não é a agressão: 300 de um lote de 1.500 que continua no book
+            # é o mesmo lote. O giro entra por on_renovacao, quando o livro mostra
+            # a corretora de volta no preço depois de o visível acabar.
             novo_giro = d.ordem_passiva != ordem
             if novo_giro:
                 d.ordem_passiva = ordem
-                d.giros += 1
             d.agressores[tick.broker] = None
             self._atividade(d, ts, passiva=novo_giro)
         self._vol_nivel[(lado_pas, n)] += tick.qty
@@ -224,6 +226,15 @@ class DefesaDetector:
                 d.agressoes_vazio += 1
         self._atividade(d, ts)
         self._registrar_agressao(lado_agr, _Agressao(n, ordem[0], tick.broker, tick.passive_broker))
+
+    def on_renovacao(self, corretora: str, lado: str, preco: float, ts: float) -> None:
+        """A corretora repôs oferta no mesmo preço depois que o lote visível foi consumido."""
+        if lado not in (COMPRA, VENDA) or not corretora or preco <= 0:
+            return
+        n = self.nivel(preco)
+        d = self._obter(corretora, lado, n, preco, ts)
+        d.giros += 1
+        self._atividade(d, ts)
 
     def on_book(self, melhor_compra: Optional[float], melhor_venda: Optional[float]) -> None:
         """Topo do book (sem corretora). Fila formada: o topo do lado oposto parou no preço de um
