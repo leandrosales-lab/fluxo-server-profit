@@ -56,6 +56,34 @@ export function textoEvento(ev, casas = 2) {
 }
 const $ = (id) => document.getElementById(id);
 
+const ALTURA_LINHA_BOOK = 20, NIVEIS_MAX_BOOK = 15, NIVEIS_MIN_BOOK = 3;
+
+/** Quantos níveis cabem num lado do Book (sem rolagem); sem medida ainda (altura 0), 12. */
+export function linhasQueCabem(altura) {
+  if (!(altura > 0)) return 12;
+  return Math.max(NIVEIS_MIN_BOOK, Math.min(NIVEIS_MAX_BOOK, Math.floor(altura / ALTURA_LINHA_BOOK)));
+}
+
+/** Rótulo discreto da origem do Book (contrato de /book: depth + fonte). */
+export function rotuloFonteBook(b) {
+  if (!b || b.depth === "none") return "sem livro nesta fonte";
+  if (b.fonte === "ofertas") return "livro completo";
+  if (b.fonte === "topo" || b.depth === "top") return "só topo";
+  return "níveis agregados";
+}
+
+/** Quantidade do nível: inteiro até 99.999; acima, "123 mil" / "1,2 mi". */
+export function qtdBook(q) {
+  if (q == null) return "—";
+  return q >= 100000 ? compacto(q).replace(/^\+/, "") : inteiro(q);
+}
+
+/** Corretoras do nível ([[nome, qtd], …] da maior para a menor): até 3 nomes, ou só a maior em coluna estreita. */
+export function corretorasBook(lista, so1 = false) {
+  if (!Array.isArray(lista) || !lista.length) return "—";
+  return lista.slice(0, so1 ? 1 : 3).map((c) => c[0]).join(", ");
+}
+
 /** "Absorção compradora", "Iceberg vendedor": padrão + direção, com o gênero do nome. */
 export function tituloSinal(s) {
   const [nome, genero] = NOME[s.pattern] || [s.pattern, "m"];
@@ -134,11 +162,45 @@ export function criarPaineis() {
     });
   }
 
-  function topo(book, casas) {
-    const bids = book.bids || [], asks = book.asks || [];
-    $("spread").textContent = bids.length && asks.length
-      ? `spread ${preco(asks[0].price - bids[0].price, casas)}   ${preco(bids[0].price, casas)} × ${preco(asks[0].price, casas)}`
-      : book.depth === "none" ? "sem livro nesta fonte" : "—";
+  // Book: escada de preços. A quantidade de cada preço guarda-se para piscar só o que mudou.
+  const qtdAnterior = new Map();
+  function painelBook(b, ultimo, casas) {
+    const bids = b.bids || [], asks = b.asks || [];
+    const total = bids.length + asks.length;
+    $("book-fonte").textContent = rotuloFonteBook(b);
+    $("book-ultimo").textContent = preco(ultimo, casas);
+    $("book-spread").textContent = bids.length && asks.length ? `spread ${preco(asks[0].price - bids[0].price, casas)}` : "spread —";
+    const msg = $("book-msg");
+    msg.hidden = total > 0;
+    msg.textContent = total > 0 ? "" : b.depth === "none" ? "Sem livro nesta fonte." : "Livro vazio.";
+    const nome = $("book-asks").closest(".book-lado");
+    const n = linhasQueCabem(nome.clientHeight);
+    const so1 = $("book").clientWidth < 260;      // coluna estreita: só a maior corretora de cada nível
+    const vis = { asks: asks.slice(0, n), bids: bids.slice(0, n) };
+    const maior = Math.max(1, ...vis.asks.map((x) => x.qty), ...vis.bids.map((x) => x.qty));
+    const novas = new Map();
+    for (const [lado, tbody, classe] of [["asks", $("book-asks"), "venda"], ["bids", $("book-bids"), "compra"]]) {
+      const niveis = lado === "asks" ? [...vis.asks].reverse() : vis.bids;   // maior preço no topo nos dois lados
+      atualizarLinhas(tbody, niveis, (x) => {
+        const chave = `${lado}|${x.price}`;
+        novas.set(chave, x.qty);
+        const mudou = qtdAnterior.has(chave) && qtdAnterior.get(chave) !== x.qty;
+        return { classe: `${classe}-n${mudou ? " mudou" : ""}`, celulas: [
+          { t: preco(x.price, casas), c: `num ${classe}` },
+          { t: qtdBook(x.qty), c: "num qtd" },
+          { t: x.ordens == null ? "—" : inteiro(x.ordens), c: "num" },
+          { t: corretorasBook(x.corretoras, so1), c: "corr" }] };
+      });
+      niveis.forEach((x, i) => {
+        const tr = tbody.rows[i];
+        const w = `${Math.max(2, Math.round(100 * x.qty / maior))}%`;
+        if (tr.cells[1].style.getPropertyValue("--w") !== w) tr.cells[1].style.setProperty("--w", w);
+        const dica = (x.corretoras || []).map(([c, q]) => `${c} ${inteiro(q)}`).join(" · ");
+        if (tr.cells[3].title !== dica) tr.cells[3].title = dica;
+      });
+    }
+    qtdAnterior.clear();
+    novas.forEach((q, k) => qtdAnterior.set(k, q));
   }
 
   function defesas(estado, casas, agora) {
@@ -163,13 +225,13 @@ export function criarPaineis() {
   }
 
   return {
-    atualizar({ estado, sinais, trades, book, casas, agora, tf }) {
+    atualizar({ estado, sinais, trades, book: bookDados, casas, agora, tf }) {
       const filtrados = filtro === "todos" ? sinais : sinais.filter((s) => s.pattern === filtro);
       $("sinais-meta").textContent = `${filtrados.length} hoje`;
       manchete(filtrados[filtrados.length - 1], estado.resumo?.vwap, casas, agora, tf);
       anteriores(filtrados.slice(-5, -1).reverse(), casas);
       fita(trades, estado.asset, casas);
-      topo(book, casas);
+      painelBook(bookDados, estado.resumo?.ultimo, casas);
       defesas(estado, casas, agora);
       saldo(estado.resumo?.saldo_corretoras || []);
     },
