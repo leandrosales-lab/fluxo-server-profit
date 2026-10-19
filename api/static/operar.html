@@ -34,6 +34,15 @@
       </div>
       <div id="grafico" class="grafico"></div>
     </section>
+    <section class="secao book" id="book">
+      <div class="cab"><h2>Book</h2><span class="acoes meta" id="book-fonte"></span></div>
+      <table class="book-tab book-cab" aria-hidden="true"><colgroup><col><col><col><col></colgroup>
+        <thead><tr><th class="num">Preço</th><th class="num">Qtd</th><th class="num">Ord</th><th title="Corretoras">Corr.</th></tr></thead></table>
+      <p class="book-msg meta" id="book-msg" hidden></p>
+      <div class="book-lado asks"><table class="book-tab" aria-label="Book, ofertas de venda: preço, quantidade, ordens e corretoras"><colgroup><col><col><col><col></colgroup><tbody id="book-asks"></tbody></table></div>
+      <div class="book-meio" id="book-meio"><span class="b-ultimo mono" id="book-ultimo" title="Último negócio">—</span><span class="meta" id="book-spread">—</span></div>
+      <div class="book-lado bids"><table class="book-tab" aria-label="Book, ofertas de compra: preço, quantidade, ordens e corretoras"><colgroup><col><col><col><col></colgroup><tbody id="book-bids"></tbody></table></div>
+    </section>
     <section class="secao direita">
       <div class="bloco-sinais">
         <div class="cab"><h2>Sinais</h2><span class="meta" id="sinais-meta"></span>
@@ -57,7 +66,6 @@
         </section>
         <section class="secao">
           <div class="cab"><h2>Defesas</h2><span class="meta" id="defesas-nota"></span></div>
-          <table><tbody><tr class="spread"><td id="spread">—</td></tr></tbody></table>
           <table class="defesas def"><colgroup><col><col><col><col></colgroup>
             <thead><tr><th>Tipo</th><th>Corretora</th><th class="num">Preço</th><th class="num">Há</th></tr></thead>
             <tbody id="defesas"></tbody></table>

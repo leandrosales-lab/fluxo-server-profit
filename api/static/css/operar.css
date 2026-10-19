@@ -7,6 +7,32 @@
 .cab { white-space: nowrap; overflow: hidden; }
 @media (max-width: 1699px) { #legenda { display: none; } }
 
+/* Corpo em 3 colunas: gráfico | book | sinais, T&T e defesas (a da direita não encolhe além do que já tinha) */
+.corpo { grid-template-columns: minmax(0, 1fr) clamp(220px, 17vw, 300px) clamp(560px, 42vw, 760px); }
+
+/* Book: asks em cima (o mais barato colado ao meio), último preço e spread no meio, bids embaixo */
+.book { overflow: hidden; }
+.book-tab { font-size: 12.5px; line-height: 20px; }
+.book-tab th, .book-tab td { padding: 0 4px; }
+.book-tab th:first-child, .book-tab td:first-child { padding-left: 12px; }
+.book-tab th:last-child, .book-tab td:last-child { padding-right: 8px; }
+.book-tab col:nth-child(1) { width: 56px; } .book-tab col:nth-child(2) { width: 74px; } .book-tab col:nth-child(3) { width: 28px; }
+.book-lado { flex: 1 1 0; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+.book-lado.asks { justify-content: flex-end; }
+.book-tab td:nth-child(3) { color: var(--faint); }
+.book-tab td:nth-child(4) { font-family: "IBM Plex Sans", sans-serif; color: var(--muted); }
+.book-tab td.qtd { background: linear-gradient(to left, var(--cor-barra) var(--w, 0%), transparent var(--w, 0%)); }
+.book-tab tr.compra-n { --cor-barra: color-mix(in srgb, var(--buy) 26%, transparent); }
+.book-tab tr.venda-n { --cor-barra: color-mix(in srgb, var(--sell) 26%, transparent); }
+.book-tab tr.mudou td:nth-child(2) { animation: book-pisca 450ms ease-out; }
+@keyframes book-pisca { from { box-shadow: inset 0 0 0 1px var(--accent); } to { box-shadow: inset 0 0 0 1px transparent; } }
+@media (prefers-reduced-motion: reduce) { .book-tab tr.mudou td:nth-child(2) { animation: none; } }
+.book-meio { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; height: 30px; padding: 4px 8px 0 12px;
+  background: var(--raise); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); white-space: nowrap; overflow: hidden; }
+.b-ultimo { font-size: 15px; font-weight: 600; }
+.book-msg { padding: 8px 12px; white-space: normal; }
+.book .cab .meta { white-space: nowrap; }
+
 .secao.direita { display: grid; grid-template-rows: auto minmax(0, 1fr); }
 .manchete { margin: 2px 0 8px; padding: 4px 16px 8px 14px; border-left: 2px solid var(--rule); }
 .manchete.compra-dir { border-left-color: var(--buy); }
@@ -25,7 +51,6 @@
 .bloco-baixo > .secao:last-child { overflow-y: auto; }
 .bloco-baixo > .secao:first-child { border-left: 0; }
 .bloco-baixo td { line-height: 21px; }
-tr.spread td { color: var(--faint); font-size: 12px; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
 td.barra-cel span { display: block; height: 3px; }
 /* Hora, preço, qtd e agressor com respiro de 4px: a largura que sobra vai para os nomes das corretoras */
 .fita th:nth-child(-n+4), .fita td:nth-child(-n+4) { padding-left: 4px; padding-right: 4px; }
@@ -49,7 +74,7 @@ table.eventos td { font-size: 12px; color: var(--muted); border-bottom: 0; white
 .def col:nth-child(1) { width: 120px; } .def col:nth-child(3) { width: 58px; } .def col:nth-child(4) { width: 68px; }
 .eventos col:nth-child(1) { width: 92px; }
 @media (max-width: 1700px) {
-  .corpo { grid-template-columns: minmax(0, 1fr) clamp(560px, 45vw, 740px); }
+  .corpo { grid-template-columns: minmax(0, 1fr) clamp(220px, 17vw, 300px) clamp(560px, 45vw, 740px); }
   .bloco-baixo { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); }
   .bloco-baixo table { font-size: 12px; }
   .bloco-baixo th, .bloco-baixo td { padding: 0 4px; }
