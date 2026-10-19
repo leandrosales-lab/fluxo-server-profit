@@ -125,7 +125,7 @@ function bookSintetico(n) {
   return { depth: "full", fonte: "ofertas", bids: lado(59.05, -1), asks: lado(59.07, 1), updated: 1 };
 }
 verificacoes.push(["operar: book", async (page) => {
-  let dados = bookSintetico(15);
+  let dados = bookSintetico(20);
   await page.route("**/book", (r) => r.fulfill({ json: dados }));
   for (const [w, h] of [[1920, 1080], [1536, 864], [1280, 720]]) {
     await page.setViewportSize({ width: w, height: h });
@@ -133,26 +133,30 @@ verificacoes.push(["operar: book", async (page) => {
     await page.waitForFunction(() => document.querySelectorAll("#book-asks tr").length > 0, null, { timeout: 10000 });
     const m = await page.evaluate(() => {
       const d = document.documentElement, b = document.getElementById("book"), g = document.getElementById("grafico");
-      const topo = (id) => +document.querySelector(`#${id} tr`).cells[0].textContent.replace(",", ".");
+      const num = (t) => +t.replace(/\./g, "").replace(",", ".");
+      const bids = [...document.querySelectorAll("#book-bids tr")], asks = [...document.querySelectorAll("#book-asks tr")];
+      const pb = bids.map((r) => num(r.cells[3].textContent)), pa = asks.map((r) => num(r.cells[0].textContent));
       const lados = [...document.querySelectorAll(".book-lado")];
-      return { sw: d.scrollWidth, w: innerWidth, asks: document.querySelectorAll("#book-asks tr").length,
-        bids: document.querySelectorAll("#book-bids tr").length, bw: b.clientWidth, cw: g.clientWidth,
+      return { sw: d.scrollWidth, w: innerWidth, asks: asks.length, bids: bids.length, bw: b.clientWidth, cw: g.clientWidth,
         cortado: lados.some((l) => l.scrollHeight > l.clientHeight + 1),
-        // asks: maior preço no topo e o menor colado ao meio; bids: maior preço colado ao meio
-        asksDesc: topo("book-asks") > +document.querySelector("#book-asks tr:last-child").cells[0].textContent.replace(",", "."),
-        bidsDesc: topo("book-bids") > +document.querySelector("#book-bids tr:last-child").cells[0].textContent.replace(",", "."),
+        // compra à esquerda (preço encostado no centro, melhor bid na 1ª linha), venda à direita (melhor ask na 1ª linha)
+        bidsDesc: pb.every((v, i) => i === 0 || v < pb[i - 1]), asksAsc: pa.every((v, i) => i === 0 || v > pa[i - 1]),
+        alinhadas: bids.every((r, i) => !asks[i] || Math.abs(r.getBoundingClientRect().top - asks[i].getBoundingClientRect().top) < 1),
+        esquerda: bids[0].cells[3].getBoundingClientRect().right <= asks[0].cells[0].getBoundingClientRect().left + 1,
         fonte: document.getElementById("book-fonte").textContent, spread: document.getElementById("book-spread").textContent,
-        ordens: document.querySelector("#book-asks tr").cells[2].textContent,
-        corr: document.querySelector("#book-asks tr").cells[3].textContent,
+        ordens: asks[0].cells[2].textContent, ordensB: bids[0].cells[1].textContent,
+        corr: asks[0].cells[3].textContent, corrB: bids[0].cells[0].textContent,
+        tot: document.getElementById("book-tot-bids").textContent,
         rotulos: [...document.querySelectorAll(".book-tab[aria-label]")].length };
     });
     checar(m.sw <= m.w, `book ${w}×${h}: sem rolagem horizontal`);
-    checar(m.asks >= 8 && m.asks <= 15 && m.asks === m.bids, `book ${w}×${h}: ${m.asks} níveis por lado, sem rolagem`);
+    checar(m.asks >= 8 && m.asks <= 20 && m.asks === m.bids, `book ${w}×${h}: ${m.asks} níveis por lado, sem rolagem`);
     checar(!m.cortado, `book ${w}×${h}: nenhum nível cortado`);
-    checar(m.asksDesc && m.bidsDesc, `book ${w}×${h}: maior preço no topo nos dois lados`);
+    checar(m.bidsDesc && m.asksAsc && m.esquerda, `book ${w}×${h}: compra à esquerda (decrescente) e venda à direita (crescente)`);
+    checar(m.alinhadas, `book ${w}×${h}: níveis de compra e venda alinhados na mesma linha`);
     checar(m.fonte === "livro completo" && m.spread === "spread 0,02", `book ${w}×${h}: fonte "${m.fonte}", ${m.spread}`);
-    checar(/^\d+$/.test(m.ordens) && m.corr.length > 0 && m.rotulos === 2, `book ${w}×${h}: ordens, corretoras e aria-label`);
-    checar(m.cw >= 440, `book ${w}×${h}: gráfico ainda com ${m.cw}px`);
+    checar(/^\d+$/.test(m.ordens) && /^\d+$/.test(m.ordensB) && m.corr.length > 0 && m.corrB.length > 0 && m.rotulos === 2 && m.tot.length > 0, `book ${w}×${h}: ordens, corretoras, total e aria-label`);
+    checar(m.cw >= 320, `book ${w}×${h}: gráfico ainda com ${m.cw}px`);
     for (const tema of ["escuro", "claro"]) {
       await page.evaluate((t) => { document.documentElement.dataset.tema = t; }, tema);
       await page.screenshot({ path: path.join(SAIDA, `book-${w}x${h}-${tema}.png`) });
@@ -162,7 +166,7 @@ verificacoes.push(["operar: book", async (page) => {
   dados = { depth: "top", fonte: "topo", bids: [{ price: 59.05, qty: 7900, broker: "" }], asks: [{ price: 59.07, qty: 5100, broker: "" }], updated: 1 };
   await page.waitForFunction(() => document.getElementById("book-fonte").textContent === "só topo", null, { timeout: 5000 });
   checar(await page.locator("#book-asks tr").count() === 1, "só topo: um nível por lado");
-  checar((await page.locator("#book-asks tr").first().locator("td").nth(3).textContent()) === "—", "só topo: corretoras como —");
+  checar((await page.locator("#book-asks tr").first().locator("td").nth(3).textContent()) === "—" && (await page.locator("#book-bids tr").first().locator("td").nth(0).textContent()) === "—", "só topo: corretoras como — nos dois lados");
   dados = { depth: "none", bids: [], asks: [], updated: 0 };
   await page.waitForFunction(() => document.getElementById("book-fonte").textContent === "sem livro nesta fonte", null, { timeout: 5000 });
   checar(await page.locator("#book-asks tr").count() === 0 && await page.isVisible("#book-msg"), "sem livro: níveis somem e a mensagem aparece");

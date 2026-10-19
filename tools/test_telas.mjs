@@ -115,7 +115,8 @@ assert.deepEqual(medidaSinal({ pattern: "Absorção", confidence: 0.84, acerto: 
 // Book: níveis que cabem, rótulo da fonte, quantidade e corretoras
 assert.equal(linhasQueCabem(0), 12);
 assert.equal(linhasQueCabem(240), 12);
-assert.equal(linhasQueCabem(600), 15);   // teto de 15 níveis por lado
+assert.equal(linhasQueCabem(600), 20);   // teto de 20 níveis por lado
+assert.equal(linhasQueCabem(310), 15);
 assert.equal(linhasQueCabem(30), 3);     // piso de 3
 assert.equal(rotuloFonteBook({ depth: "full", fonte: "ofertas" }), "livro completo");
 assert.equal(rotuloFonteBook({ depth: "top", fonte: "topo" }), "só topo");
