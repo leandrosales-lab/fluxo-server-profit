@@ -19,7 +19,7 @@ export function textoUltimoGiro(r, agora) {
 /** Uma linha da lista: papel, corretora, lado, preço, giros, volume, desde, último giro, situação, acerto histórico. */
 export function linhaRadar(r, agora = null) {
   return {
-    classe: r.situacao === "segurando" ? "destaque" : "",
+    classe: [r.situacao === "segurando" ? "destaque" : "", r.grupo_inicio ? "grupo-inicio" : ""].filter(Boolean).join(" "),
     celulas: [
       { t: r.ativo }, { t: r.corretora }, { t: r.lado, c: r.lado },
       { t: preco(r.preco, 2), c: `num ${r.lado}` }, { t: inteiro(r.giros), c: "num" },

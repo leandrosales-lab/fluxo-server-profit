@@ -4404,6 +4404,43 @@ def test_radar_ordem_giros():
         err("limite + ordem")
 
 
+def test_radar_agrupa_papel():
+    print(f"\n{AMARELO}═══ TESTE 51: Radar — corretoras do mesmo papel e preço agrupadas ═══{RESET}")
+    from core.radar import Radar
+    radar = Radar(EngineConfig(), calibracao_tabela={})
+    base = 1_000_000.0
+    linhas = [("MOTV3", "UBS", "venda", 20.70, 4, 5000), ("VALE3", "BTG", "compra", 60.0, 5, 100),
+              ("MOTV3", "XP", "venda", 20.70, 2, 9000), ("MOTV3", "CITIGROUP", "venda", 20.70, 3, 300),
+              ("MOTV3", "UBS", "compra", 20.60, 2, 100), ("ABEV3", "XP", "compra", 14.0, 4, 100)]
+    for ativo, corr, lado, preco, giros, vol in linhas:
+        radar._seq += 1
+        i = radar._seq
+        radar._registros[i] = {"ativo": ativo, "corretora": corr, "lado": lado, "preco": preco, "giros": giros,
+                               "volume": vol, "confirmado_as": base, "ultimo_giro_as": base, "situacao": "segurando",
+                               "desfecho_as": None, "segurou_as": None, "rompeu_as": None}
+        chave = (ativo, corr, lado, int(preco * 100))
+        radar._chave_de[i], radar._atual[chave] = chave, i
+    lst = radar.lista(ordem="giros")
+    quem = [(r["ativo"], r["corretora"], r["preco"]) for r in lst]
+    esperado = [("VALE3", "BTG", 60.0),                                              # grupo com 5 giros
+                ("MOTV3", "UBS", 20.70), ("MOTV3", "CITIGROUP", 20.70), ("MOTV3", "XP", 20.70),   # 4 giros (UBS), junto
+                ("ABEV3", "XP", 14.0),                                                # também 4 giros, mas volume menor
+                ("MOTV3", "UBS", 20.60)]
+    if quem == esperado:
+        ok("MOTV3 @ 20,70: UBS, CITIGROUP e XP juntas, em ordem de giros (4, 3, 2); grupos por giros da 1ª corretora")
+    else:
+        err(f"agrupamento: {quem}")
+    inicios = [r["grupo_inicio"] for r in lst]
+    if inicios == [True, True, False, False, True, True]:
+        ok("A 1ª linha de cada grupo vem marcada (a tela desenha o separador)")
+    else:
+        err(f"grupo_inicio: {inicios}")
+    if "grupo_inicio" not in radar.lista()[0]:
+        ok("Fora da ordem por giros a lista não leva a marca de grupo")
+    else:
+        err("grupo_inicio vazou na ordem padrão")
+
+
 def test_giro_por_posicao():
     print(f"\n{AMARELO}═══ TESTE 49: Giro com o livro real — EDIT/DELETE só trazem lado e posição (sem offer_id) ═══{RESET}")
     from profitdll.bridge import (ProfitDLLBridge, AGRESSAO_VENDA, OFERTA_ADD, OFERTA_EDIT, OFERTA_DELETE,
@@ -4618,6 +4655,7 @@ def main():
     test_radar_janela()
     test_giro_por_posicao()
     test_radar_ordem_giros()
+    test_radar_agrupa_papel()
     test_livro_protocolo_e_api()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")

@@ -142,6 +142,10 @@ assert.equal(textoSituacao({ situacao: "virou sniper", desfecho_as: 1792155600 }
 const lr = linhaRadar({ ativo: "RENT3", corretora: "AGORA", lado: "compra", preco: 50.36, giros: 20, volume: 8500,
   confirmado_as: 1792155600, situacao: "segurando", acerto: { taxa: 0.408 } });
 assert.equal(lr.classe, "destaque");
+assert.equal(linhaRadar({ ...{ ativo: "X", corretora: "UBS", lado: "venda", preco: 10, giros: 2, volume: 1, confirmado_as: 1,
+  situacao: "segurando" }, grupo_inicio: true }).classe, "destaque grupo-inicio");
+assert.equal(linhaRadar({ ativo: "X", corretora: "UBS", lado: "venda", preco: 10, giros: 2, volume: 1, confirmado_as: 1,
+  situacao: "segurou", grupo_inicio: false }).classe, "");
 assert.deepEqual(lr.celulas.map((c) => c.t), ["RENT3", "AGORA", "compra", "50,36", "20", "8.500", "10:00:00", "—", "segurando", "41%"]);
 // Último giro: "há 40 s" / "há 3 min" em relação ao relógio dos dados; sem giro ou sem relógio, "—"
 assert.equal(textoUltimoGiro({ ultimo_giro_as: 1000 }, 1040), "há 40 s");

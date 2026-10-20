@@ -9,6 +9,7 @@
 .lista-radar col:nth-child(7) { width: 100px; }
 .lista-radar col:nth-child(8) { width: 96px; }
 .lista-radar col:nth-child(10) { width: 80px; }
+tr.grupo-inicio td { border-top: 1px solid var(--rule); }
 #janelas { display: flex; gap: 14px; margin-left: 14px; }
 #lista tr { cursor: pointer; }
 #lista tr:hover { background: var(--raise); }
