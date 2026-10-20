@@ -72,6 +72,24 @@ export function rotuloFonteBook(b) {
   return "níveis agregados";
 }
 
+/**
+ * Book de ofertas: cada ordem na ordem da fila (melhor preço primeiro; dentro do preço, a mais antiga primeiro).
+ * `niveis` = [{price, qty, fila: [[corretora, qtd], …], corretoras}, …]. Nível sem fila (fonte só com topo ou
+ * livro antigo) entra como uma linha por corretora agregada. Devolve até `limite` linhas
+ * {price, corretora, qty, pos, inicio} (inicio = 1ª linha do preço).
+ */
+export function linhasOfertas(niveis, limite) {
+  const saida = [];
+  for (const x of niveis || []) {
+    const ordens = x.fila && x.fila.length ? x.fila : (x.corretoras || []);
+    ordens.forEach(([corretora, qty], i) => {
+      if (saida.length < limite) saida.push({ price: x.price, corretora, qty, pos: i + 1, inicio: i === 0 });
+    });
+    if (saida.length >= limite) break;
+  }
+  return saida;
+}
+
 /** Quantidade do nível: inteiro até 99.999; acima, "123 mil" / "1,2 mi". */
 export function qtdBook(q) {
   if (q == null) return "—";
@@ -165,6 +183,20 @@ export function criarPaineis() {
   // Book: compra (esquerda) e venda (direita), melhor preço na 1ª linha de cada coluna. A quantidade de cada preço
   // fica guardada entre ciclos para piscar só o que mudou.
   const qtdAnterior = new Map();
+  const CHAVE_MODO_BOOK = "fluxo.bookModo";
+  let modoBook = "niveis";
+  try { if (localStorage.getItem(CHAVE_MODO_BOOK) === "ofertas") modoBook = "ofertas"; } catch { /* padrão */ }
+  function marcarModoBook() {
+    document.querySelectorAll("#book-modos [data-modo]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.modo === modoBook)));
+    document.querySelectorAll(".book-th-ord").forEach((th) => { th.textContent = modoBook === "ofertas" ? "Pos" : "Ord"; });
+  }
+  marcarModoBook();
+  document.querySelectorAll("#book-modos [data-modo]").forEach((b) => b.addEventListener("click", () => {
+    modoBook = b.dataset.modo;
+    marcarModoBook();
+    qtdAnterior.clear();
+    try { localStorage.setItem(CHAVE_MODO_BOOK, modoBook); } catch { /* vale só nesta visita */ }
+  }));
   function painelBook(b, ultimo, casas) {
     const bids = b.bids || [], asks = b.asks || [];
     const total = bids.length + asks.length;
@@ -176,6 +208,7 @@ export function criarPaineis() {
     msg.textContent = total > 0 ? "" : b.depth === "none" ? "Sem livro nesta fonte." : "Livro vazio.";
     const n = linhasQueCabem($("book-bids").closest(".book-lado").clientHeight);
     const so1 = $("book-bids").closest(".book-col").clientWidth < 230;   // coluna estreita: só a maior corretora
+    if (modoBook === "ofertas") return painelOfertas(bids, asks, n, so1, casas);
     const vis = { bids: bids.slice(0, n), asks: asks.slice(0, n) };
     const maior = Math.max(1, ...vis.asks.map((x) => x.qty), ...vis.bids.map((x) => x.qty));
     const novas = new Map();
@@ -199,6 +232,36 @@ export function criarPaineis() {
       });
       const soma = niveis.reduce((t, x) => t + x.qty, 0);
       $(`book-tot-${lado}`).textContent = niveis.length ? `${niveis.length} níveis · ${qtdBook(soma)}` : "";
+    }
+    qtdAnterior.clear();
+    novas.forEach((q, k) => qtdAnterior.set(k, q));
+  }
+
+  // Book de ofertas: uma linha por ordem (corretora, posição na fila, quantidade, preço)
+  function painelOfertas(bids, asks, n, so1, casas) {
+    const novas = new Map();
+    const vis = { bids: linhasOfertas(bids, n), asks: linhasOfertas(asks, n) };
+    const maior = Math.max(1, ...vis.asks.map((x) => x.qty), ...vis.bids.map((x) => x.qty));
+    for (const [lado, tbody, classe] of [["bids", $("book-bids"), "compra"], ["asks", $("book-asks"), "venda"]]) {
+      const linhas = vis[lado];
+      const iq = lado === "bids" ? 2 : 1;
+      atualizarLinhas(tbody, linhas, (x) => {
+        const chave = `${lado}|${x.price}|${x.pos}|${x.corretora}`;
+        novas.set(chave, x.qty);
+        const mudou = qtdAnterior.has(chave) && qtdAnterior.get(chave) !== x.qty;
+        const cel = [{ t: preco(x.price, casas), c: `num ${classe}` }, { t: qtdBook(x.qty), c: "num qtd" },
+          { t: inteiro(x.pos), c: "num ord" }, { t: x.corretora || "—", c: "corr" }];
+        return { classe: `${classe}-n${x.inicio ? " novo-preco" : ""}${mudou ? " mudou" : ""}`, celulas: lado === "bids" ? cel.reverse() : cel };
+      });
+      linhas.forEach((x, i) => {
+        const w = `${Math.max(2, Math.round(100 * x.qty / maior))}%`;
+        const td = tbody.rows[i].cells[iq];
+        if (td.style.getPropertyValue("--w") !== w) td.style.setProperty("--w", w);
+        const ic = lado === "bids" ? 0 : 3;
+        if (tbody.rows[i].cells[ic].title) tbody.rows[i].cells[ic].title = "";
+      });
+      const soma = linhas.reduce((t, x) => t + x.qty, 0);
+      $(`book-tot-${lado}`).textContent = linhas.length ? `${linhas.length} ordens · ${qtdBook(soma)}` : "";
     }
     qtdAnterior.clear();
     novas.forEach((q, k) => qtdAnterior.set(k, q));

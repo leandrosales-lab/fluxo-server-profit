@@ -160,10 +160,12 @@ def setup_dde_mode(engine: FlowEngine, args):
 # MODO PROFITDLL
 # ──────────────────────────────────────────────────────────────
 
-def livro_do_papel_aberto(engine, ativo_dll: str):
-    """O TinyBook vem só do papel com que a DLL subiu: depois de trocar o papel da Operar, o livro não vale."""
+def livro_do_papel_aberto(engine, ativo_dll):
+    """O livro só vale para o papel que a DLL tem aberto (str, ou função que o devolve: a troca de papel
+    da Operar também troca o livro da DLL, e o filho etiqueta cada livro com o papel dele)."""
     def entregar(niveis):
-        if engine.asset == ativo_dll:
+        ativo = ativo_dll() if callable(ativo_dll) else ativo_dll
+        if engine.asset == ativo:
             engine.update_book(niveis)
     return entregar
 
@@ -190,7 +192,7 @@ def setup_dll_mode(engine: FlowEngine, args):
                    if getattr(args, "radar", False) else None)
     bridge = PonteDLLProcesso(asset=args.asset, agentes_path=args.agentes, radar=lista_radar)
     bridge.on_tick = engine.add_tick
-    bridge.on_book = livro_do_papel_aberto(engine, bridge.asset)   # topo do livro (TinyBook)
+    bridge.on_book = livro_do_papel_aberto(engine, lambda: bridge.asset)   # livro de ofertas / TinyBook
     return bridge
 
 
@@ -198,7 +200,7 @@ def setup_dll_mode(engine: FlowEngine, args):
 # MODO REPLAY
 # ──────────────────────────────────────────────────────────────
 
-def iniciar_fonte_dll(engine: FlowEngine, args, server, radar=None):
+def iniciar_fonte_dll(engine: FlowEngine, args, server, radar=None, portao=None):
     """
     Cria a ponte da ProfitDLL, registra no servidor (contadores no /state, Reconectar)
     e faz a 1ª conexão. A ponte é devolvida MESMO se essa conexão falhar: o Reconectar
@@ -215,6 +217,11 @@ def iniciar_fonte_dll(engine: FlowEngine, args, server, radar=None):
                 engine._renovacao_sob_lock(corretora, lado, preco, ts)
 
     bridge.on_renovacao = entregar_renovacao
+    if portao is not None:       # histórico do dia: entra direto no motor, na ordem do relógio
+        bridge.on_historico = portao.historico
+        bridge.on_historico_fim = portao.fim
+        portao.abrir(bridge.asset)
+        server.registrar_portao(portao)
     server.registrar_dll(bridge)
     if not bridge.start():
         logger.error("Falha ao iniciar ProfitDLL — veja o log acima (dá para tentar de novo pelo "
@@ -458,6 +465,13 @@ def main():
     # ── Por último, as opções digitadas na linha de comando (vencem o conhecimento)
     aplicar_argumentos(engine.cfg, args)
 
+    # ── Histórico do dia (modo dll): o motor abre no início do pregão; o ao vivo espera o download
+    add_tick_puro = engine.add_tick
+    portao = None
+    if args.modo == "dll":
+        from core.portao_historico import PortaoHistorico
+        portao = PortaoHistorico(engine, entrega_direta=add_tick_puro)
+
     # ── Gravação: cada tick entregue ao engine também vai para o CSV
     gravador = None
     if args.gravar:
@@ -466,6 +480,9 @@ def main():
         gravador = GravadorTicks(args.gravar)
         envolver_gravacao(engine, gravador, engine.asset)
         atexit.register(gravador.fechar)
+
+    if portao is not None:
+        engine.add_tick = portao.envolver(engine.add_tick)
 
     # ── Radar de fluxo: todo negócio vai ao radar; só o do papel aberto segue para o motor (e o gravador)
     radar = None
@@ -518,7 +535,7 @@ def main():
             logger.error("DDE não disponível — rodando em modo manual")
 
     elif args.modo == "dll":
-        data_source = iniciar_fonte_dll(engine, args, server, radar)
+        data_source = iniciar_fonte_dll(engine, args, server, radar, portao)
 
     elif args.modo == "rtd":
         logger.info("Modo RTD — dados recebidos via Excel RTD Bridge (POST /tick)")

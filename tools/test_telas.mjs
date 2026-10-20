@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as f from "../api/static/js/formato.js";
 import { textoStatus, estadoReconectar } from "../api/static/js/shell.js";
 import { tituloSinal, LOTE_GRANDE_PADRAO, textoEvento, duracao, medidaSinal, ordenarDefesas,
-  linhasQueCabem, rotuloFonteBook, qtdBook, corretorasBook } from "../api/static/js/operar-paineis.js";
+  linhasQueCabem, rotuloFonteBook, qtdBook, corretorasBook, linhasOfertas } from "../api/static/js/operar-paineis.js";
 import { textoSituacao, linhaRadar } from "../api/static/js/radar-lista.js";
 import { sinceCandles, juntarCandles, precisaLimpar } from "../api/static/js/candles.js";
 
@@ -143,5 +143,17 @@ const lr = linhaRadar({ ativo: "RENT3", corretora: "AGORA", lado: "compra", prec
   confirmado_as: 1792155600, situacao: "segurando", acerto: { taxa: 0.408 } });
 assert.equal(lr.classe, "destaque");
 assert.deepEqual(lr.celulas.map((c) => c.t), ["RENT3", "AGORA", "compra", "50,36", "20", "8.500", "10:00:00", "segurando", "41%"]);
+
+// Book de ofertas: cada ordem na ordem da fila, melhor preço primeiro
+const niveisOf = [
+  { price: 23.5, qty: 2700, fila: [["JP MORGAN", 1500], ["XP", 700], ["BTG", 500]], corretoras: [["JP MORGAN", 1500]] },
+  { price: 23.49, qty: 900, fila: [["UBS", 900]] },
+  { price: 23.48, qty: 300, corretoras: [["AGORA", 200], ["ITAU", 100]] },   // sem fila: cai nas corretoras agregadas
+];
+assert.deepEqual(linhasOfertas(niveisOf, 10).map((l) => [l.price, l.corretora, l.qty, l.pos, l.inicio]), [
+  [23.5, "JP MORGAN", 1500, 1, true], [23.5, "XP", 700, 2, false], [23.5, "BTG", 500, 3, false],
+  [23.49, "UBS", 900, 1, true], [23.48, "AGORA", 200, 1, true], [23.48, "ITAU", 100, 2, false]]);
+assert.equal(linhasOfertas(niveisOf, 4).length, 4);
+assert.deepEqual(linhasOfertas(undefined, 5), []);
 
 console.log("test_telas.mjs: tudo certo");

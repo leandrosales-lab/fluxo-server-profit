@@ -364,6 +364,12 @@ class ProfitDLLBridge:
         self.on_book: Optional[Callable[[list[BookLevel]], None]] = None
         # Giro de iceberg: (ativo, corretora, lado, preco, ts) quando o lote volta ao book
         self.on_renovacao: Optional[Callable[..., None]] = None
+        # Histórico do dia do papel aberto: (ativo, [Tick]) quando o download termina (ordem cronológica)
+        self.on_historico: Optional[Callable[[str, list], None]] = None
+        self._hist_buffer: dict[str, list] = {}
+        self._hist_lock = threading.Lock()
+        self._hist_disponivel = False
+        self.historico: dict = {"ativo": None, "progresso": 0, "negocios": 0, "estado": "parado"}
         self._livro_giro = LivroGiro()
         self._pacote: dict[tuple, list] = {}
         self.livros_assinados = 0
@@ -445,6 +451,7 @@ class ProfitDLLBridge:
             "latencia_ms":       self.latencia_ms,
             "papeis":            {"pedidos": len(self.papeis), "assinados": self.assinados,
                                   "recusados": list(self.recusados)},
+            "historico":         dict(self.historico),
             "livros":            {"assinados": self.livros_assinados,
                                   "recusados": list(self.livros_recusados)},
             "ativo":             self.asset,
@@ -630,6 +637,17 @@ class ProfitDLLBridge:
         dll.UnsubscribeTicker.restype = c_int
         dll.SetTradeCallbackV2.argtypes = [TTradeCallback]
         dll.SetTradeCallbackV2.restype = c_int
+        # Histórico do dia (artigo da Nelogica): negócio a negócio + progresso 0-100 por papel
+        THistoryTradeCallback = WINFUNCTYPE(None, TAssetID, c_wchar_p, c_uint, c_double, c_double,
+                                            c_int, c_int, c_int, c_int)
+        TProgressCallback = WINFUNCTYPE(None, TAssetID, c_int)
+        if hasattr(dll, "GetHistoryTrades"):
+            dll.GetHistoryTrades.argtypes = [c_wchar_p, c_wchar_p, c_wchar_p, c_wchar_p]
+            dll.GetHistoryTrades.restype = c_int
+            dll.SetHistoryTradeCallback.argtypes = [THistoryTradeCallback]
+            dll.SetHistoryTradeCallback.restype = c_int
+            dll.SetSerieProgressCallback.argtypes = [TProgressCallback]
+            dll.SetSerieProgressCallback.restype = c_int
         dll.TranslateTrade.argtypes = [c_size_t, POINTER(TConnectorTrade)]
         dll.TranslateTrade.restype = c_int
         dll.SubscribeOfferBook.argtypes = [c_wchar_p, c_wchar_p]
@@ -642,15 +660,6 @@ class ProfitDLLBridge:
         dll.GetAgentNameLength.restype = c_int
         dll.GetAgentName.argtypes = [c_int, c_int, c_wchar_p, c_uint]
         dll.GetAgentName.restype = c_int
-        if hasattr(dll, "SetOfferBookCallbackV2"):
-            dll.SetOfferBookCallbackV2.argtypes = [TOfferBookCallback]
-            dll.SetOfferBookCallbackV2.restype = c_int
-        if hasattr(dll, "SubscribeOfferBook"):
-            dll.SubscribeOfferBook.argtypes = [c_wchar_p, c_wchar_p]
-            dll.SubscribeOfferBook.restype = c_int
-        if hasattr(dll, "UnsubscribeOfferBook"):
-            dll.UnsubscribeOfferBook.argtypes = [c_wchar_p, c_wchar_p]
-            dll.UnsubscribeOfferBook.restype = c_int
 
         def on_estado(tipo, resultado):
             self._on_estado(tipo, resultado)
@@ -692,7 +701,23 @@ class ProfitDLLBridge:
         cb_trade  = TTradeCallback(on_trade)
         cb_tiny   = TTinyBookCallback(on_tiny_book)
         cb_oferta = TOfferBookCallbackV2(on_oferta)
-        self._callbacks += [cb_estado, cb_trade, cb_tiny, cb_oferta]
+
+        def on_historico(asset, data, numero, preco, vol, qtd, comprador, vendedor, tipo):
+            # Thread da DLL: só acumula; a conversão acontece na thread consumidora
+            with self._hist_lock:
+                self._hist_buffer.setdefault(ticker_do_ativo(asset), []).append(
+                    (data, numero, preco, vol, qtd, comprador, vendedor, tipo))
+
+        def on_progresso(asset, progresso):
+            ativo_p = ticker_do_ativo(asset)
+            if ativo_p == self.historico.get("ativo"):
+                self.historico["progresso"] = int(progresso)
+            if progresso >= 100:
+                self.fila.put(("hist_fim", ativo_p))
+
+        cb_hist = THistoryTradeCallback(on_historico)
+        cb_prog = TProgressCallback(on_progresso)
+        self._callbacks += [cb_estado, cb_trade, cb_tiny, cb_oferta, cb_hist, cb_prog]
 
         ret = dll.DLLInitializeMarketLogin(
             key, user, pwd,
@@ -716,6 +741,11 @@ class ProfitDLLBridge:
             logger.warning(f"SetOfferBookCallbackV2 indisponível: {e}")
         if not self._livro_disponivel:
             logger.warning("ProfitDLL: livro de ofertas não registrado - usando só o topo (TinyBook)")
+        try:
+            self._hist_disponivel = (dll.SetHistoryTradeCallback(cb_hist) == 0
+                                     and dll.SetSerieProgressCallback(cb_prog) == 0)
+        except Exception as e:      # DLL sem histórico: o gráfico começa na conexão, como antes
+            logger.warning(f"Histórico do dia indisponível: {e}")
         self._aguardar_conexao()
 
     # ──────────────────────────────────────────────────────────
@@ -825,12 +855,113 @@ class ProfitDLLBridge:
                 self._processar_book(*evento[1:])
             elif evento[0] == "offer":      # callback da DLL: giro de iceberg + livro da tela
                 self._processar_oferta_bruta(*evento[1:])
+            elif evento[0] == "hist_fim":
+                self._concluir_historico(evento[1])
+            elif evento[0] == "trocar":
+                self._executar_troca(evento[1])
             elif evento[0] == "oferta":     # só o livro da tela
                 self._processar_oferta(*evento[1:])
             else:
                 logger.warning(f"Evento desconhecido na fila da DLL: {evento[0]!r}")
         except Exception as e:
             logger.error(f"Erro ao processar evento da DLL: {e}")
+
+    # ──────────────────────────────────────────────────────────
+    # PAPEL ABERTO: troca e histórico do dia (sem DLL, testável)
+    # ──────────────────────────────────────────────────────────
+
+    def trocar_ativo(self, ativo: str) -> None:
+        """Pede a troca do papel aberto. Quem executa é a thread consumidora (na ordem da fila)."""
+        self.fila.put(("trocar", validar_ativo(ativo)))
+
+    def _zerar_livro_tela(self) -> None:
+        self.bid = self.ask = None
+        self.livro.limpar()
+        self._livro_pendente = False
+        self._modo_book = None
+        self._tiny_visto = False
+        self._diverge_desde = None
+        self._em_divergencia = False
+        self._ultimo_ts_negocio = None
+
+    def _executar_troca(self, ativo: str) -> None:
+        """Papel novo: livro da tela e TinyBook passam a ser dele, o livro de ofertas é pedido de novo
+        (a DLL manda o FullBook ao assinar) e o histórico do dia é baixado."""
+        dll = self.dll
+        if dll is None:
+            return
+        if ativo not in self.papeis:
+            if dll.SubscribeTicker(ativo, self.exchange) != 0:
+                logger.warning(f"Troca para {ativo}: SubscribeTicker recusado")
+                self._sem_historico(ativo, "recusado")
+                return
+            self.papeis.append(ativo)
+            self.assinados += 1
+        self.papeis = [ativo] + [p for p in self.papeis if p != ativo]
+        self.asset = ativo
+        self._zerar_livro_tela()
+        sub = getattr(dll, "SubscribeOfferBook", None)
+        if sub is not None and ativo not in self.livros_recusados:
+            try:
+                cancelar = getattr(dll, "UnsubscribeOfferBook", None)
+                if cancelar is not None:
+                    cancelar(ativo, self.exchange)
+                self.livro_ativo = self._livro_disponivel and sub(ativo, self.exchange) == 0
+            except Exception as e:
+                logger.warning(f"Troca para {ativo}: livro de ofertas falhou: {e}")
+                self.livro_ativo = False
+        logger.info(f"ProfitDLL: papel aberto agora é {ativo}")
+        self.pedir_historico(ativo)
+
+    def pedir_historico(self, ativo: Optional[str] = None) -> bool:
+        """Baixa os negócios do pregão de hoje (09:00 até agora) do papel; on_historico recebe tudo de uma vez."""
+        ativo = (ativo or self.asset).upper()
+        if self.dll is None or not self._hist_disponivel:
+            return self._sem_historico(ativo, "indisponivel")
+        agora = datetime.now(FUSO_B3)
+        inicio = agora.replace(hour=9, minute=0, second=0, microsecond=0)
+        if agora <= inicio:
+            return self._sem_historico(ativo, "pronto")
+        with self._hist_lock:
+            self._hist_buffer[ativo] = []
+        self.historico = {"ativo": ativo, "progresso": 0, "negocios": 0, "estado": "carregando"}
+        ret = self.dll.GetHistoryTrades(ativo, self.exchange, inicio.strftime("%d/%m/%Y %H:%M:%S"),
+                                        agora.strftime("%d/%m/%Y %H:%M:%S"))
+        if ret != 0:
+            logger.warning(f"GetHistoryTrades({ativo}) falhou: código {ret}")
+            return self._sem_historico(ativo, "erro")
+        return True
+
+    def _sem_historico(self, ativo: str, estado: str) -> bool:
+        """Nada a carregar: avisa mesmo assim (lista vazia) para o servidor soltar os negócios ao vivo."""
+        self.historico = {"ativo": ativo, "progresso": 100 if estado == "pronto" else 0,
+                          "negocios": 0, "estado": estado}
+        if self.on_historico:
+            try:
+                self.on_historico(ativo, [])
+            except Exception as e:
+                logger.error(f"Erro ao entregar o histórico: {e}")
+        return False
+
+    def _concluir_historico(self, ativo: str) -> None:
+        with self._hist_lock:
+            trades = self._hist_buffer.pop(ativo, [])
+        if ativo != self.asset:                       # o usuário já abriu outro papel
+            return
+        from profitdll.historico import converter_trades      # importado aqui: historico importa a ponte
+        codigos = {int(c) for t in trades for c in (t[5], t[6]) if int(c) > 0}
+        nomes = {c: self._corretora(c) for c in codigos}
+        res = converter_trades(trades, nomes, dia=datetime.now(FUSO_B3).date())
+        for t in res.ticks:
+            t.asset = ativo
+        self.historico = {"ativo": ativo, "progresso": 100, "negocios": len(res.ticks), "estado": "pronto"}
+        logger.info(f"Histórico do dia de {ativo}: {len(res.ticks)} negócios "
+                    f"({res.ignorados} ignorados, {res.duplicados} duplicados)")
+        if self.on_historico:
+            try:
+                self.on_historico(ativo, res.ticks)
+            except Exception as e:
+                logger.error(f"Erro ao entregar o histórico: {e}")
 
     def _nomes_para(self, *codigos: int) -> dict[int, str]:
         """Nomes das corretoras do negócio: JSON (--agentes) vence; senão a DLL."""
@@ -1059,7 +1190,8 @@ class ProfitDLLBridge:
         for itens, lado in ((snap["bids"], Side.BUY), (snap["asks"], Side.SELL)):
             for n in itens:
                 niveis.append(BookLevel(price=n["price"], qty=n["qty"], broker="", side=lado, timestamp=ts,
-                                        ordens=n["ordens"], corretoras=n["corretoras"]))
+                                        ordens=n["ordens"], corretoras=n["corretoras"],
+                                        fila=n.get("fila", [])))
         return niveis
 
     def _publicar(self, ts_chegada: Optional[float] = None, do_tinybook: bool = False):

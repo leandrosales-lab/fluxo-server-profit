@@ -10,13 +10,16 @@ Protocolo (uma linha JSON por mensagem):
   filho → pai (stdout):
     {"tipo": "inicio", "ok": bool, "motivo": str|None}   resultado do start()
     {"tipo": "tick", "ts", "preco", "qtd", "corretora", "lado": "compra"|"venda", "passiva"}
-    {"tipo": "book", "ts", "niveis": [[preco, qtd, "compra"|"venda"(, ordens, corretoras)], ...]}
+    {"tipo": "book", "ts", "ativo"?, "niveis": [[preco, qtd, "compra"|"venda"(, ordens, corretoras)], ...]}
         ordens (int) e corretoras ([[nome, qtd], ...]) são OPCIONAIS (livro de ofertas); o formato
         antigo de 3 campos (TinyBook) continua valendo nos dois sentidos.
     {"tipo": "stats", "dados": {...ProfitDLLBridge.stats()}}   a cada 0,5 s
     {"tipo": "log", "nivel", "origem", "msg"}                  registros de log do filho
+    {"tipo": "historico", "ativo", "ticks": [<tick>, ...]}     pedaço do histórico do dia (cronológico)
+    {"tipo": "historico_fim", "ativo", "n"}                    o histórico do papel terminou
   pai → filho (stdin):
-    qualquer linha (ou EOF) = encerrar: bridge.stop() (Unsubscribe + DLLFinalize) e sair.
+    "trocar ATIVO"  = abrir outro papel (livro da tela, TinyBook e histórico do dia passam a ser dele)
+    qualquer outra linha (ou EOF) = encerrar: bridge.stop() (Unsubscribe + DLLFinalize) e sair.
 
 Uso do filho (o pai monta o comando):
   python -m profitdll.processo --asset PETR4 [--agentes agentes.json] [--timeout 30]
@@ -63,11 +66,16 @@ def _nivel_para_msg(n: BookLevel) -> list:
     base = [n.price, n.qty, n.side.value]
     if n.ordens or n.corretoras:       # só o livro de ofertas leva os campos extras
         base += [n.ordens, [list(c) for c in n.corretoras]]
+        if n.fila:
+            base.append([list(c) for c in n.fila])
     return base
 
 
-def book_para_msg(niveis: list[BookLevel], ts: float) -> dict:
-    return {"tipo": "book", "ts": ts, "niveis": [_nivel_para_msg(n) for n in niveis]}
+def book_para_msg(niveis: list[BookLevel], ts: float, ativo: str = "") -> dict:
+    msg = {"tipo": "book", "ts": ts, "niveis": [_nivel_para_msg(n) for n in niveis]}
+    if ativo:                      # papel a que o livro pertence (a troca de papel deixa livros velhos no pipe)
+        msg["ativo"] = ativo
+    return msg
 
 
 def msg_para_book(m: dict) -> list[BookLevel]:
@@ -75,9 +83,21 @@ def msg_para_book(m: dict) -> list[BookLevel]:
     for p, q, lado, *extra in m["niveis"]:
         ordens = int(extra[0]) if extra else 0
         corretoras = [[str(c[0]), int(c[1])] for c in extra[1]] if len(extra) > 1 and extra[1] else []
+        fila = [[str(c[0]), int(c[1])] for c in extra[2]] if len(extra) > 2 and extra[2] else []
         saida.append(BookLevel(price=p, qty=q, broker="", side=Side(lado), timestamp=m["ts"],
-                               ordens=ordens, corretoras=corretoras))
+                               ordens=ordens, corretoras=corretoras, fila=fila))
     return saida
+
+
+TICKS_POR_MSG = 2000
+
+
+def historico_para_msgs(ativo: str, ticks: list) -> list[dict]:
+    """Histórico do dia em pedaços (uma linha JSON não pode crescer sem limite) + a mensagem de fim."""
+    msgs = [{"tipo": "historico", "ativo": ativo, "ticks": [tick_para_msg(t) for t in ticks[i:i + TICKS_POR_MSG]]}
+            for i in range(0, len(ticks), TICKS_POR_MSG)]
+    msgs.append({"tipo": "historico_fim", "ativo": ativo, "n": len(ticks)})
+    return msgs
 
 
 def renovacao_para_msg(ativo: str, corretora: str, lado: str, preco: float, ts: float) -> dict:
@@ -104,6 +124,9 @@ class PonteDLLProcesso:
         self.on_tick: Optional[Callable[[Tick], None]] = None
         self.on_book: Optional[Callable[[list[BookLevel]], None]] = None
         self.on_renovacao: Optional[Callable[..., None]] = None
+        # histórico do dia: (ativo, [Tick]) por pedaço; o fim vem em on_historico_fim(ativo, n)
+        self.on_historico: Optional[Callable[[str, list], None]] = None
+        self.on_historico_fim: Optional[Callable[[str, int], None]] = None
         self.motivo_falha: Optional[str] = None
         if comando is None:
             comando = [sys.executable, "-X", "utf8", "-m", "profitdll.processo", "--asset", self.asset,
@@ -195,6 +218,23 @@ class PonteDLLProcesso:
             self._leitor.join(timeout=5)
         self._proc = None
 
+    def trocar_ativo(self, ativo: str) -> bool:
+        """Abre outro papel no filho (livro, TinyBook e histórico do dia). False se não há filho vivo."""
+        ativo = validar_ativo(ativo)
+        proc = self._proc
+        if proc is None or proc.poll() is not None:
+            return False
+        try:
+            proc.stdin.write(f"trocar {ativo}\n")
+            proc.stdin.flush()
+        except (OSError, ValueError):
+            return False
+        # o Reconectar sobe um filho novo: ele já abre no papel de agora
+        self.asset = ativo
+        if "--asset" in self._comando:
+            self._comando[self._comando.index("--asset") + 1] = ativo
+        return True
+
     # ── leitura do filho (thread)
     def _ler_saida(self, proc: subprocess.Popen):
         for linha in proc.stdout:
@@ -232,8 +272,14 @@ class PonteDLLProcesso:
             if self.on_tick:
                 self.on_tick(msg_para_tick(m))
         elif tipo == "book":
-            if self.on_book:
+            if self.on_book and (not m.get("ativo") or m["ativo"] == self.asset):
                 self.on_book(msg_para_book(m))
+        elif tipo == "historico":
+            if self.on_historico:
+                self.on_historico(m.get("ativo") or "", [msg_para_tick(t) for t in m.get("ticks") or []])
+        elif tipo == "historico_fim":
+            if self.on_historico_fim:
+                self.on_historico_fim(m.get("ativo") or "", int(m.get("n") or 0))
         elif tipo == "renovacao":
             if self.on_renovacao:
                 self.on_renovacao(m.get("ativo") or "", m.get("corretora") or "", m.get("lado") or "",
@@ -337,15 +383,34 @@ def main_filho(argv=None, fabrica_ponte=None, entrada=None, saida=None) -> int:
         bridge = (fabrica_ponte(args.asset, args.agentes, timeout=args.timeout, extras=extras)
                   if extras is not None else fabrica_ponte(args.asset, args.agentes, timeout=args.timeout))
         bridge.on_tick = lambda t: enviar(tick_para_msg(t))
-        bridge.on_book = lambda niveis: enviar(book_para_msg(niveis, time.time()))
+        bridge.on_book = lambda niveis: enviar(book_para_msg(niveis, time.time(), getattr(bridge, "asset", "")))
         bridge.on_renovacao = lambda *a: enviar(renovacao_para_msg(*a))
+
+        def enviar_historico(ativo, ticks):
+            for msg in historico_para_msgs(ativo, ticks):
+                enviar(msg)
+        bridge.on_historico = enviar_historico
         ok = bridge.start()
         enviar({"tipo": "inicio", "ok": ok, "motivo": bridge.motivo_falha})
         if not ok:
             return 1
+        if hasattr(bridge, "pedir_historico"):
+            bridge.pedir_historico()     # o gráfico do papel inicial começa no início do pregão
 
-        parar = threading.Event()        # qualquer linha ou EOF no stdin (pai encerrou) = parar
-        threading.Thread(target=lambda: (entrada.readline(), parar.set()), daemon=True).start()
+        parar = threading.Event()        # EOF no stdin (pai encerrou) ou qualquer linha que não seja "trocar" = parar
+
+        def ler_comandos():
+            for linha in iter(entrada.readline, ""):
+                partes = linha.split()
+                if len(partes) == 2 and partes[0] == "trocar" and hasattr(bridge, "trocar_ativo"):
+                    try:
+                        bridge.trocar_ativo(partes[1])
+                    except ValueError as e:
+                        logger.warning(f"Troca de papel recusada: {e}")
+                    continue
+                break
+            parar.set()
+        threading.Thread(target=ler_comandos, daemon=True).start()
         while not parar.wait(0.5):
             enviar({"tipo": "stats", "dados": bridge.stats()})
         bridge.stop()

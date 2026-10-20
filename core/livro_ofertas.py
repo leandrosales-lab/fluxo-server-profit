@@ -47,6 +47,7 @@ class LivroOfertas:
         self.tick = tick_size
         self._por: dict[tuple, dict[int, int]] = {}     # chave → offer_id → qtd
         self._onde: dict[tuple, tuple] = {}             # (ativo, offer_id) → chave
+        self._chaves: dict[tuple, set] = {}             # (ativo, lado) → chaves com ofertas (evita varrer _por inteiro)
         self._fatias: dict[tuple, _Fatia] = {}
 
     def corretora_de(self, ativo: str, offer_id: int) -> str:
@@ -60,6 +61,7 @@ class LivroOfertas:
     def reset(self) -> None:
         self._por.clear()
         self._onde.clear()
+        self._chaves.clear()
         self._fatias.clear()
 
     def negocio(self, ativo: str, corretora: str, lado: str, preco: float, qtd: int, ts: float) -> list[Renovacao]:
@@ -95,19 +97,20 @@ class LivroOfertas:
             chave = (ativo, corretora, lado, p)
             novas.setdefault(chave, {})[int(offer_id)] = int(qtd)
             precos[chave] = p
-        chaves = {ch for ch in self._por if ch[0] == ativo and ch[2] == lado}
+        chaves = set(self._chaves.get((ativo, lado), ()))
         chaves.update(novas)
         saida: list[Renovacao] = []
         for chave in chaves:
             antigo = self._vis(chave)
             livro = novas.get(chave, {})
+            for offer_id in self._por.get(chave, {}):     # só as ofertas desta fatia (varrer _onde inteiro é quadrático)
+                self._onde.pop((ativo, offer_id), None)
             if livro:
                 self._por[chave] = dict(livro)
+                self._chaves.setdefault((ativo, lado), set()).add(chave)
             else:
                 self._por.pop(chave, None)
-            for offer_id in list(self._onde):
-                if self._onde[offer_id] == chave:
-                    del self._onde[offer_id]
+                self._chaves.get((ativo, lado), set()).discard(chave)
             for offer_id in livro:
                 self._onde[(ativo, offer_id)] = chave
             saida += self._ajustar(chave, antigo, sum(livro.values()), precos.get(chave, chave[3]), ts)
@@ -135,11 +138,13 @@ class LivroOfertas:
             velha = livro.pop(ident[1], 0)
             if not livro:
                 self._por.pop(antiga, None)
+                self._chaves.get((antiga[0], antiga[2]), set()).discard(antiga)
             del self._onde[ident]
             saida += self._ajustar(antiga, self._vis(antiga) + velha, self._vis(antiga), antiga[3], ts)
         if nova is None:
             return saida
         livro = self._por.setdefault(nova, {})
+        self._chaves.setdefault((nova[0], nova[2]), set()).add(nova)
         antes = sum(livro.values())
         livro[int(offer_id)] = int(qtd)
         self._onde[ident] = nova

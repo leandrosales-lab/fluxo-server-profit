@@ -45,7 +45,8 @@ CABECALHO_V2 = struct.Struct("=ii")        # Q (entradas), tamanho total do arra
 ENTRADA_V2   = struct.Struct("=dqiqH")     # preço, qtd (int64), agente, offer_id (int64), tamanho da data
 RODAPE_V2    = struct.Struct("=I")         # flags do pacote
 MAX_ENTRADAS = 1_000_000                   # sanidade: acima disso o cabeçalho está corrompido
-CASAS_PRECO  = 2                           # agregação por preço (ações da B3: tick de R$ 0,01)
+FILA_POR_NIVEL = 30                        # ordens de cada nível entregues na ordem da fila (Book de Ofertas)
+CASAS_PRECO  = 2                          # agregação por preço (ações da B3: tick de R$ 0,01)
 
 Nomes = Union[dict, Callable[[int], str], None]
 
@@ -194,7 +195,8 @@ class LivroOfertas:
     def snapshot(self, n: int = 15, nomes: Nomes = None) -> dict:
         """
         {"bids": [...], "asks": [...]} com até n níveis por lado, agregados por preço:
-        {"price", "qty", "ordens", "corretoras": [[nome, qtd], ...2–3 maiores]}.
+        {"price", "qty", "ordens", "corretoras": [[nome, qtd], ...2–3 maiores],
+         "fila": [[nome, qtd], ...]  as ordens do nível na ordem da fila (até FILA_POR_NIVEL)}.
         `nomes`: dict código→nome ou função código→nome; sem nome vale o código como texto.
         """
         if callable(nomes):
@@ -211,14 +213,17 @@ class LivroOfertas:
         for preco, qtd, agente, _oid in lista:
             if qtd <= 0:
                 continue
-            nivel = por_preco.setdefault(round(preco, CASAS_PRECO), [0, 0, {}])
+            nivel = por_preco.setdefault(round(preco, CASAS_PRECO), [0, 0, {}, []])
             nivel[0] += qtd
             nivel[1] += 1
             nivel[2][agente] = nivel[2].get(agente, 0) + qtd
+            if len(nivel[3]) < FILA_POR_NIVEL:
+                nivel[3].append((agente, qtd))
         saida = []
         for preco in sorted(por_preco, reverse=maior_primeiro)[:max(0, n)]:
-            qtd, ordens, agentes = por_preco[preco]
+            qtd, ordens, agentes, fila = por_preco[preco]
             maiores = sorted(agentes.items(), key=lambda kv: (-kv[1], kv[0]))[:3]
             saida.append({"price": preco, "qty": qtd, "ordens": ordens,
-                          "corretoras": [[nome_de(c), q] for c, q in maiores]})
+                          "corretoras": [[nome_de(c), q] for c, q in maiores],
+                          "fila": [[nome_de(c), q] for c, q in fila]})
         return saida

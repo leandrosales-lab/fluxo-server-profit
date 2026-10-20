@@ -107,6 +107,7 @@ class FlowHandler(BaseHTTPRequestHandler):
     rtd: RTDTradeInferer = None
     dll = None                  # ProfitDLLBridge no modo dll (contadores no /state)
     radar = None                # core.radar.Radar quando o servidor sobe com --radar (GET /api/radar)
+    portao = None               # core.portao_historico.PortaoHistorico (histórico do dia, modo dll)
     log: "log_memoria.LogMemoria" = None   # GET /log (tela Conexão)
     modo = "manual"             # GET /health: modo do main.py
     fonte = None                # GET /health: nome da fonte (ex.: exemplo_petr4.csv, ProfitDLL)
@@ -376,11 +377,19 @@ class FlowHandler(BaseHTTPRequestHandler):
             except (ValueError, json.JSONDecodeError, AttributeError) as e:
                 self._send_json({"error": str(e) or "papel inválido"}, 400)
                 return
+            portao, dll = FlowHandler.portao, self.dll
             with self.engine._lock:
                 self.engine.asset = ativo
                 self.engine.reset()
+                if portao is not None and dll is not None:
+                    portao.abrir(ativo)         # o ao vivo espera o histórico do dia do papel novo
+            historico = False
+            if portao is not None and dll is not None:
+                historico = bool(dll.trocar_ativo(ativo))
+                if not historico:               # sem DLL no ar: segue ao vivo, sem histórico
+                    portao.cancelar()
             logger.info(f"Operar: papel trocado para {ativo}")
-            self._send_json({"ativo": ativo})
+            self._send_json({"ativo": ativo, "historico": historico})
 
         elif path == "/reset":
             self.engine.reset()
@@ -424,6 +433,7 @@ class FlowServer:
         FlowHandler.engine = engine
         FlowHandler.rtd    = RTDTradeInferer()
         FlowHandler.dll    = None
+        FlowHandler.portao = None
         FlowHandler.modo   = modo
         FlowHandler.fonte  = fonte
         FlowHandler.reconexao = {"em_andamento": False, "ultima": None, "resultado": None}
@@ -432,6 +442,10 @@ class FlowServer:
     def registrar_radar(self, radar):
         """Expõe o radar de fluxo no GET /api/radar (None desliga)."""
         FlowHandler.radar = radar
+
+    def registrar_portao(self, portao):
+        """Portão do histórico do dia: a troca de papel da Operar abre um novo download."""
+        FlowHandler.portao = portao
 
     def registrar_dll(self, bridge):
         """Expõe os contadores da ProfitDLL no GET /state (bloco "dll")."""

@@ -83,6 +83,7 @@ class BookLevel:
     timestamp:  float = field(default_factory=time.time)
     ordens:     int = 0                                   # nº de ordens no nível (livro de ofertas; 0 = fonte não informa)
     corretoras: list = field(default_factory=list)        # [[nome, qtd], ...] as maiores do nível (livro de ofertas)
+    fila:       list = field(default_factory=list)        # [[nome, qtd], ...] cada ordem do nível, na ordem da fila
 
 
 @dataclass
@@ -1489,7 +1490,8 @@ class FlowEngine:
         """
         def nivel(l: BookLevel) -> dict:
             return {"price": l.price, "qty": l.qty, "broker": l.broker,
-                    "ordens": l.ordens, "corretoras": [list(c) for c in l.corretoras]}
+                    "ordens": l.ordens, "corretoras": [list(c) for c in l.corretoras],
+                    "fila": [list(c) for c in l.fila]}
         with self._lock:
             niveis = list(self._book_buy.values()) + list(self._book_sell.values())
             return {

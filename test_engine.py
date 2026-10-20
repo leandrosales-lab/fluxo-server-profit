@@ -3711,7 +3711,7 @@ def test_api_radar():
         pedido = urllib.request.Request(f"{base}/operar/ativo", data=b'{"ativo": "petr4"}', method="POST",
                                         headers={"Content-Type": "application/json"})
         resp = json.loads(urllib.request.urlopen(pedido).read())
-        if resp == {"ativo": "PETR4"} and engine.asset == "PETR4" and engine.get_state()["tick_count"] == 0:
+        if resp == {"ativo": "PETR4", "historico": False} and engine.asset == "PETR4" and engine.get_state()["tick_count"] == 0:
             ok("POST /operar/ativo troca o papel da Operar e zera o motor")
         else:
             err(f"troca de papel: {resp} / {engine.asset}")
@@ -4186,7 +4186,7 @@ def test_livro_protocolo_e_api():
     engine = FlowEngine("PETR4", EngineConfig())
     engine.update_book([BookLevel(59.05, 100, "", Side.BUY, 1000.0)])
     gb = engine.get_book()
-    if gb["fonte"] == "topo" and gb["bids"][0] == {"price": 59.05, "qty": 100, "broker": "", "ordens": 0, "corretoras": []}:
+    if gb["fonte"] == "topo" and gb["bids"][0] == {"price": 59.05, "qty": 100, "broker": "", "ordens": 0, "corretoras": [], "fila": []}:
         ok("get_book sem ordens/corretoras: fonte='topo' e campos novos com valor neutro")
     else:
         err(f"get_book topo: {gb}")
@@ -4218,7 +4218,7 @@ def test_livro_protocolo_e_api():
             livro = json.loads(r.read())
         if postado.get("ok") and livro["fonte"] == "ofertas" and livro["depth"] == "full" \
                 and livro["bids"][0] == {"price": 59.05, "qty": 7900, "broker": "", "ordens": 6,
-                                         "corretoras": [["UBS", 3000], ["XP", 2000]]} \
+                                         "corretoras": [["UBS", 3000], ["XP", 2000]], "fila": []} \
                 and livro["bids"][1]["ordens"] == 0 and livro["asks"][0]["corretoras"] == [["BTG", 500]]:
             ok("POST /book aceita ordens/corretoras opcionais e GET /book devolve o contrato novo")
             print("  contrato GET /book:", json.dumps(livro, ensure_ascii=False))
@@ -4237,6 +4237,168 @@ def test_livro_protocolo_e_api():
                 err(f"status {e.code}")
     finally:
         server.stop()
+
+
+def test_historico_do_dia():
+    print(f"\n{AMARELO}═══ TESTE 45: Histórico do dia ao abrir um papel — portão, ordem do relógio, ponte, protocolo ═══{RESET}")
+    import types
+    from datetime import datetime
+    from core.portao_historico import PortaoHistorico
+    from profitdll.bridge import ProfitDLLBridge, FUSO_B3
+    from profitdll.processo import historico_para_msgs, msg_para_tick, PonteDLLProcesso
+
+    def tk(ts, preco=10.0, qtd=100, lado=Side.BUY, corretora="XP", ativo="B3SA3"):
+        return Tick(timestamp=ts, price=preco, qty=qtd, broker=corretora, side=lado, asset=ativo)
+
+    # 1) o ao vivo espera; o histórico entra na ordem do relógio; o que já estava no histórico não repete
+    motor, gravado = [], []
+    portao = PortaoHistorico(types.SimpleNamespace(), entrega_direta=motor.append)
+    entrega = portao.envolver(gravado.append)
+    portao.abrir("B3SA3")
+    entrega(tk(105.0, 10.2))                          # ao vivo durante o download
+    entrega(tk(110.0, 10.3))
+    portao.historico("B3SA3", [tk(101.0), tk(105.0, 10.2)])
+    portao.historico("B3SA3", [tk(99.0)])            # pedaço fora de ordem: o portão ordena
+    if motor == [] and gravado == [] and portao.estado()["carregando"]:
+        ok("Enquanto o histórico carrega, o negócio ao vivo do papel aberto fica retido")
+    else:
+        err(f"retido: {motor} {gravado}")
+    portao.fim("B3SA3", 3)
+    if [t.timestamp for t in motor] == [99.0, 101.0, 105.0] and [t.timestamp for t in gravado] == [110.0]:
+        ok("Histórico vai direto ao motor em ordem cronológica; o ao vivo repetido (105) cai e o novo (110) segue pelo gravador")
+    else:
+        err(f"ordem: {[t.timestamp for t in motor]} {[t.timestamp for t in gravado]}")
+    entrega(tk(120.0))
+    if [t.timestamp for t in gravado] == [110.0, 120.0]:
+        ok("Depois do fim o negócio ao vivo passa direto")
+    else:
+        err(f"depois do fim: {gravado}")
+
+    # 2) outro papel não é retido; histórico de papel antigo é ignorado; sem DLL o cancelar solta tudo
+    motor, gravado = [], []
+    portao = PortaoHistorico(types.SimpleNamespace(), entrega_direta=motor.append)
+    entrega = portao.envolver(gravado.append)
+    portao.abrir("B3SA3")
+    entrega(tk(1.0, ativo="PETR4"))
+    portao.historico("PETR4", [tk(0.5, ativo="PETR4")])
+    portao.fim("PETR4", 1)
+    entrega(tk(2.0))
+    if len(gravado) == 1 and gravado[0].asset == "PETR4" and motor == [] and portao.estado()["carregando"]:
+        ok("Negócio de outro papel passa; histórico/fim de papel que já não está aberto são ignorados")
+    else:
+        err(f"outro papel: {gravado} {motor}")
+    portao.cancelar()
+    if [t.timestamp for t in gravado] == [1.0, 2.0] and not portao.estado()["carregando"]:
+        ok("cancelar() solta o retido e segue ao vivo")
+    else:
+        err(f"cancelar: {gravado}")
+
+    # 3) timeout: o download que não termina não congela o gráfico
+    relogio = {"t": 0.0}
+    gravado = []
+    portao = PortaoHistorico(types.SimpleNamespace(), entrega_direta=lambda t: None, timeout=60.0,
+                             relogio=lambda: relogio["t"])
+    entrega = portao.envolver(gravado.append)
+    portao.abrir("B3SA3")
+    entrega(tk(1.0))
+    relogio["t"] = 61.0
+    entrega(tk(2.0))
+    if [t.timestamp for t in gravado] == [1.0, 2.0] and not portao.estado()["carregando"]:
+        ok("Passado o timeout o portão abre e entrega o retido")
+    else:
+        err(f"timeout: {gravado}")
+
+    # 4) ponte: tuplas da DLL viram Ticks do dia (nomes pelo mapa), fim sempre avisa o servidor
+    hoje = datetime.now(FUSO_B3).strftime("%d/%m/%Y")
+    ponte = ProfitDLLBridge("B3SA3")
+    ponte.nomes = {3: "XP", 8: "UBS"}
+    entregues = []
+    ponte.on_historico = lambda ativo, ticks: entregues.append((ativo, ticks))
+    ponte._hist_buffer["B3SA3"] = [
+        (f"{hoje} 10:00:01.500", 2, 12.31, 1231.0, 100, 3, 8, 3),   # venda agressora, ponta passiva = comprador 3
+        (f"{hoje} 10:00:00.250", 1, 12.30, 1230.0, 200, 3, 8, 2),   # compra agressora
+        (f"{hoje} 10:00:02.000", 3, 12.30, 0.0, 100, 3, 8, 4),      # leilão: ignorado
+    ]
+    ponte._concluir_historico("B3SA3")
+    ativo, ticks = entregues[-1]
+    if (ativo == "B3SA3" and [t.price for t in ticks] == [12.30, 12.31] and ticks[0].side == Side.BUY
+            and ticks[0].broker == "XP" and ticks[0].asset == "B3SA3" and ponte.historico["estado"] == "pronto"
+            and ponte.historico["negocios"] == 2):
+        ok("Ponte: histórico do dia convertido (ordem do relógio, corretora, leilão fora) e entregue")
+    else:
+        err(f"ponte: {entregues} {ponte.historico}")
+    ponte.asset = "PETR4"
+    ponte._hist_buffer["B3SA3"] = [(f"{hoje} 10:00:00.250", 1, 12.30, 1230.0, 200, 3, 8, 2)]
+    n = len(entregues)
+    ponte._concluir_historico("B3SA3")
+    if len(entregues) == n:
+        ok("Histórico de um papel que já foi trocado é descartado")
+    else:
+        err("histórico de papel antigo entregue")
+    sem_dll = ProfitDLLBridge("B3SA3")
+    vazio = []
+    sem_dll.on_historico = lambda a, t: vazio.append((a, t))
+    if sem_dll.pedir_historico() is False and vazio == [("B3SA3", [])]:
+        ok("Sem DLL/histórico a ponte avisa com lista vazia (o servidor solta o ao vivo)")
+    else:
+        err(f"sem histórico: {vazio}")
+
+    # 5) protocolo: pedaços + fim; o pai repassa e filtra o livro de papel antigo
+    msgs = historico_para_msgs("B3SA3", [tk(float(i)) for i in range(4500)])
+    if [len(m.get("ticks", [])) for m in msgs] == [2000, 2000, 500, 0] and msgs[-1] == {"tipo": "historico_fim", "ativo": "B3SA3", "n": 4500}:
+        ok("Protocolo: histórico em pedaços de 2000 + mensagem de fim")
+    else:
+        err(f"protocolo: {[m['tipo'] for m in msgs]}")
+    pai = PonteDLLProcesso("B3SA3", comando=["x", "--asset", "B3SA3"])
+    chegou = {"ticks": [], "fim": None, "livros": []}
+    pai.on_historico = lambda a, t: chegou["ticks"].extend(t)
+    pai.on_historico_fim = lambda a, n: chegou.__setitem__("fim", (a, n))
+    pai.on_book = chegou["livros"].append
+    for m in msgs:
+        pai._tratar(m)
+    pai._tratar({"tipo": "book", "ts": 1.0, "ativo": "B3SA3", "niveis": [[10.0, 5, "compra"]]})
+    pai._tratar({"tipo": "book", "ts": 1.0, "ativo": "PETR4", "niveis": [[9.0, 5, "compra"]]})
+    if len(chegou["ticks"]) == 4500 and chegou["fim"] == ("B3SA3", 4500) and len(chegou["livros"]) == 1:
+        ok("Pai: recebe o histórico e o fim; livro etiquetado com outro papel é descartado")
+    else:
+        err(f"pai: {len(chegou['ticks'])} {chegou['fim']} {len(chegou['livros'])}")
+    pai._proc = types.SimpleNamespace(poll=lambda: None, stdin=types.SimpleNamespace(
+        write=lambda x: chegou.setdefault("escrito", []).append(x), flush=lambda: None))
+    if (pai.trocar_ativo("rent3") and chegou["escrito"] == ["trocar RENT3\n"] and pai.asset == "RENT3"
+            and pai._comando == ["x", "--asset", "RENT3"]):
+        ok("Pai: trocar_ativo manda 'trocar RENT3' ao filho e o Reconectar passa a subir já no papel novo")
+    else:
+        err(f"trocar: {chegou.get('escrito')} {pai.asset} {pai._comando}")
+
+
+def test_livro_giro_escala():
+    print(f"\n{AMARELO}═══ TESTE 46: Livro do giro com o radar inteiro — FullBook de centenas de papéis não pode travar ═══{RESET}")
+    from core.livro_ofertas import LivroOfertas as LivroGiro
+    L = LivroGiro()
+    t0 = time.time()
+    for a in range(200):
+        for lado in ("compra", "venda"):
+            ofs = [(a * 100000 + i + (1 if lado == "compra" else 50000), 20 + (i % 60) / 100, 100 + i, f"C{i % 40}")
+                   for i in range(800)]
+            L.definir(f"A{a}", lado, ofs, 1.0)
+    t_carga = time.time() - t0
+    t0 = time.time()
+    for _ in range(100):
+        L.definir("A7", "compra", [(7 * 100000 + i + 1, 20.5, 100, "C1") for i in range(800)], 2.0)
+    t_redef = time.time() - t0
+    if t_carga < 20 and t_redef < 5:
+        ok(f"200 papéis × 2 lados × 800 ordens em {t_carga:.1f}s; 100 redefinições de um livro em {t_redef:.2f}s (sem varrer o índice inteiro)")
+    else:
+        err(f"livro do giro lento: carga {t_carga:.1f}s, redefinição {t_redef:.1f}s")
+    # o índice por papel/lado acompanha add, edit e delete
+    L2 = LivroGiro()
+    L2.atualizar("X", "compra", 10.0, 500, "UBS", 1, 1.0)
+    L2.definir("X", "compra", [(2, 10.0, 300, "XP")], 2.0)
+    L2.atualizar("X", "compra", 10.0, 0, "XP", 2, 3.0, apagar=True)
+    if L2._por == {} and L2._onde == {} and not any(L2._chaves.values()):
+        ok("Índice de chaves e de ofertas fica vazio depois que todas as ofertas saem")
+    else:
+        err(f"índices: {L2._por} {L2._onde} {L2._chaves}")
 
 
 def main():
@@ -4297,6 +4459,8 @@ def main():
     test_livro_operacoes()
     test_livro_snapshot_e_erros()
     test_livro_bridge()
+    test_historico_do_dia()
+    test_livro_giro_escala()
     test_livro_protocolo_e_api()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")

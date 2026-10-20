@@ -12,6 +12,8 @@
 
 /* Book: duas colunas espelhadas em torno do centro, melhor preço na 1ª linha de cada uma */
 .book { overflow: hidden; }
+#book-modos { display: flex; gap: 12px; margin-left: 14px; }
+.book-tab tr.novo-preco td { border-top: 1px solid var(--rule); }
 .book-grade { flex: 1 1 0; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; }
 .book-col { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .book-col.venda { border-left: 1px solid var(--rule); }
