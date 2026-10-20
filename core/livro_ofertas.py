@@ -21,6 +21,7 @@ JANELA_RESTO = 1.0
 
 # Lote mínimo de um iceberg, em ações. Curso (A1: aula-02, 9393831, 9393837, 9393840, 9393845): lote padrão
 # 1.000/1.500/2.000/2.500/5.000, "nunca < 1.000". Lote visível de 100 repetindo é o sniper ("pulguinha"), não giro.
+# O lote consumido volta "com a mesma quantidade" (A1): 1.500 consumidos e 1.200 repostos é absorção do player, não iceberg.
 LOTE_MIN_ICEBERG = 1000
 
 
@@ -47,8 +48,9 @@ class _Fatia:
 
 
 class LivroOfertas:
-    def __init__(self, tick_size: float = 0.01, lote_min: int = 0):
+    def __init__(self, tick_size: float = 0.01, lote_min: int = 0, mesma_qtd: bool = False):
         self.tick = tick_size
+        self.mesma_qtd = mesma_qtd     # só vale como giro se a corretora repõe exatamente o lote consumido
         self.lote_min = lote_min       # só vale como giro o lote consumido de pelo menos isso (0 = qualquer)
         self._por: dict[tuple, dict[int, int]] = {}     # chave → offer_id → qtd
         self._onde: dict[tuple, tuple] = {}             # (ativo, offer_id) → chave
@@ -197,6 +199,8 @@ class LivroOfertas:
         saida: list[Renovacao] = []
         if f.lote_zerou < self.lote_min:
             pass                       # lote pequeno (ex.: 100) consumido e reposto não é giro de iceberg
+        elif self.mesma_qtd and f.visivel != f.lote_zerou:
+            pass                       # voltou com outra quantidade: absorção do player, não iceberg
         elif f.consumida >= f.lote_zerou > 0:
             saida.append(self._emitir(chave, f))
             f.divida = 0

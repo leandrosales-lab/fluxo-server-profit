@@ -371,7 +371,7 @@ class ProfitDLLBridge:
         self._hist_lock = threading.Lock()
         self._hist_disponivel = False
         self.historico: dict = {"ativo": None, "progresso": 0, "negocios": 0, "estado": "parado"}
-        self._livro_giro = LivroGiro(lote_min=LOTE_MIN_ICEBERG)
+        self._livro_giro = LivroGiro(lote_min=LOTE_MIN_ICEBERG, mesma_qtd=True)
         # diagnóstico do giro: por ação do livro (0 add, 1 edit, 2 delete, 3 delete_from, 4 full), quantas chegaram
         # e quantas traziam offer_id / agente / preço; e quantos giros foram emitidos
         self.oferta_acoes: dict[int, list] = {}

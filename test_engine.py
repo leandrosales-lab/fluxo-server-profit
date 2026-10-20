@@ -4399,6 +4399,17 @@ def test_giro_lote_minimo():
         ok(f"Lote de 1.500 consumido e reposto no mesmo preço pela mesma corretora: 1 giro por reposição ({giros_1500})")
     else:
         err(f"lote 1500: {giros_1500}")
+    # mesma quantidade: 1.500 consumidos e repostos com 1.200 = absorção do player; repostos com 1.500 = iceberg
+    for repoe, esperado in ((1200, 0), (1500, 1)):
+        livro = LivroGiro(lote_min=LOTE_MIN_ICEBERG, mesma_qtd=True)
+        livro.atualizar("JP", "venda", 23.50, 1500, "JP MORGAN", 1, 1.0)
+        livro.negocio("JP", "JP MORGAN", "venda", 23.50, 1500, 1.1)
+        livro.atualizar("JP", "venda", 23.50, 0, "JP MORGAN", 1, 1.2, apagar=True)
+        n = len(livro.atualizar("JP", "venda", 23.50, repoe, "JP MORGAN", 2, 1.3))
+        if n == esperado:
+            ok(f"JP 1.500 consumidos e repostos com {repoe:,}".replace(",", ".") + f": {n} giro" + ("" if n == 1 else "s (outra quantidade)"))
+        else:
+            err(f"reposição de {repoe}: {n} giros, esperava {esperado}")
     livro = LivroGiro(lote_min=1000)
     livro.atualizar("X", "venda", 10.0, 1000, "UBS", 1, 1.0)
     livro.negocio("X", "UBS", "venda", 10.0, 1000, 1.1)
