@@ -23,6 +23,7 @@ Endpoints:
   GET  /log?apos=SEQ&nivel=INFO → log do servidor em memória (credenciais mascaradas; também since=T)
   POST /config          → atualizar configurações em tempo real
   POST /reset           → reset do motor (início de dia)
+  POST /encerrar        → encerra o servidor com a ProfitDLL finalizada (Unsubscribe + DLLFinalize); 202
   POST /dll/reconectar  → stop()+start() da ProfitDLL numa thread (202; 409 se já reconectando; 404 fora do modo dll)
 """
 
@@ -108,6 +109,7 @@ class FlowHandler(BaseHTTPRequestHandler):
     dll = None                  # ProfitDLLBridge no modo dll (contadores no /state)
     radar = None                # core.radar.Radar quando o servidor sobe com --radar (GET /api/radar)
     portao = None               # core.portao_historico.PortaoHistorico (histórico do dia, modo dll)
+    encerrar = None             # função sem argumentos que encerra o processo de forma limpa (main.py)
     log: "log_memoria.LogMemoria" = None   # GET /log (tela Conexão)
     modo = "manual"             # GET /health: modo do main.py
     fonte = None                # GET /health: nome da fonte (ex.: exemplo_petr4.csv, ProfitDLL)
@@ -396,6 +398,14 @@ class FlowHandler(BaseHTTPRequestHandler):
             self.rtd.reset()
             self._send_json({"ok": True, "message": "Motor resetado"})
 
+        elif path == "/encerrar":
+            self._read_body()
+            if FlowHandler.encerrar is None:
+                self._send_json({"error": "encerramento pela API não está disponível neste modo"}, 404)
+                return
+            self._send_json({"ok": True, "message": "encerrando"}, 202)
+            threading.Thread(target=FlowHandler.encerrar, daemon=True).start()
+
         elif path == "/dll/reconectar":
             self._read_body()   # lê o corpo (vazio) antes de responder: senão o cliente vê a conexão anulada
             if self.dll is None:
@@ -434,6 +444,7 @@ class FlowServer:
         FlowHandler.rtd    = RTDTradeInferer()
         FlowHandler.dll    = None
         FlowHandler.portao = None
+        FlowHandler.encerrar = None
         FlowHandler.modo   = modo
         FlowHandler.fonte  = fonte
         FlowHandler.reconexao = {"em_andamento": False, "ultima": None, "resultado": None}
@@ -442,6 +453,10 @@ class FlowServer:
     def registrar_radar(self, radar):
         """Expõe o radar de fluxo no GET /api/radar (None desliga)."""
         FlowHandler.radar = radar
+
+    def registrar_encerrar(self, funcao):
+        """Função que encerra o processo com a DLL finalizada (POST /encerrar). None desliga a rota."""
+        FlowHandler.encerrar = funcao
 
     def registrar_portao(self, portao):
         """Portão do histórico do dia: a troca de papel da Operar abre um novo download."""

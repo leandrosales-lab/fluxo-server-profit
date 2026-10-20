@@ -562,15 +562,29 @@ def main():
     print()
 
     # ── Aguardar sinal de encerramento
-    def handle_exit(sig, frame):
-        logger.info("Encerrando servidor...")
+    def encerrar_limpo():
+        # DLL primeiro (Unsubscribe + DLLFinalize no filho): matar a ProfitDLL à força pode deixar o
+        # código de uso da licença inválido e a próxima conexão é recusada
         if data_source:
             data_source.stop()
         server.stop()
         if gravador:
             gravador.fechar()
+
+    def handle_exit(sig, frame):
+        logger.info("Encerrando servidor...")
+        encerrar_limpo()
         sys.exit(0)
 
+    def encerrar_pelo_servidor():
+        # POST /encerrar roda numa thread: sys.exit só encerraria a thread, então sai do processo aqui
+        logger.info("Encerrando servidor (pedido pela API)...")
+        try:
+            encerrar_limpo()
+        finally:
+            os._exit(0)
+
+    server.registrar_encerrar(encerrar_pelo_servidor)
     signal.signal(signal.SIGINT,  handle_exit)
     signal.signal(signal.SIGTERM, handle_exit)
 

@@ -4371,6 +4371,44 @@ def test_historico_do_dia():
         err(f"trocar: {chegou.get('escrito')} {pai.asset} {pai._comando}")
 
 
+import threading
+
+
+def test_encerramento_limpo():
+    print(f"\n{AMARELO}═══ TESTE 47: POST /encerrar — encerramento limpo (DLL finalizada antes de sair) ═══{RESET}")
+    import json
+    import urllib.error
+    import urllib.request
+    from api.server import FlowServer
+    engine = FlowEngine("PETR4", EngineConfig())
+    servidor = FlowServer(engine, host="127.0.0.1", port=15621)
+    servidor.start()
+    base = "http://127.0.0.1:15621"
+    try:
+        pedido = urllib.request.Request(base + "/encerrar", data=b"", method="POST")
+        try:
+            urllib.request.urlopen(pedido)
+            err("POST /encerrar sem função registrada deveria dar 404")
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                ok("Sem função de encerramento registrada (outros modos) a rota responde 404")
+            else:
+                err(f"/encerrar sem função: {e.code}")
+        chamadas = []
+        feito = threading.Event()
+        servidor.registrar_encerrar(lambda: (chamadas.append(1), feito.set()))
+        with urllib.request.urlopen(urllib.request.Request(base + "/encerrar", data=b"", method="POST")) as r:
+            corpo = json.loads(r.read())
+            codigo = r.status
+        feito.wait(3)
+        if codigo == 202 and corpo.get("ok") and chamadas == [1]:
+            ok("POST /encerrar responde 202 e chama o encerramento numa thread própria")
+        else:
+            err(f"/encerrar: {codigo} {corpo} {chamadas}")
+    finally:
+        servidor.stop()
+
+
 def test_livro_giro_escala():
     print(f"\n{AMARELO}═══ TESTE 46: Livro do giro com o radar inteiro — FullBook de centenas de papéis não pode travar ═══{RESET}")
     from core.livro_ofertas import LivroOfertas as LivroGiro
@@ -4461,6 +4499,7 @@ def main():
     test_livro_bridge()
     test_historico_do_dia()
     test_livro_giro_escala()
+    test_encerramento_limpo()
     test_livro_protocolo_e_api()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
