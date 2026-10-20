@@ -57,7 +57,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.engine import Tick, Side, BookLevel
 from profitdll.livro import (LivroOfertas, decodifica_array_v2, CABECALHO_V2, AT_FULLBOOK,
                              LADO_COMPRA, LADO_VENDA)
-from core.livro_ofertas import LivroOfertas as LivroGiro
+from core.livro_ofertas import LivroOfertas as LivroGiro, LOTE_MIN_ICEBERG
 from profitdll.livro import LivroOfertas as LivroPos
 
 logger = logging.getLogger("ProfitDLL")
@@ -371,7 +371,7 @@ class ProfitDLLBridge:
         self._hist_lock = threading.Lock()
         self._hist_disponivel = False
         self.historico: dict = {"ativo": None, "progresso": 0, "negocios": 0, "estado": "parado"}
-        self._livro_giro = LivroGiro()
+        self._livro_giro = LivroGiro(lote_min=LOTE_MIN_ICEBERG)
         # diagnóstico do giro: por ação do livro (0 add, 1 edit, 2 delete, 3 delete_from, 4 full), quantas chegaram
         # e quantas traziam offer_id / agente / preço; e quantos giros foram emitidos
         self.oferta_acoes: dict[int, list] = {}

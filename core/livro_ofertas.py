@@ -19,6 +19,10 @@ from dataclasses import dataclass
 JANELA_REORDEM = 0.20
 JANELA_RESTO = 1.0
 
+# Lote mínimo de um iceberg, em ações. Curso (A1: aula-02, 9393831, 9393837, 9393840, 9393845): lote padrão
+# 1.000/1.500/2.000/2.500/5.000, "nunca < 1.000". Lote visível de 100 repetindo é o sniper ("pulguinha"), não giro.
+LOTE_MIN_ICEBERG = 1000
+
 
 @dataclass(frozen=True)
 class Renovacao:
@@ -43,8 +47,9 @@ class _Fatia:
 
 
 class LivroOfertas:
-    def __init__(self, tick_size: float = 0.01):
+    def __init__(self, tick_size: float = 0.01, lote_min: int = 0):
         self.tick = tick_size
+        self.lote_min = lote_min       # só vale como giro o lote consumido de pelo menos isso (0 = qualquer)
         self._por: dict[tuple, dict[int, int]] = {}     # chave → offer_id → qtd
         self._onde: dict[tuple, tuple] = {}             # (ativo, offer_id) → chave
         self._chaves: dict[tuple, set] = {}             # (ativo, lado) → chaves com ofertas (evita varrer _por inteiro)
@@ -190,7 +195,9 @@ class LivroOfertas:
 
     def _repos(self, chave: tuple, f: _Fatia, ts: float) -> list[Renovacao]:
         saida: list[Renovacao] = []
-        if f.consumida >= f.lote_zerou > 0:
+        if f.lote_zerou < self.lote_min:
+            pass                       # lote pequeno (ex.: 100) consumido e reposto não é giro de iceberg
+        elif f.consumida >= f.lote_zerou > 0:
             saida.append(self._emitir(chave, f))
             f.divida = 0
         elif f.lote_zerou > 0:

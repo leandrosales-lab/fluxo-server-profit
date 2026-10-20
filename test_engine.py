@@ -4374,6 +4374,41 @@ def test_historico_do_dia():
 import threading
 
 
+def test_giro_lote_minimo():
+    print(f"\n{AMARELO}═══ TESTE 52: Giro — lote menor que 1.000 (sniper/pulguinha) não é giro de iceberg ═══{RESET}")
+    from core.livro_ofertas import LivroOfertas as LivroGiro, LOTE_MIN_ICEBERG
+
+    def ciclo(livro, lote, oid, ts):
+        """A ordem `oid` (já no livro) é agredida por inteiro e a corretora repõe o mesmo lote no mesmo preço
+        com outro offer_id: devolve os giros emitidos."""
+        livro.negocio("KLBN11", "INTER", "compra", 18.30, lote, ts + 0.1)
+        livro.atualizar("KLBN11", "compra", 18.30, 0, "INTER", oid, ts + 0.2, apagar=True)
+        return livro.atualizar("KLBN11", "compra", 18.30, lote, "INTER", oid + 1, ts + 0.3)
+
+    livro = LivroGiro(lote_min=LOTE_MIN_ICEBERG)
+    livro.atualizar("KLBN11", "compra", 18.30, 100, "INTER", 1, 1000.0)
+    giros_100 = sum(len(ciclo(livro, 100, i, 1000.0 + i)) for i in range(1, 9))
+    if LOTE_MIN_ICEBERG == 1000 and giros_100 == 0:
+        ok("KLBN11: lote de 100 consumido e reposto 8 vezes = 0 giros (era 8: contava a cada lote de 100)")
+    else:
+        err(f"lote 100: {giros_100} giros")
+    livro = LivroGiro(lote_min=LOTE_MIN_ICEBERG)
+    livro.atualizar("KLBN11", "compra", 18.30, 1500, "INTER", 1, 1000.0)
+    giros_1500 = [len(ciclo(livro, 1500, i, 1000.0 + i)) for i in range(1, 4)]
+    if giros_1500 == [1, 1, 1]:
+        ok(f"Lote de 1.500 consumido e reposto no mesmo preço pela mesma corretora: 1 giro por reposição ({giros_1500})")
+    else:
+        err(f"lote 1500: {giros_1500}")
+    livro = LivroGiro(lote_min=1000)
+    livro.atualizar("X", "venda", 10.0, 1000, "UBS", 1, 1.0)
+    livro.negocio("X", "UBS", "venda", 10.0, 1000, 1.1)
+    livro.atualizar("X", "venda", 10.0, 0, "UBS", 1, 1.2, apagar=True)
+    if len(livro.atualizar("X", "venda", 10.0, 1000, "UBS", 2, 1.3)) == 1:
+        ok("Exatamente 1.000 já vale (o corte é 'nunca < 1.000')")
+    else:
+        err("lote de 1.000 não contou")
+
+
 def test_radar_ordem_giros():
     print(f"\n{AMARELO}═══ TESTE 50: Radar — lista do maior para o menor número de giros ═══{RESET}")
     from core.radar import Radar
@@ -4654,6 +4689,7 @@ def main():
     test_encerramento_limpo()
     test_radar_janela()
     test_giro_por_posicao()
+    test_giro_lote_minimo()
     test_radar_ordem_giros()
     test_radar_agrupa_papel()
     test_livro_protocolo_e_api()
