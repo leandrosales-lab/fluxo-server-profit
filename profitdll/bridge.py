@@ -58,6 +58,7 @@ from core.engine import Tick, Side, BookLevel
 from profitdll.livro import (LivroOfertas, decodifica_array_v2, CABECALHO_V2, AT_FULLBOOK,
                              LADO_COMPRA, LADO_VENDA)
 from core.livro_ofertas import LivroOfertas as LivroGiro
+from profitdll.livro import LivroOfertas as LivroPos
 
 logger = logging.getLogger("ProfitDLL")
 
@@ -371,6 +372,18 @@ class ProfitDLLBridge:
         self._hist_disponivel = False
         self.historico: dict = {"ativo": None, "progresso": 0, "negocios": 0, "estado": "parado"}
         self._livro_giro = LivroGiro()
+        # diagnóstico do giro: por ação do livro (0 add, 1 edit, 2 delete, 3 delete_from, 4 full), quantas chegaram
+        # e quantas traziam offer_id / agente / preço; e quantos giros foram emitidos
+        self.oferta_acoes: dict[int, list] = {}
+        self.renovacoes_emitidas = 0
+        # EDIT/DELETE/DELETE_FROM do livro de ofertas chegam só com lado e POSIÇÃO (sem offer_id, agente nem
+        # preço): para o giro, cada papel mantém o livro por posição e traduz o evento na ordem afetada
+        self._livros_pos: dict[str, LivroPos] = {}
+        self._pacote_pos: dict[tuple, list] = {}
+        self.giro_erros = 0
+        self.giro_erros_motivo: dict[str, int] = {}
+        self.amostra_erro: list = []      # diagnóstico: (motivo, papel, ação, lado, posição, tamanho da lista)
+        self.amostra_edit: list = []      # diagnóstico: últimos EDIT (papel, lado, posição, nQtd, qtd da ordem antes)
         self._pacote: dict[tuple, list] = {}
         self.livros_assinados = 0
         self.livros_recusados: list[str] = []
@@ -452,6 +465,13 @@ class ProfitDLLBridge:
             "papeis":            {"pedidos": len(self.papeis), "assinados": self.assinados,
                                   "recusados": list(self.recusados)},
             "historico":         dict(self.historico),
+            "giro_diagnostico":  {"acoes": {str(k): {"n": v[0], "com_offer_id": v[1], "com_agente": v[2], "com_preco": v[3]}
+                                            for k, v in self.oferta_acoes.items()},
+                                  "renovacoes": self.renovacoes_emitidas, "erros": self.giro_erros,
+                                  "erros_motivo": dict(self.giro_erros_motivo),
+                                  "amostra_erro": [list(a) for a in self.amostra_erro],
+                                  "amostra_edit": [list(a) for a in self.amostra_edit],
+                                  "papeis_com_livro": len(self._livros_pos)},
             "livros":            {"assinados": self.livros_assinados,
                                   "recusados": list(self.livros_recusados)},
             "ativo":             self.asset,
@@ -571,6 +591,8 @@ class ProfitDLLBridge:
         self._diverge_desde = None
         self._em_divergencia = False
         self._livro_giro.reset()
+        self._livros_pos.clear()
+        self._pacote_pos.clear()
         self._pacote.clear()
         self.livros_assinados = 0
         self.livros_recusados = []
@@ -1026,6 +1048,7 @@ class ProfitDLLBridge:
         quando = self._ultimo_ts_negocio if ts is None else ts
         if not quando:
             quando = time.time()
+        self.renovacoes_emitidas += len(renovacoes)
         for r in renovacoes:
             try:
                 self.on_renovacao(r.ativo, r.corretora, r.lado, r.preco, quando)
@@ -1041,18 +1064,39 @@ class ProfitDLLBridge:
                           has_price, has_qty, has_offer, has_agent, compra, venda, ts):
         """Livro de ofertas → reposição do iceberg. O nome da corretora é resolvido aqui, fora do callback."""
         ativo = (ativo or self.asset).upper()
+        c = self.oferta_acoes.setdefault(int(action), [0, 0, 0, 0])
+        c[0] += 1
+        c[1] += 1 if has_offer and offer_id else 0
+        c[2] += 1 if has_agent and agent else 0
+        c[3] += 1 if has_price and price else 0
         if action == OFERTA_FULL:
             for blob, lado in ((compra, "compra"), (venda, "venda")):
                 if not blob:
                     continue
                 ofertas, primeiro, ultimo = decodificar_ofertas(blob)
                 chave = (ativo, lado)
+                # O livro por posição precisa de TODAS as entradas, inclusive as sem agente/offer_id (que o giro
+                # por id descarta): se uma faltar, toda posição seguinte desloca e os giros saem falsos
+                try:
+                    entradas, _flags = decodifica_array_v2(blob)
+                except ValueError:
+                    entradas = []
+                    self.giro_erros += 1
                 if primeiro:
                     self._pacote[chave] = []
+                    self._pacote_pos[chave] = []
                 buf = self._pacote.setdefault(chave, [])
                 buf.extend(ofertas)
+                self._pacote_pos.setdefault(chave, []).extend(
+                    [float(e[0]), int(e[1]), int(e[2]), int(e[3])] for e in entradas)
                 if ultimo:
                     pronto = self._pacote.pop(chave, [])
+                    pos = self._livros_pos.setdefault(ativo, LivroPos())
+                    novas = self._pacote_pos.pop(chave, [])
+                    if lado == "compra":
+                        pos.compra = novas
+                    else:
+                        pos.venda = novas
                     nomeadas = [(oid, preco, qtd, self._corretora(ag))
                                 for oid, preco, qtd, ag in pronto]
                     self._emitir(self._livro_giro.definir(ativo, lado, nomeadas, ts), ts)
@@ -1060,19 +1104,46 @@ class ProfitDLLBridge:
         if side not in (TINYBOOK_BID, TINYBOOK_ASK):
             return
         lado = "compra" if side == TINYBOOK_BID else "venda"
-        if not has_offer or offer_id == 0:
+        pos = self._livros_pos.setdefault(ativo, LivroPos())
+        lista = pos.compra if side == TINYBOOK_BID else pos.venda
+        # a posição 0 é o fim da lista (mesma convenção do livro da tela, validada ao vivo)
+        idx = len(lista) - position - 1
+        def _erro(motivo):
+            self.giro_erros += 1
+            self.giro_erros_motivo[motivo] = self.giro_erros_motivo.get(motivo, 0) + 1
+            self.amostra_erro = (self.amostra_erro + [(motivo, ativo, int(action), lado, int(position), len(lista))])[-12:]
+
+        if action == OFERTA_ADD:
+            # entra no livro por posição mesmo sem offer_id/agente (senão as posições deslocam)
+            if not pos.aplicar(action, position, side, price, qty, agent, offer_id):
+                return _erro("add_posicao_invalida")
+            if not has_offer or offer_id == 0:
+                return
+            corretora = self._corretora(agent) if agent else ""
+            self._emitir(self._livro_giro.atualizar(ativo, lado, float(price), int(qty), corretora,
+                                                    int(offer_id), ts), ts)
             return
-        apagar = action in (OFERTA_DELETE, OFERTA_DELETE_FROM)
-        corretora = self._corretora(agent) if has_agent and agent else ""
-        if not corretora:
-            corretora = self._livro_giro.corretora_de(ativo, offer_id)
-        preco = float(price) if has_price and price else self._livro_giro.preco_de(ativo, offer_id)
-        if apagar:
-            self._emitir(self._livro_giro.atualizar(ativo, lado, preco, 0, corretora, int(offer_id), ts, apagar=True), ts)
+        if action not in (OFERTA_EDIT, OFERTA_DELETE, OFERTA_DELETE_FROM):
+            return _erro("acao_desconhecida")
+        if not 0 <= idx < len(lista):
+            return _erro("posicao_fora_da_lista" if lista else "livro_vazio")
+        if action == OFERTA_DELETE_FROM:
+            afetadas = [list(o) for o in lista[idx:]]
+        else:
+            afetadas = [list(lista[idx])]
+        if action == OFERTA_EDIT:
+            self.amostra_edit = (self.amostra_edit + [(ativo, lado, int(position), int(qty), int(lista[idx][1]))])[-12:]
+        if not pos.aplicar(action, position, side, price if has_price else 0.0, qty if has_qty else 0,
+                           agent if has_agent else 0, offer_id if has_offer else 0):
+            return _erro("aplicar_falhou")
+        if action == OFERTA_EDIT:
+            preco_o, qtd_o, agente_o, oid_o = lista[idx]
+            self._emitir(self._livro_giro.atualizar(ativo, lado, float(preco_o), int(qtd_o), self._corretora(agente_o),
+                                                    int(oid_o), ts), ts)
             return
-        if not has_qty or not corretora:
-            return
-        self._emitir(self._livro_giro.atualizar(ativo, lado, preco, int(qty), corretora, int(offer_id), ts), ts)
+        for preco_o, _qtd_o, agente_o, oid_o in afetadas:
+            self._emitir(self._livro_giro.atualizar(ativo, lado, float(preco_o), 0, self._corretora(agente_o),
+                                                    int(oid_o), ts, apagar=True), ts)
 
     def _processar_book(self, lado, price, qty, ts_chegada):
         """

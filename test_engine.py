@@ -4374,6 +4374,52 @@ def test_historico_do_dia():
 import threading
 
 
+def test_giro_por_posicao():
+    print(f"\n{AMARELO}═══ TESTE 49: Giro com o livro real — EDIT/DELETE só trazem lado e posição (sem offer_id) ═══{RESET}")
+    from profitdll.bridge import (ProfitDLLBridge, AGRESSAO_VENDA, OFERTA_ADD, OFERTA_EDIT, OFERTA_DELETE,
+                                  OFERTA_FULL)
+    ponte = ProfitDLLBridge("PETR4")
+    ponte.nomes = {8: "UBS", 3: "XP"}
+    giros = []
+    ponte.on_renovacao = lambda *a: giros.append(a)
+    ts = 1_000_000.0
+
+    def evento(acao, posicao, qtd=0, oid=0, agente=0, preco=0.0, lado=0, compra=None):
+        # formato do callback real: ADD traz tudo; EDIT/DELETE só ação, lado, posição (e nQtd no EDIT)
+        tem_add = acao == OFERTA_ADD
+        ponte._processar_oferta_giro("PETR4", acao, posicao, lado, qtd, agente, oid, preco,
+                                     int(tem_add), int(tem_add or acao == OFERTA_EDIT), int(tem_add), int(tem_add),
+                                     compra, None, ts)
+
+    # FullBook da compra: uma ordem SEM agente na frente (posição 1) e a da UBS no fim da lista (posição 0)
+    compra = _array_v2([(19.05, 100, 0, 5), (19.04, 1500, 8, 10)], flags=3)
+    evento(OFERTA_FULL, 0, compra=compra)
+    pos = ponte._livros_pos["PETR4"]
+    if len(pos.compra) == 2 and ponte.giro_erros == 0:
+        ok("FullBook entra inteiro no livro por posição, inclusive a ordem sem agente")
+    else:
+        err(f"fullbook: {pos.compra} erros={ponte.giro_erros}")
+    ponte._processar_trade(8, 3, 300, 19.04, AGRESSAO_VENDA, ts + 1, ativo="PETR4")    # UBS compra, agressor vende
+    evento(OFERTA_EDIT, 0, qtd=-300)                          # nQtd é delta negativo: 1500 → 1200
+    ponte._processar_trade(8, 3, 1200, 19.04, AGRESSAO_VENDA, ts + 2, ativo="PETR4")
+    evento(OFERTA_DELETE, 0)                                  # lote acabou: some a ordem da frente (posição 0)
+    evento(OFERTA_ADD, 0, qtd=1500, oid=11, agente=8, preco=19.04)   # UBS repõe 1.500 no mesmo preço
+    if len(giros) == 1 and giros[0][:4] == ("PETR4", "UBS", "compra", 19.04) and ponte.giro_erros == 0:
+        ok("Lote de 1.500 consumido (300 + 1.200) e reposto no mesmo preço pela mesma corretora = 1 giro")
+    else:
+        err(f"giro: {giros} erros={ponte.giro_erros} {ponte.giro_erros_motivo}")
+    evento(OFERTA_DELETE, 1)                                  # sai a ordem sem agente: não pode deslocar as outras
+    if ponte.giro_erros == 0 and [o[3] for o in pos.compra] == [11]:
+        ok("Ordem sem agente participa das posições (apagar a posição 1 não dá erro nem apaga a errada)")
+    else:
+        err(f"posições: {pos.compra} erros={ponte.giro_erros} {ponte.giro_erros_motivo}")
+    evento(OFERTA_DELETE, 5)
+    if ponte.giro_erros == 1 and ponte.giro_erros_motivo == {"livro_vazio" if not pos.compra else "posicao_fora_da_lista": 1}:
+        ok("Posição fora da lista é contada com o motivo, sem derrubar a ponte")
+    else:
+        err(f"motivo: {ponte.giro_erros} {ponte.giro_erros_motivo}")
+
+
 def test_radar_janela():
     print(f"\n{AMARELO}═══ TESTE 48: Radar — janela de 2 e 5 min (icebergs com giro recente) ═══{RESET}")
     from core.radar import Radar
@@ -4540,6 +4586,7 @@ def main():
     test_livro_giro_escala()
     test_encerramento_limpo()
     test_radar_janela()
+    test_giro_por_posicao()
     test_livro_protocolo_e_api()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
