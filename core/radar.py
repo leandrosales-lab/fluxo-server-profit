@@ -125,9 +125,10 @@ class Radar:
             reg["ultimo_giro_as"] = d.ultimo_giro or None
 
     def lista(self, situacao: str | None = None, limite: int = LIMITE_LISTA,
-              janela: float | None = None) -> list[dict]:
+              janela: float | None = None, ordem: str = "padrao") -> list[dict]:
         """`janela` (s): só os icebergs com giro nos últimos `janela` segundos (2 ou 5 min no day trade),
-        do giro mais recente para o mais antigo."""
+        do giro mais recente para o mais antigo. `ordem="giros"`: do maior para o menor número de giros
+        (empate: maior volume); vale sobre a lista inteira, antes do corte por `limite`."""
         segurando, resolvidos = [], []
         for idreg, reg in self._registros.items():
             self._atualizar(idreg, reg)
@@ -139,10 +140,12 @@ class Radar:
         segurando.sort(key=lambda r: -r["volume"])
         resolvidos.sort(key=lambda r: -(r["desfecho_as"] or 0))
         saida = []
-        ordem = segurando + resolvidos
-        if janela:
-            ordem.sort(key=lambda r: -r["ultimo_giro_as"])
-        for reg in ordem[:limite]:
+        todos = segurando + resolvidos
+        if ordem == "giros":
+            todos.sort(key=lambda r: (-r["giros"], -r["volume"]))
+        elif janela:
+            todos.sort(key=lambda r: -r["ultimo_giro_as"])
+        for reg in todos[:limite]:
             r = dict(reg)
             r["acerto"] = calibracao.acerto_iceberg(self._tabela, r["ativo"], r["volume"])
             saida.append(r)

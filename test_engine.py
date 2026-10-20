@@ -4374,6 +4374,36 @@ def test_historico_do_dia():
 import threading
 
 
+def test_radar_ordem_giros():
+    print(f"\n{AMARELO}═══ TESTE 50: Radar — lista do maior para o menor número de giros ═══{RESET}")
+    from core.radar import Radar
+    radar = Radar(EngineConfig(), calibracao_tabela={})
+    base = 1_000_000.0
+    # três registros com giros diferentes e um empate de giros resolvido pelo volume
+    for ativo, corr, giros, vol in [("AAA3", "UBS", 2, 900), ("BBB3", "XP", 5, 100), ("CCC3", "BTG", 3, 100), ("DDD3", "JP MORGAN", 3, 700)]:
+        radar._seq += 1
+        i = radar._seq
+        radar._registros[i] = {"ativo": ativo, "corretora": corr, "lado": "compra", "preco": 10.0, "giros": giros,
+                               "volume": vol, "confirmado_as": base, "ultimo_giro_as": base + i, "situacao": "segurando",
+                               "desfecho_as": None, "segurou_as": None, "rompeu_as": None}
+        chave = (ativo, corr, "compra", 1000)
+        radar._chave_de[i], radar._atual[chave] = chave, i
+    padrao = [r["ativo"] for r in radar.lista()]
+    giros = [(r["ativo"], r["giros"]) for r in radar.lista(ordem="giros")]
+    if giros == [("BBB3", 5), ("DDD3", 3), ("CCC3", 3), ("AAA3", 2)]:
+        ok("ordem='giros': maior primeiro; no empate, o de maior volume (DDD3 700 antes de CCC3 100)")
+    else:
+        err(f"ordem por giros: {giros}")
+    if padrao == ["AAA3", "DDD3", "BBB3", "CCC3"]:
+        ok("A ordem padrão (volume) continua a mesma sem o parâmetro")
+    else:
+        err(f"ordem padrão: {padrao}")
+    if [r["ativo"] for r in radar.lista(limite=2, ordem="giros")] == ["BBB3", "DDD3"]:
+        ok("O corte por limite vem depois de ordenar: os 2 com mais giros")
+    else:
+        err("limite + ordem")
+
+
 def test_giro_por_posicao():
     print(f"\n{AMARELO}═══ TESTE 49: Giro com o livro real — EDIT/DELETE só trazem lado e posição (sem offer_id) ═══{RESET}")
     from profitdll.bridge import (ProfitDLLBridge, AGRESSAO_VENDA, OFERTA_ADD, OFERTA_EDIT, OFERTA_DELETE,
@@ -4587,6 +4617,7 @@ def main():
     test_encerramento_limpo()
     test_radar_janela()
     test_giro_por_posicao()
+    test_radar_ordem_giros()
     test_livro_protocolo_e_api()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")

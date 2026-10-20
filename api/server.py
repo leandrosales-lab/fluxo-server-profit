@@ -228,7 +228,8 @@ class FlowHandler(BaseHTTPRequestHandler):
                     self._send_json({"error": "janela inválida"}, 400)
                     return
                 with self.engine._lock:          # o radar recebe negócios sob este lock (Radar.envolver)
-                    corpo = {"resumo": radar.resumo(), "lista": radar.lista(sit, max(1, limite), janela),
+                    ordem = "giros" if qs.get("ordem", [""])[0] == "giros" else "padrao"
+                    corpo = {"resumo": radar.resumo(), "lista": radar.lista(sit, max(1, limite), janela, ordem),
                              "agora": radar._agora}
                 self._send_json(corpo)
 

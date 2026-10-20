@@ -40,6 +40,7 @@ laco(async () => {
   const params = new URLSearchParams();
   if (situacao) params.set("situacao", situacao);
   if (janela) params.set("janela", janela);
+  params.set("ordem", "giros");       // maior número de giros primeiro (empate: maior volume)
   const [dados, estado] = await Promise.all([
     getJSON(`/api/radar${params.size ? `?${params}` : ""}`), getJSON("/state")]);
   shell.atualizarStatus(estado);
