@@ -37,6 +37,7 @@ class Radar:
         self._seq = 0
         self._negocios = 0
         self._dia = None
+        self._agora = 0.0                # maior hora vista (negócio ou giro): o "agora" da janela de 2/5 min
 
     # ── entrada
     def on_tick(self, tick):
@@ -44,6 +45,7 @@ class Radar:
         if self._dia is not None and dia != self._dia:
             self.reset()
         self._dia = dia
+        self._agora = max(self._agora, tick.timestamp)
         ativo = tick.asset
         self._negocios += 1
         self._detector(ativo).on_tick(tick)
@@ -65,6 +67,7 @@ class Radar:
         if self._dia is not None and dia != self._dia:
             self.reset()
         self._dia = dia
+        self._agora = max(self._agora, ts)
         self._detector(ativo).on_renovacao(corretora, lado, preco, ts)
 
     def envolver(self, add_tick, engine):
@@ -90,6 +93,7 @@ class Radar:
             self._registros[self._seq] = {
                 "ativo": ativo, "corretora": d.corretora, "lado": d.lado, "preco": d.preco,
                 "giros": d.giros, "volume": d.vol_passivo, "confirmado_as": ev.ts,
+                "ultimo_giro_as": d.ultimo_giro or None,
                 "situacao": "segurando", "desfecho_as": None, "segurou_as": None, "rompeu_as": None,
             }
             self._atual[chave], self._chave_de[self._seq] = self._seq, chave
@@ -99,6 +103,7 @@ class Radar:
             return                       # evento de outra defesa (ex.: candidata nova no mesmo nível)
         reg = self._registros[self._atual[chave]]
         reg["giros"], reg["volume"] = d.giros, d.vol_passivo
+        reg["ultimo_giro_as"] = d.ultimo_giro or None
         if ev.evento == "segurou":
             reg["segurou_as"] = ev.ts
             if reg["situacao"] == "segurando":
@@ -117,18 +122,27 @@ class Radar:
         d = self._vivos.get(chave)
         if d is not None and self._atual.get(chave) == idreg:
             reg["giros"], reg["volume"] = d.giros, d.vol_passivo
+            reg["ultimo_giro_as"] = d.ultimo_giro or None
 
-    def lista(self, situacao: str | None = None, limite: int = LIMITE_LISTA) -> list[dict]:
+    def lista(self, situacao: str | None = None, limite: int = LIMITE_LISTA,
+              janela: float | None = None) -> list[dict]:
+        """`janela` (s): só os icebergs com giro nos últimos `janela` segundos (2 ou 5 min no day trade),
+        do giro mais recente para o mais antigo."""
         segurando, resolvidos = [], []
         for idreg, reg in self._registros.items():
             self._atualizar(idreg, reg)
             if situacao and reg["situacao"] != situacao:
                 continue
+            if janela and not (reg.get("ultimo_giro_as") and reg["ultimo_giro_as"] >= self._agora - janela):
+                continue
             (segurando if reg["situacao"] == "segurando" else resolvidos).append(reg)
         segurando.sort(key=lambda r: -r["volume"])
         resolvidos.sort(key=lambda r: -(r["desfecho_as"] or 0))
         saida = []
-        for reg in (segurando + resolvidos)[:limite]:
+        ordem = segurando + resolvidos
+        if janela:
+            ordem.sort(key=lambda r: -r["ultimo_giro_as"])
+        for reg in ordem[:limite]:
             r = dict(reg)
             r["acerto"] = calibracao.acerto_iceberg(self._tabela, r["ativo"], r["volume"])
             saida.append(r)

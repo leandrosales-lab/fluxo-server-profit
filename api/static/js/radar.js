@@ -10,6 +10,19 @@ const shell = montarShell("radar");
 
 let situacao = "";
 let linhas = [];
+let agora = null;     // relógio dos dados (hora do último negócio/giro visto pelo radar)
+const CHAVE_JANELA = "fluxo.radarJanela";
+let janela = "";      // segundos como texto: "120" (2 min), "300" (5 min) ou "" (dia inteiro)
+try { const v = localStorage.getItem(CHAVE_JANELA); if (v === "120" || v === "300") janela = v; } catch { /* padrão: dia */ }
+function marcarJanela() {
+  document.querySelectorAll("#janelas [data-janela]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.janela === janela)));
+}
+marcarJanela();
+document.querySelectorAll("#janelas [data-janela]").forEach((b) => b.addEventListener("click", () => {
+  janela = b.dataset.janela;
+  marcarJanela();
+  try { localStorage.setItem(CHAVE_JANELA, janela); } catch { /* vale só nesta visita */ }
+}));
 document.querySelectorAll("#filtros [data-sit]").forEach((b) => b.addEventListener("click", () => {
   situacao = b.dataset.sit;
   document.querySelectorAll("#filtros [data-sit]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
@@ -24,13 +37,16 @@ $("lista").addEventListener("click", async (ev) => {
 });
 
 laco(async () => {
+  const params = new URLSearchParams();
+  if (situacao) params.set("situacao", situacao);
+  if (janela) params.set("janela", janela);
   const [dados, estado] = await Promise.all([
-    getJSON(`/api/radar${situacao ? `?situacao=${encodeURIComponent(situacao)}` : ""}`), getJSON("/state")]);
+    getJSON(`/api/radar${params.size ? `?${params}` : ""}`), getJSON("/state")]);
   shell.atualizarStatus(estado);
   const desligado = dados.resumo === null;
   $("radar-vazio").hidden = !desligado && dados.lista.length > 0;
   $("radar-vazio").textContent = desligado ? "Radar desligado — suba o servidor com --radar"
-    : "Nenhum iceberg ainda hoje";
+    : janela ? `Nenhum iceberg com giro nos últimos ${janela === "120" ? 2 : 5} min` : "Nenhum iceberg ainda hoje";
   const r = dados.resumo || {};
   for (const [id, chave] of [["r-segurando", "segurando"], ["r-seguraram", "seguraram"], ["r-romperam", "romperam"],
                              ["r-sniper", "viraram_sniper"], ["r-papeis", "papeis"], ["r-negocios", "negocios"]]) {
@@ -38,5 +54,6 @@ laco(async () => {
   }
   $("radar-meta").textContent = desligado ? "" : `${inteiro(dados.lista.length)} na lista · clique abre o papel na Operar`;
   linhas = dados.lista;
-  atualizarLinhas($("lista"), linhas, linhaRadar);
+  agora = dados.agora || null;
+  atualizarLinhas($("lista"), linhas, (x) => linhaRadar(x, agora));
 }, 1000);

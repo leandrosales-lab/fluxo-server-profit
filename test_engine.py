@@ -4374,6 +4374,45 @@ def test_historico_do_dia():
 import threading
 
 
+def test_radar_janela():
+    print(f"\n{AMARELO}═══ TESTE 48: Radar — janela de 2 e 5 min (icebergs com giro recente) ═══{RESET}")
+    from core.radar import Radar
+
+    def neg(ativo, ms, preco, qtd, agr, lado, pas=""):
+        t = _neg(ms, preco, qtd, agr, lado, pas)
+        t.asset = ativo
+        return t
+
+    radar = Radar(EngineConfig(), calibracao_tabela={})
+    # RENT3: dois giros no começo; PETR4: dois giros 4 min depois (o "agora" do radar é o do último giro)
+    for t in [neg("RENT3", 0, 50.36, 800, "XP", Side.SELL, "AGORA"), neg("RENT3", 1000, 50.36, 700, "BTG", Side.SELL, "AGORA")]:
+        radar.on_tick(t)
+    radar.on_renovacao("RENT3", "AGORA", "compra", 50.36, 1_000_000.0)
+    radar.on_renovacao("RENT3", "AGORA", "compra", 50.36, 1_000_001.0)
+    for t in [neg("PETR4", 240_000, 38.00, 900, "BTG", Side.BUY, "ITAU"), neg("PETR4", 241_000, 38.00, 600, "XP", Side.BUY, "ITAU")]:
+        radar.on_tick(t)
+    radar.on_renovacao("PETR4", "ITAU", "venda", 38.00, 1_000_240.0)
+    radar.on_renovacao("PETR4", "ITAU", "venda", 38.00, 1_000_241.0)
+    todos = radar.lista()
+    d2, d5 = radar.lista(janela=120), radar.lista(janela=300)
+    if sorted(r["ativo"] for r in todos) == ["PETR4", "RENT3"] and todos[0]["ultimo_giro_as"] is not None:
+        ok("Cada registro leva a hora do último giro")
+    else:
+        err(f"último giro: {todos}")
+    if [r["ativo"] for r in d2] == ["PETR4"]:
+        ok("Janela de 2 min: só quem teve giro nos últimos 2 min (RENT3, de 4 min atrás, sai)")
+    else:
+        err(f"2 min: {[(r['ativo'], r['ultimo_giro_as']) for r in d2]}")
+    if [r["ativo"] for r in d5] == ["PETR4", "RENT3"]:
+        ok("Janela de 5 min: os dois, o giro mais recente primeiro")
+    else:
+        err(f"5 min: {[(r['ativo'], r['ultimo_giro_as']) for r in d5]}")
+    if len(radar.lista(janela=None)) == 2 and radar.lista("rompeu", janela=120) == []:
+        ok("Sem janela volta ao dia inteiro; a janela combina com o filtro de situação")
+    else:
+        err("janela sem/ com situação")
+
+
 def test_encerramento_limpo():
     print(f"\n{AMARELO}═══ TESTE 47: POST /encerrar — encerramento limpo (DLL finalizada antes de sair) ═══{RESET}")
     import json
@@ -4500,6 +4539,7 @@ def main():
     test_historico_do_dia()
     test_livro_giro_escala()
     test_encerramento_limpo()
+    test_radar_janela()
     test_livro_protocolo_e_api()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")

@@ -4,7 +4,7 @@ import * as f from "../api/static/js/formato.js";
 import { textoStatus, estadoReconectar } from "../api/static/js/shell.js";
 import { tituloSinal, LOTE_GRANDE_PADRAO, textoEvento, duracao, medidaSinal, ordenarDefesas,
   linhasQueCabem, rotuloFonteBook, qtdBook, corretorasBook, linhasOfertas } from "../api/static/js/operar-paineis.js";
-import { textoSituacao, linhaRadar } from "../api/static/js/radar-lista.js";
+import { textoSituacao, linhaRadar, textoUltimoGiro } from "../api/static/js/radar-lista.js";
 import { sinceCandles, juntarCandles, precisaLimpar } from "../api/static/js/candles.js";
 
 assert.equal(f.preco(38.47), "38,47");
@@ -142,7 +142,14 @@ assert.equal(textoSituacao({ situacao: "virou sniper", desfecho_as: 1792155600 }
 const lr = linhaRadar({ ativo: "RENT3", corretora: "AGORA", lado: "compra", preco: 50.36, giros: 20, volume: 8500,
   confirmado_as: 1792155600, situacao: "segurando", acerto: { taxa: 0.408 } });
 assert.equal(lr.classe, "destaque");
-assert.deepEqual(lr.celulas.map((c) => c.t), ["RENT3", "AGORA", "compra", "50,36", "20", "8.500", "10:00:00", "segurando", "41%"]);
+assert.deepEqual(lr.celulas.map((c) => c.t), ["RENT3", "AGORA", "compra", "50,36", "20", "8.500", "10:00:00", "—", "segurando", "41%"]);
+// Último giro: "há 40 s" / "há 3 min" em relação ao relógio dos dados; sem giro ou sem relógio, "—"
+assert.equal(textoUltimoGiro({ ultimo_giro_as: 1000 }, 1040), "há 40 s");
+assert.equal(textoUltimoGiro({ ultimo_giro_as: 1000 }, 1180), "há 3 min");
+assert.equal(textoUltimoGiro({ ultimo_giro_as: null }, 1180), "—");
+assert.equal(textoUltimoGiro({ ultimo_giro_as: 1000 }, null), "—");
+assert.equal(linhaRadar({ ativo: "X", corretora: "UBS", lado: "venda", preco: 10, giros: 2, volume: 1, confirmado_as: 1792155600,
+  ultimo_giro_as: 1792155660, situacao: "segurando" }, 1792155700).celulas[7].t, "há 40 s");
 
 // Book de ofertas: cada ordem na ordem da fila, melhor preço primeiro
 const niveisOf = [

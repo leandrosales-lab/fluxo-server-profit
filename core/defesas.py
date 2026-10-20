@@ -80,6 +80,7 @@ class Defesa:
     estado: str = "candidata"      # candidata | alerta | confirmada | rompida
     vol_passivo: int = 0
     giros: int = 0                 # vezes que a corretora repôs o lote no mesmo preço (livro de ofertas)
+    ultimo_giro: float = 0.0       # hora do último giro (0 = nenhum ainda); o radar filtra por janela de 2/5 min
     vol_agredido: int = 0
     agressoes: int = 0             # ordens originais dela no preço, do lado defendido
     agressoes_vazio: int = 0       # agressões com o lado dela vazio no preço (fantasma)
@@ -103,7 +104,8 @@ class Defesa:
     def to_dict(self) -> dict:
         return {"tipo": self.tipo, "estado": self.estado, "corretora": self.corretora, "lado": self.lado,
                 "preco": self.preco, "desde": self.desde, "ultima": self.ultima,
-                "vol_passivo": self.vol_passivo, "giros": self.giros, "vol_agredido": self.vol_agredido,
+                "vol_passivo": self.vol_passivo, "giros": self.giros, "ultimo_giro": self.ultimo_giro,
+                "vol_agredido": self.vol_agredido,
                 "agressoes": self.agressoes, "reacoes": self.reacoes, "alem_max": self.alem_max,
                 "niveis_anteriores": list(self.niveis), "e2_com": self.e2_com,
                 "segurou_em": self.segurou_em}
@@ -234,6 +236,7 @@ class DefesaDetector:
         n = self.nivel(preco)
         d = self._obter(corretora, lado, n, preco, ts)
         d.giros += 1
+        d.ultimo_giro = ts
         self._atividade(d, ts)
 
     def on_book(self, melhor_compra: Optional[float], melhor_venda: Optional[float]) -> None:

@@ -222,8 +222,14 @@ class FlowHandler(BaseHTTPRequestHandler):
                     self._send_json({"error": "limite inválido"}, 400)
                     return
                 sit = qs.get("situacao", [None])[0] or None
+                try:
+                    janela = num("janela", 0, int) or None      # segundos; 120 = 2 min, 300 = 5 min
+                except ValueError:
+                    self._send_json({"error": "janela inválida"}, 400)
+                    return
                 with self.engine._lock:          # o radar recebe negócios sob este lock (Radar.envolver)
-                    corpo = {"resumo": radar.resumo(), "lista": radar.lista(sit, max(1, limite))}
+                    corpo = {"resumo": radar.resumo(), "lista": radar.lista(sit, max(1, limite), janela),
+                             "agora": radar._agora}
                 self._send_json(corpo)
 
         elif path in PAGINAS:
