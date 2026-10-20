@@ -57,6 +57,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.engine import Tick, Side, BookLevel
 from profitdll.livro import (LivroOfertas, decodifica_array_v2, CABECALHO_V2, AT_FULLBOOK,
                              LADO_COMPRA, LADO_VENDA)
+from core.livro_ofertas import LivroOfertas as LivroGiro
 
 logger = logging.getLogger("ProfitDLL")
 
@@ -137,6 +138,10 @@ def copiar_array_v2(ptr) -> Optional[bytes]:
         return cabecalho
     return ctypes.string_at(endereco, tamanho)
 
+
+# Ações do livro de ofertas (manual p.8, p.61)
+OFERTA_ADD, OFERTA_EDIT, OFERTA_DELETE, OFERTA_DELETE_FROM, OFERTA_FULL = 0, 1, 2, 3, 4
+OB_LAST_PACKET, OB_FIRST_PACKET = 1, 2
 
 # Horário da B3 = horário de Brasília. Fuso fixo UTC-3 (o Brasil não tem
 # horário de verão desde 2019) — não depende de tzdata no Windows.
@@ -272,6 +277,37 @@ def trade_para_tick(buy_agent: int, sell_agent: int, qty: int, price: float,
     )
 
 
+def decodificar_ofertas(blob: bytes) -> tuple[list[tuple], bool, bool]:
+    """Lê um array de full book V2 (manual p.65–66).
+
+    Devolve (ofertas, primeiro, ultimo). Cada oferta é (offer_id, preço, qtd, agente).
+    Sem flag de pacote, o bloco é um livro inteiro.
+    """
+    import struct
+    if not blob or len(blob) < 8:
+        return [], True, True
+    qtd, tamanho = struct.unpack_from("ii", blob, 0)
+    if qtd < 0 or qtd > 20000:
+        return [], True, True
+    frame_end = 8 + qtd * 53
+    flags = struct.unpack_from("I", blob, frame_end)[0] if frame_end + 4 <= len(blob) else 0
+    ofertas = []
+    pos = 8
+    for _ in range(qtd):
+        if pos + 30 > len(blob):
+            break
+        price, qty, agent, offer_id, date_len = struct.unpack_from("=dqiqH", blob, pos)
+        pos += 30 + max(0, int(date_len))
+        if qty <= 0 or price <= 0 or agent <= 0 or offer_id == 0:
+            continue
+        ofertas.append((int(offer_id), float(price), int(qty), int(agent)))
+    primeiro = bool(flags & OB_FIRST_PACKET)
+    ultimo = bool(flags & OB_LAST_PACKET)
+    if not primeiro and not ultimo:
+        primeiro = ultimo = True
+    return ofertas, primeiro, ultimo
+
+
 def topo_para_niveis(bid: Optional[tuple], ask: Optional[tuple],
                      timestamp: float) -> list[BookLevel]:
     """
@@ -326,6 +362,12 @@ class ProfitDLLBridge:
         self.nomes    = carregar_nomes_agentes(agentes_path)
         self.on_tick: Optional[Callable[[Tick], None]] = None
         self.on_book: Optional[Callable[[list[BookLevel]], None]] = None
+        # Giro de iceberg: (ativo, corretora, lado, preco, ts) quando o lote volta ao book
+        self.on_renovacao: Optional[Callable[..., None]] = None
+        self._livro_giro = LivroGiro()
+        self._pacote: dict[tuple, list] = {}
+        self.livros_assinados = 0
+        self.livros_recusados: list[str] = []
 
         self.fila: Queue = Queue()
         self.dll = None
@@ -403,6 +445,8 @@ class ProfitDLLBridge:
             "latencia_ms":       self.latencia_ms,
             "papeis":            {"pedidos": len(self.papeis), "assinados": self.assinados,
                                   "recusados": list(self.recusados)},
+            "livros":            {"assinados": self.livros_assinados,
+                                  "recusados": list(self.livros_recusados)},
             "ativo":             self.asset,
             "bolsa":             self.exchange,
             "dll_path":          mascarar_caminho(os.getenv("PROFITDLL_PATH", CAMINHO_PADRAO_DLL)),
@@ -432,16 +476,43 @@ class ProfitDLLBridge:
             self.stop()
             return False
         self.assinados = 1
-        self._assinar_livro()
         for p in self.papeis[1:]:
             if self.dll.SubscribeTicker(p, self.exchange) == 0:
                 self.assinados += 1
             else:
                 self.recusados.append(p)
+        self._assinar_livros()
         logger.info(f"ProfitDLL: assinatura ativa em {self.asset}"
                     + (f" + {self.assinados - 1} papéis do radar ({len(self.recusados)} recusados)"
-                       if len(self.papeis) > 1 else "") + f" (bolsa {self.exchange})")
+                       if len(self.papeis) > 1 else "")
+                    + (f"; livro de ofertas em {self.livros_assinados}"
+                       + (f" ({len(self.livros_recusados)} recusados)" if self.livros_recusados else "")
+                       if self.livros_assinados or self.livros_recusados else "")
+                    + f" (bolsa {self.exchange})")
         return True
+
+    def _assinar_livros(self) -> None:
+        """Livro por oferta: é daqui que sai o giro (lote consumido e reposto)."""
+        assinar = getattr(self.dll, "SubscribeOfferBook", None)
+        if assinar is None:
+            return
+        for p in self.papeis:
+            try:
+                ok = assinar(p, self.exchange) == 0
+            except Exception as e:
+                logger.warning(f"SubscribeOfferBook({p}) falhou: {e}")
+                ok = False
+            if ok:
+                self.livros_assinados += 1
+            else:
+                self.livros_recusados.append(p)
+        # o livro da tela é o do papel principal; sem ele o TinyBook segue valendo
+        self.livro_ativo = (self._livro_disponivel and self.asset not in self.livros_recusados
+                            and self.livros_assinados > 0)
+        if self.livro_ativo:
+            logger.info(f"ProfitDLL: livro de ofertas assinado em {self.asset}")
+        else:
+            logger.warning(f"livro de ofertas indisponível em {self.asset} - usando só o topo (TinyBook)")
 
     def stop(self):
         self._parar.set()
@@ -452,13 +523,14 @@ class ProfitDLLBridge:
             # Cancelar a assinatura ANTES de finalizar a DLL
             try:
                 if self._consumidor:
-                    if self.livro_ativo:
-                        try:
-                            self.dll.UnsubscribeOfferBook(self.asset, self.exchange)
-                        except Exception as e:
-                            logger.warning(f"UnsubscribeOfferBook falhou: {e}")
+                    cancelar_livro = getattr(self.dll, "UnsubscribeOfferBook", None)
                     for p in self.papeis:
                         self.dll.UnsubscribeTicker(p, self.exchange)
+                        if cancelar_livro is not None:
+                            try:
+                                cancelar_livro(p, self.exchange)
+                            except Exception:
+                                pass
                 self.dll.DLLFinalize()
             except Exception as e:
                 logger.warning(f"Erro ao finalizar ProfitDLL: {e}")
@@ -491,6 +563,10 @@ class ProfitDLLBridge:
         self._tiny_visto = False
         self._diverge_desde = None
         self._em_divergencia = False
+        self._livro_giro.reset()
+        self._pacote.clear()
+        self.livros_assinados = 0
+        self.livros_recusados = []
         while True:
             try:
                 self.fila.get_nowait()
@@ -537,12 +613,12 @@ class ProfitDLLBridge:
         TTradeCallback = WINFUNCTYPE(None, TConnectorAssetIdentifier, c_size_t, c_uint)
         # Topo do livro: (ativo por valor, preço, quantidade, lado 0 = bid / 1 = ask)
         TTinyBookCallback = WINFUNCTYPE(None, TAssetID, c_double, c_int, c_int)
-        # Livro de ofertas V2 (igual ao exemplo oficial): ação, posição, lado, qtd, agente, offer_id,
-        # preço, bHas* (preço, qtd, data, offer_id, agente), data e os arrays FullBook (venda, compra).
-        # nQtd vem em 32 bits aqui (pode truncar): no FullBook vale a quantidade int64 dos arrays.
-        TOfferBookCallbackV2 = WINFUNCTYPE(None, TAssetID, c_int, c_int, c_int, c_int, c_int, c_longlong,
-                                           c_double, c_int, c_int, c_int, c_int, c_int, c_wchar_p,
-                                           POINTER(c_ubyte), POINTER(c_ubyte))
+        # Livro de ofertas V2: ação, posição, lado, qtd, agente, offer_id, preço, bHas* (preço, qtd, data,
+        # offer_id, agente), data e os arrays FullBook (venda, compra). nQtd é Int64 (manual p.53); o
+        # exemplo oficial declara c_int e desalinha o resto.
+        TOfferBookCallbackV2 = WINFUNCTYPE(
+            None, TAssetID, c_int, c_int, c_int, c_longlong, c_int, c_longlong, c_double,
+            c_int, c_int, c_int, c_int, c_int, c_wchar_p, POINTER(c_ubyte), POINTER(c_ubyte))
 
         # stdcall → WinDLL (CDLL corromperia a pilha silenciosamente)
         dll = WinDLL(dll_path)
@@ -566,6 +642,15 @@ class ProfitDLLBridge:
         dll.GetAgentNameLength.restype = c_int
         dll.GetAgentName.argtypes = [c_int, c_int, c_wchar_p, c_uint]
         dll.GetAgentName.restype = c_int
+        if hasattr(dll, "SetOfferBookCallbackV2"):
+            dll.SetOfferBookCallbackV2.argtypes = [TOfferBookCallback]
+            dll.SetOfferBookCallbackV2.restype = c_int
+        if hasattr(dll, "SubscribeOfferBook"):
+            dll.SubscribeOfferBook.argtypes = [c_wchar_p, c_wchar_p]
+            dll.SubscribeOfferBook.restype = c_int
+        if hasattr(dll, "UnsubscribeOfferBook"):
+            dll.UnsubscribeOfferBook.argtypes = [c_wchar_p, c_wchar_p]
+            dll.UnsubscribeOfferBook.restype = c_int
 
         def on_estado(tipo, resultado):
             self._on_estado(tipo, resultado)
@@ -590,17 +675,16 @@ class ProfitDLLBridge:
 
         def on_oferta(asset, acao, posicao, lado, qtd, agente, offer_id, preco, tem_preco, tem_qtd,
                       tem_data, tem_offer_id, tem_agente, data, p_venda, p_compra):
-            # Roda na thread da DLL: só copia os bytes dos arrays (o ponteiro só vale aqui) e enfileira
+            # Roda na thread da DLL: só copia os bytes dos arrays (o ponteiro só vale aqui) e enfileira.
+            # Um único callback serve o giro do radar (todos os papéis) e o livro da tela (papel principal).
             try:
-                if ticker_do_ativo(asset) != self.asset:
-                    return          # radar: livro só do papel principal
                 arr_venda = arr_compra = None
                 if acao == AT_FULLBOOK:
                     arr_venda, arr_compra = copiar_array_v2(p_venda), copiar_array_v2(p_compra)
-                self.fila.put(("oferta", int(acao), int(posicao), int(lado),
-                               float(preco) if tem_preco else 0.0, int(qtd) if tem_qtd else 0,
-                               int(agente) if tem_agente else 0, int(offer_id) if tem_offer_id else 0,
-                               arr_venda, arr_compra, time.time()))
+                self.fila.put(("offer", ticker_do_ativo(asset), int(acao), int(posicao), int(lado),
+                               int(qtd), int(agente), int(offer_id), float(preco),
+                               int(tem_preco), int(tem_qtd), int(tem_offer_id), int(tem_agente),
+                               arr_compra, arr_venda, time.time()))
             except Exception:
                 self.livro.erros += 1
 
@@ -739,7 +823,9 @@ class ProfitDLLBridge:
                 self._processar_trade(*evento[1:])
             elif evento[0] == "book":
                 self._processar_book(*evento[1:])
-            elif evento[0] == "oferta":
+            elif evento[0] == "offer":      # callback da DLL: giro de iceberg + livro da tela
+                self._processar_oferta_bruta(*evento[1:])
+            elif evento[0] == "oferta":     # só o livro da tela
                 self._processar_oferta(*evento[1:])
             else:
                 logger.warning(f"Evento desconhecido na fila da DLL: {evento[0]!r}")
@@ -798,6 +884,64 @@ class ProfitDLLBridge:
                 self.on_tick(tick)
             except Exception as e:
                 logger.error(f"Erro ao processar tick: {e}")
+        if tick.passive_broker:
+            lado_pas = "venda" if tick.side == Side.BUY else "compra"
+            self._emitir(self._livro_giro.negocio(
+                tick.asset, tick.passive_broker, lado_pas, tick.price, tick.qty, tick.timestamp), tick.timestamp)
+
+    def _emitir(self, renovacoes, ts: Optional[float] = None) -> None:
+        if not renovacoes or self.on_renovacao is None:
+            return
+        quando = self._ultimo_ts_negocio if ts is None else ts
+        if not quando:
+            quando = time.time()
+        for r in renovacoes:
+            try:
+                self.on_renovacao(r.ativo, r.corretora, r.lado, r.preco, quando)
+            except Exception as e:
+                logger.error(f"Erro ao registrar reposição: {e}")
+
+    def _corretora(self, agente: int) -> str:
+        if agente <= 0:
+            return ""
+        return self.nomes.get(agente) or self._nome_agente(agente)
+
+    def _processar_oferta_giro(self, ativo, action, position, side, qty, agent, offer_id, price,
+                          has_price, has_qty, has_offer, has_agent, compra, venda, ts):
+        """Livro de ofertas → reposição do iceberg. O nome da corretora é resolvido aqui, fora do callback."""
+        ativo = (ativo or self.asset).upper()
+        if action == OFERTA_FULL:
+            for blob, lado in ((compra, "compra"), (venda, "venda")):
+                if not blob:
+                    continue
+                ofertas, primeiro, ultimo = decodificar_ofertas(blob)
+                chave = (ativo, lado)
+                if primeiro:
+                    self._pacote[chave] = []
+                buf = self._pacote.setdefault(chave, [])
+                buf.extend(ofertas)
+                if ultimo:
+                    pronto = self._pacote.pop(chave, [])
+                    nomeadas = [(oid, preco, qtd, self._corretora(ag))
+                                for oid, preco, qtd, ag in pronto]
+                    self._emitir(self._livro_giro.definir(ativo, lado, nomeadas, ts), ts)
+            return
+        if side not in (TINYBOOK_BID, TINYBOOK_ASK):
+            return
+        lado = "compra" if side == TINYBOOK_BID else "venda"
+        if not has_offer or offer_id == 0:
+            return
+        apagar = action in (OFERTA_DELETE, OFERTA_DELETE_FROM)
+        corretora = self._corretora(agent) if has_agent and agent else ""
+        if not corretora:
+            corretora = self._livro_giro.corretora_de(ativo, offer_id)
+        preco = float(price) if has_price and price else self._livro_giro.preco_de(ativo, offer_id)
+        if apagar:
+            self._emitir(self._livro_giro.atualizar(ativo, lado, preco, 0, corretora, int(offer_id), ts, apagar=True), ts)
+            return
+        if not has_qty or not corretora:
+            return
+        self._emitir(self._livro_giro.atualizar(ativo, lado, preco, int(qty), corretora, int(offer_id), ts), ts)
 
     def _processar_book(self, lado, price, qty, ts_chegada):
         """
@@ -822,22 +966,15 @@ class ProfitDLLBridge:
     # LIVRO DE OFERTAS (sem DLL, testável)
     # ──────────────────────────────────────────────────────────
 
-    def _assinar_livro(self):
-        """SubscribeOfferBook do papel principal. Retorno != 0 é só aviso: o TinyBook segue valendo."""
-        if not self._livro_disponivel or self.dll is None:
-            return
-        try:
-            ret = self.dll.SubscribeOfferBook(self.asset, self.exchange)
-        except Exception as e:
-            ret = -1
-            logger.warning(f"SubscribeOfferBook({self.asset}, {self.exchange}) levantou: {e}")
-        if ret != 0:
-            self.livro_ativo = False
-            logger.warning(f"SubscribeOfferBook({self.asset}, {self.exchange}) falhou: código {ret} "
-                           f"- livro de ofertas desligado, usando só o topo (TinyBook)")
-        else:
-            self.livro_ativo = True
-            logger.info(f"ProfitDLL: livro de ofertas assinado em {self.asset}")
+    def _processar_oferta_bruta(self, ativo, action, position, side, qty, agent, offer_id, price,
+                                has_price, has_qty, has_offer, has_agent, compra, venda, ts):
+        """Evento do callback: alimenta o giro de iceberg (todos os papéis) e o livro da tela (o principal)."""
+        self._processar_oferta_giro(ativo, action, position, side, qty, agent, offer_id, price,
+                                    has_price, has_qty, has_offer, has_agent, compra, venda, ts)
+        if (ativo or self.asset).upper() == self.asset:
+            self._processar_oferta(action, position, side, float(price) if has_price else 0.0,
+                                   int(qty) if has_qty else 0, int(agent) if has_agent else 0,
+                                   int(offer_id) if has_offer else 0, venda, compra, ts)
 
     def _processar_oferta(self, acao, posicao, lado, preco, qtd, agente, offer_id,
                           arr_venda, arr_compra, ts_chegada):

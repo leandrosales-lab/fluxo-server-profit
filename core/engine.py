@@ -92,8 +92,9 @@ class IcebergCandidate:
 
     Modo PASSIVA (passive=True): broker é a corretora passiva, side é o lado
     passivo (BUY = compra passiva segurando venda agressora = suporte;
-    SELL = venda passiva segurando compra agressora = resistência) e cada
-    renovação é uma agressão executada contra ela no nível.
+    SELL = venda passiva segurando compra agressora = resistência). Cada
+    renovação é a corretora repondo o lote no mesmo preço depois que o
+    visível foi consumido (livro de ofertas). Agressão parcial não conta.
 
     Modo FALLBACK (passive=False): a fonte não informa a passiva; broker e
     side são do AGRESSOR e a renovação é o mesmo lote repetido no mesmo
@@ -103,7 +104,7 @@ class IcebergCandidate:
     side:           Side
     price:          float
     ref_qty:        int         # lote de referência (primeiro observado)
-    renewals:       int = 0     # renovações (modo passiva: execuções contra a passiva)
+    renewals:       int = 0     # giros: reposições do lote no mesmo preço (não cada agressão)
     total_vol:      int = 0     # volume total absorvido
     first_seen:     float = field(default_factory=time.time)
     last_renewed:   float = field(default_factory=time.time)
@@ -334,7 +335,9 @@ class EngineConfig:
     # ── Defesas (core/defesas.py): regras do professor, origem em cada linha ──
     # Iceberg: o volume executado contra a passiva no preço precisa chegar a este lote (aula-02 03:43–04:09)
     defesa_iceberg_lote_min:   int = 1000
-    # Iceberg: 1 giro = alerta, 2 giros confirmam (aula 9393845 05:52); giro = ordem original contra ela no preço
+    # Iceberg: 1 giro = alerta, 2 giros confirmam (aula 9393845 05:52).
+    # Giro = a corretora repõe o lote no mesmo preço depois que o visível foi consumido
+    # (livro de ofertas). Agressão parcial no que ainda está no book não conta.
     defesa_iceberg_giros:      int = 2
     # Sniper: agride de volta até N ms depois da agressão contrária no mesmo preço (medido 0–30 ms, aula 9393841)
     defesa_reacao_ms:          int = 30
@@ -491,6 +494,18 @@ class FlowEngine:
             self._trades_log.append(tick)
             self._update_candles(tick)
             self._atualizar_resumo(tick)
+            self._analyze()
+            self._registrar_sinal()
+
+    def renovacao(self, corretora: str, lado: str, preco: float, ts: float) -> None:
+        """Giro de iceberg: a corretora repôs o lote no preço. Atualiza o sinal."""
+        with self._lock:
+            self._renovacao_sob_lock(corretora, lado, preco, ts)
+
+    def _renovacao_sob_lock(self, corretora: str, lado: str, preco: float, ts: float) -> None:
+        self._avancar_relogio(ts)
+        self._defesas.on_renovacao(corretora, lado, preco, ts)
+        if len(self._ticks) >= 5:
             self._analyze()
             self._registrar_sinal()
 
@@ -1267,7 +1282,7 @@ class FlowEngine:
         offset = self.cfg.defesa_stop_ticks * self.cfg.tick_size   # 1º tick além do nível (aula-02 24:15)
         lado = "COMPRADOR (suporte)" if buy else "VENDEDOR (resistência)"
         reason = (f"Iceberg {lado} de {ic.broker} (passiva) @ {ic.price:.2f} | "
-                  f"{ic.renewals} execuções de {len(ic.aggressors)} agressores | "
+                  f"{ic.renewals} giros, {len(ic.aggressors)} agressores | "
                   f"Vol {ic.total_vol:,} ({ic.vol_ratio:.1f}x lote médio, {ic.share:.0%} do nível) | "
                   f"{ic.duration:.0f}s segurando | Fluxo: {pct_buy:.1f}%C / {pct_sell:.1f}%V")
         if extras:

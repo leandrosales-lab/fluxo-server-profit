@@ -1100,6 +1100,12 @@ def test_iceberg_passiva():
         engine.add_tick(Tick(ts, 19.04, 150 + (i % 3) * 50, agr, Side.SELL,
                              passive_broker="JP MORGAN"))
 
+    if engine.get_state()["icebergs_confirmed"]:
+        err("8 agressões sem reposição não são iceberg")
+    else:
+        ok("8 agressões contra JP MORGAN, sem a corretora repor o lote, não confirmam iceberg")
+    _renovar(engine, "JP MORGAN", "compra", 19.04, ts)
+
     state  = engine.get_state()
     signal = engine.get_signal()
     ics = state["icebergs_confirmed"]
@@ -1111,9 +1117,9 @@ def test_iceberg_passiva():
     else:
         err(f"Esperado 1 iceberg comprador de JP MORGAN: {ics}")
     ic = ics[0]
-    if ic["role"] == "suporte" and ic["price"] == 19.04 and ic["renewals"] == 8 \
+    if ic["role"] == "suporte" and ic["price"] == 19.04 and ic["renewals"] == 2 \
             and ic["aggressors"] == 8 and not ic["weak_heuristic"]:
-        ok(f"Estado: suporte @ 19.04 | 8 execuções de 8 agressores | não é heurística fraca")
+        ok("Estado: suporte @ 19.04 | 2 giros e 8 agressores | não é heurística fraca")
     else:
         err(f"Campos do iceberg incorretos: {ic}")
     if ic["vol_ratio"] >= 3.0 and ic["share"] == 1.0 and 0 < ic["confidence"] <= 0.9:
@@ -1144,6 +1150,7 @@ def test_iceberg_passiva():
     for i in range(5):
         ts += 1.0
         engine2.add_tick(Tick(ts, 19.04, 300, f"V{i}", Side.SELL, passive_broker="UBS"))
+    _renovar(engine2, "UBS", "compra", 19.04, ts)
     antes = len(engine2.get_state()["icebergs_confirmed"])
     engine2.add_tick(Tick(ts + engine2.cfg.iceberg_timeout_sec + 1, 19.05, 100, "X",
                           Side.BUY, passive_broker="Y"))
@@ -1162,6 +1169,7 @@ def test_iceberg_passiva():
     for i in range(6):
         ts += 1.0
         engine3.add_tick(Tick(ts, 19.03, 250, f"C{i}", Side.BUY, passive_broker="MORGAN STANLEY"))
+    _renovar(engine3, "MORGAN STANLEY", "venda", 19.03, ts)
     ics = engine3.get_state()["icebergs_confirmed"]
     sig = engine3.get_signal()
     if ics and ics[0]["side"] == "venda" and ics[0]["role"] == "resistência" \
@@ -1191,9 +1199,9 @@ def test_iceberg_passivas_espalhadas():
         ok("Nenhum iceberg: nenhuma passiva domina o nível")
     else:
         err(f"Agressões espalhadas não deveriam virar iceberg: {state['icebergs_confirmed']}")
-    if len(cands) == 4 and all(c.giros == 4 and c.vol_passivo == 600 and c.estado == "candidata"
+    if len(cands) == 4 and all(c.giros == 0 and c.vol_passivo == 600 and c.estado == "candidata"
                                for c in cands):
-        ok("Cada passiva com 4 execuções e 600 ações: abaixo do lote mínimo de 1.000 (aula-02)")
+        ok("Cada passiva com 4 agressões e 600 ações, 0 giros: abaixo de 1.000 e sem reposição")
     else:
         err(f"Candidatas inesperadas: {[(c.corretora, c.giros, c.vol_passivo, c.estado) for c in cands]}")
     if engine.get_signal().pattern.value != "Iceberg":
@@ -1301,6 +1309,7 @@ def test_iceberg_rtd_passiva():
         tick = inf.update(snap(19.40, vol, neg, ts, buyer="BTG PACTUAL", seller=v))
         if tick:
             engine.add_tick(tick)
+    _renovar(engine, "BTG PACTUAL", "compra", 19.40, ts)
     ics = engine.get_state()["icebergs_confirmed"]
     info(f"Icebergs: {ics}")
     if ics and ics[0]["passive_broker"] == "BTG PACTUAL" and ics[0]["side"] == "compra" \
@@ -2006,10 +2015,19 @@ def test_api_grafico_tt_book():
     # Sinais: só as trocas entram no registro (direto no engine, com um pregão conhecido; sem o corte calibrado)
     e = FlowEngine("PETR4", EngineConfig(defesa_iceberg_vol_sinal={}, defesa_iceberg_vol_sinal_padrao=0))
     vistos, ultima = [], None
+    itau = ubs = 0
     for i in range(60):
         lado = Side.SELL if i % 5 else Side.BUY
-        e.add_tick(Tick(2000 + i, 37.40 if lado == Side.SELL else 37.41, 500, f"C{i % 3}", lado,
+        preco = 37.40 if lado == Side.SELL else 37.41
+        e.add_tick(Tick(2000 + i, preco, 500, f"C{i % 3}", lado,
                         passive_broker="ITAU" if lado == Side.SELL else "UBS"))
+        # O sinal de iceberg só nasce quando a passiva repõe o lote (2 giros).
+        if lado == Side.SELL and itau < 2:
+            itau += 1
+            e.renovacao("ITAU", "compra", 37.40, 2000 + i)
+        elif lado == Side.BUY and ubs < 2:
+            ubs += 1
+            e.renovacao("UBS", "venda", 37.41, 2000 + i)
         s = e.get_signal()
         chave = (s.signal, s.pattern, s.stop_price) if s.signal in (Signal.BUY, Signal.SELL) else None
         if chave and chave != ultima:
@@ -2660,6 +2678,19 @@ def _neg(ms, preco, qtd, agressor, lado, passiva=""):
     return Tick(1_000_000.0 + ms / 1000, preco, qtd, agressor, lado, passive_broker=passiva)
 
 
+def _giro(det, corretora, lado, preco, ms, vezes=1):
+    """Reposição no livro. O último giro cai exatamente em `ms`."""
+    base = 1_000_000.0 + ms / 1000
+    for i in range(vezes):
+        det.on_renovacao(corretora, lado, preco, base - (vezes - 1 - i) * 1e-4)
+
+
+def _renovar(engine, corretora, lado, preco, ts, vezes=2):
+    """O motor confirma o iceberg na reposição, não na agressão."""
+    for i in range(vezes):
+        engine.renovacao(corretora, lado, preco, ts + i * 1e-4)
+
+
 def _evs(det, evento=None):
     return [e for e in det.eventos(200) if evento is None or e.evento == evento]
 
@@ -2683,8 +2714,10 @@ def test_defesas_classificacao():
     # ── Iceberg: passiva repetida, ≥ 1.000, 2 giros, nenhum negócio além (aula-02; aula 9393845)
     det = DefesaDetector(EngineConfig())
     det.on_tick(_neg(0, 19.04, 1000, "XP", Side.SELL, "JP MORGAN"))
+    _giro(det, "JP MORGAN", "compra", 19.04, 0)
     alerta = _evs(det, "alerta")
     det.on_tick(_neg(1000, 19.04, 300, "RICO", Side.SELL, "JP MORGAN"))
+    _giro(det, "JP MORGAN", "compra", 19.04, 1000)
     at = det.ativas()
     if alerta and not alerta[0].tipo and len(at) == 1 and at[0].tipo == "iceberg" \
             and at[0].lado == "compra" and at[0].giros == 2 and at[0].vol_passivo == 1300:
@@ -2806,7 +2839,8 @@ def test_defesas_classificacao():
     det.on_tick(_neg(0, 21.10, 800, "BTG", Side.SELL))
     det.on_tick(_neg(10, 21.10, 1200, "MORGAN", Side.BUY))        # sniper MORGAN no 21,10
     det.on_tick(_neg(1000, 21.12, 1000, "XP", Side.SELL, "MORGAN"))
-    det.on_tick(_neg(2000, 21.12, 300, "RICO", Side.SELL, "MORGAN"))   # iceberg MORGAN no 21,12
+    det.on_tick(_neg(2000, 21.12, 300, "RICO", Side.SELL, "MORGAN"))   # volume do iceberg MORGAN no 21,12
+    _giro(det, "MORGAN", "compra", 21.12, 2000, vezes=2)
     det.on_tick(_neg(3000, 21.11, 100, "CLEAR", Side.SELL, "ITAU"))   # rompe o 21,12
     det.on_tick(_neg(4000, 21.12, 200, "TORO", Side.SELL, "MORGAN"))  # volta: iceberg → sniper
     morgan = [d for d in det.ativas() if d.corretora == "MORGAN"]
@@ -2852,6 +2886,7 @@ def test_defesas_classificacao():
     det.on_tick(_neg(0, 10.00, 100, "XP", Side.BUY, "ITAU"))            # XP agride 100 no 10,00
     det.on_tick(_neg(2000, 10.00, 600, "RICO", Side.SELL, "XP"))
     det.on_tick(_neg(3000, 10.00, 600, "CLEAR", Side.SELL, "XP"))
+    _giro(det, "XP", "compra", 10.00, 3000, vezes=2)
     xp = [d for d in det.ativas() if d.corretora == "XP" and d.tipo == "iceberg"]
     if len(xp) == 1 and xp[0].lado == "compra" and xp[0].vol_passivo == 1200:
         ok("XP agrediu 100 antes e depois é passiva em 2 giros (1.200): iceberg confirmado")
@@ -2860,7 +2895,8 @@ def test_defesas_classificacao():
 
     # ── "Continua defendendo depois de negócio além" só com defesa confirmada e nova ABSORÇÃO (item 2)
     det = DefesaDetector(EngineConfig())
-    det.on_tick(_neg(0, 10.05, 1800, "ITAU", Side.BUY, "BRADESCO"))     # BRADESCO passiva 1.800 numa ordem: alerta
+    det.on_tick(_neg(0, 10.05, 1800, "ITAU", Side.BUY, "BRADESCO"))     # BRADESCO passiva 1.800 na venda
+    _giro(det, "BRADESCO", "venda", 10.05, 0)                            # 1 giro: alerta, não iceberg
     det.on_tick(_neg(1000, 10.06, 100, "RICO", Side.BUY, "XP"))
     det.on_tick(_neg(2000, 10.07, 100, "RICO", Side.BUY, "XP"))
     det.on_tick(_neg(3000, 10.05, 600, "BRADESCO", Side.SELL, "TORO"))  # agride 600 no mesmo nível
@@ -2873,7 +2909,9 @@ def test_defesas_classificacao():
     # Defesa confirmada (iceberg rompido): agressão depois do negócio além não reclassifica; absorção sim
     det = DefesaDetector(EngineConfig())
     det.on_tick(_neg(0, 19.04, 1000, "XP", Side.SELL, "JP MORGAN"))
-    det.on_tick(_neg(1000, 19.04, 300, "RICO", Side.SELL, "JP MORGAN"))   # iceberg
+    _giro(det, "JP MORGAN", "compra", 19.04, 0)
+    det.on_tick(_neg(1000, 19.04, 300, "RICO", Side.SELL, "JP MORGAN"))
+    _giro(det, "JP MORGAN", "compra", 19.04, 1000)                        # iceberg
     det.on_tick(_neg(2000, 19.03, 100, "CLEAR", Side.SELL, "ITAU"))       # rompe
     det.on_tick(_neg(3000, 19.04, 200, "JP MORGAN", Side.BUY, "TORO"))    # só agressão: não conta
     nada = not det.ativas()
@@ -2935,7 +2973,9 @@ def test_defesas_fila_e2():
     det = DefesaDetector(EngineConfig())
     det.on_tick(_neg(0, 22.05, 800, "XP", Side.SELL, "AGORA"))
     det.on_tick(_neg(1000, 22.05, 700, "BTG", Side.SELL, "AGORA"))
+    _giro(det, "AGORA", "compra", 22.05, 1000, vezes=2)
     det.on_tick(_neg(2000, 22.05, 1000, "JP MORGAN", Side.SELL, "TULLETT"))
+    _giro(det, "TULLETT", "compra", 22.05, 2000)
     e2 = _evs(det, "e2_formado")
     if e2 and {e2[-1].corretora, e2[-1].parceiro} == {"AGORA", "TULLETT"}:
         ok("E2 no 22,05: ÁGORA (iceberg) + TULLETT (alerta, player novo de 1.000)")
@@ -2946,6 +2986,7 @@ def test_defesas_fila_e2():
     det = DefesaDetector(EngineConfig())
     det.on_tick(_neg(0, 22.05, 800, "XP", Side.SELL, "AGORA"))
     det.on_tick(_neg(1000, 22.05, 700, "BTG", Side.SELL, "AGORA"))
+    _giro(det, "AGORA", "compra", 22.05, 1000, vezes=2)
     det.on_tick(_neg(2000, 22.06, 1000, "UBS", Side.SELL, "MERRILL"))
     det.on_tick(_neg(2010, 22.06, 1000, "MERRILL", Side.BUY, "ITAU"))
     pares = sorted(f"{d.corretora}+{d.e2_com}" for d in det.ativas() if d.e2_com)
@@ -2971,6 +3012,7 @@ def test_defesas_fila_e2():
     # Parceiro em alerta removido a 4 ticks: o E2 se desfaz (sem par órfão)
     det = DefesaDetector(EngineConfig())
     det.on_tick(_neg(0, 22.07, 1000, "XP", Side.SELL, "AGORA"))        # AGORA em alerta no 22,07
+    _giro(det, "AGORA", "compra", 22.07, 0)
     det.on_tick(_neg(1000, 22.06, 800, "UBS", Side.SELL, "MERRILL"))
     det.on_tick(_neg(1010, 22.06, 1000, "MERRILL", Side.BUY, "ITAU"))  # sniper MERRILL no 22,06 → E2
     formou = bool(_evs(det, "e2_formado"))
@@ -2993,7 +3035,9 @@ def test_defesas_fila_e2():
     det = DefesaDetector(EngineConfig())
     det.on_tick(_neg(0, 22.05, 800, "XP", Side.SELL, "AGORA"))
     det.on_tick(_neg(1000, 22.05, 700, "BTG", Side.SELL, "AGORA"))
+    _giro(det, "AGORA", "compra", 22.05, 1000, vezes=2)
     det.on_tick(_neg(2000, 22.05, 1000, "JP MORGAN", Side.SELL, "TULLETT"))
+    _giro(det, "TULLETT", "compra", 22.05, 2000)
     par = det._defesas[chave("TULLETT", 22.05)].e2_par
     det.on_tick(_neg(3000, 22.04, 100, "CLEAR", Side.SELL, "ITAU"))       # rompe o iceberg da AGORA
     tull = det._defesas[chave("TULLETT", 22.05)]
@@ -3034,6 +3078,7 @@ def test_defesas_fila_e2():
     for ms, corr in ((2000, "X"), (3000, "Y")):                         # abaixo, icebergs (sniper não repete nível)
         det.on_tick(_neg(ms, 22.05, 1000, "XP", Side.SELL, corr))
         det.on_tick(_neg(ms + 100, 22.05, 300, "RICO", Side.SELL, corr))
+        _giro(det, corr, "compra", 22.05, ms + 100, vezes=2)
     pares = (det._defesas[chave("X", 22.06)].e2_par, det._defesas[chave("X", 22.05)].e2_par)
     det.on_book(22.05, 22.06)
     det.on_tick(_neg(4000, 22.06, 300, "ITAU", Side.BUY))                 # fila formada no 22,06 (X e Y)
@@ -3053,6 +3098,7 @@ def test_defesas_engine():
     for i, agr in enumerate(["BRADESCO", "RICO", "CLEAR", "XP INC", "TORO", "GENIAL"]):
         ts += 1.0
         engine.add_tick(Tick(ts, 19.04, 200, agr, Side.SELL, passive_broker="JP MORGAN"))
+    _renovar(engine, "JP MORGAN", "compra", 19.04, ts)
     st = engine.get_state()
     ativas = st["defesas"]["ativas"]
     sig = engine.get_signal()
@@ -3136,6 +3182,7 @@ def test_iceberg_corte_volume():
         for i in range(n):
             ts += 1.0
             engine.add_tick(Tick(ts, 19.04, vol_por_ordem, f"V{i}", Side.SELL, passive_broker="JP MORGAN"))
+        _renovar(engine, "JP MORGAN", "compra", 19.04, ts)
         ativas = [d["tipo"] for d in engine.get_state()["defesas"]["ativas"] if d["corretora"] == "JP MORGAN"]
         return ativas, engine.get_signal().pattern.value
 
@@ -3187,6 +3234,7 @@ def test_acerto_iceberg():
         for i, agr in enumerate(["BRADESCO", "RICO", "CLEAR", "XP INC", "TORO", "GENIAL"]):
             ts += 1.0
             engine.add_tick(Tick(ts, 19.04, 200, agr, Side.SELL, passive_broker="JP MORGAN"))
+        _renovar(engine, "JP MORGAN", "compra", 19.04, ts)
         sig = engine.get_signal().to_dict()
         reg = engine.get_signals()[-1]
     finally:
@@ -3269,11 +3317,10 @@ def test_defesas_aulas():
     evs = rodar("e2_9393845_0411.csv")
     ic = [e for e in ev(evs, "confirmada", "Agora", 22.05) if e.tipo == "iceberg"]
     e2 = [e for e in evs if e.evento == "e2_formado" and {e.corretora, e.parceiro} == {"Agora", "Tullett"}]
-    if ic and abs(ic[0].ts - _hb3(d, "12:43:53.180")) < 1e-6 \
-            and e2 and abs(e2[0].ts - _hb3(d, "12:44:12.180")) < 1e-6:
-        ok("Iceberg Ágora no 22,05 às 12:43:53,18; E2 Ágora + Tullett às 12:44:12,18 (player novo de 1.000)")
+    if not ic and not e2:
+        ok("Sem livro de ofertas a fita não confirma iceberg nem E2 (o giro é a reposição no book)")
     else:
-        err(f"E2 0411: {[e.to_dict() for e in evs if e.corretora in ('Agora', 'Tullett')]}")
+        err(f"E2 0411 não devia sair só da fita: {[e.to_dict() for e in evs if e.corretora in ('Agora', 'Tullett')]}")
 
     # Icebergs da aula 9393840: nenhum negócio além do nível → nenhum rompimento
     for nome in ("iceberg_9393840_0403.csv", "iceberg_9393840_0845.csv"):
@@ -3296,7 +3343,8 @@ def test_defesas_segurou():
     def iceberg_compra():
         det = DefesaDetector(EngineConfig())
         det.on_tick(_neg(0, 19.04, 800, "XP", Side.SELL, "AGORA"))
-        det.on_tick(_neg(1000, 19.04, 700, "BTG", Side.SELL, "AGORA"))      # iceberg AGORA compra 19,04
+        det.on_tick(_neg(1000, 19.04, 700, "BTG", Side.SELL, "AGORA"))
+        _giro(det, "AGORA", "compra", 19.04, 1000, vezes=2)                 # iceberg antes do preço andar
         return det
 
     vistos = []
@@ -3322,7 +3370,8 @@ def test_defesas_segurou():
 
     det = DefesaDetector(EngineConfig())
     det.on_tick(_neg(0, 22.40, 800, "XP", Side.BUY, "TULLETT"))
-    det.on_tick(_neg(1000, 22.40, 700, "BTG", Side.BUY, "TULLETT"))       # iceberg TULLETT venda 22,40
+    det.on_tick(_neg(1000, 22.40, 700, "BTG", Side.BUY, "TULLETT"))
+    _giro(det, "TULLETT", "venda", 22.40, 1000, vezes=2)                  # iceberg antes dos 4 ticks
     det.on_tick(_neg(2000, 22.36, 100, "UBS", Side.SELL, "ITAU"))           # 4 ticks abaixo = a favor
     if [e.corretora for e in det.eventos(50) if e.evento == "segurou"] == ["TULLETT"]:
         ok("Iceberg vendedor segura com o preço 4 ticks abaixo")
@@ -3333,6 +3382,97 @@ def test_defesas_segurou():
         ok("reset() limpa os eventos e mantém o gancho como estava")
     else:
         err("reset() do detector")
+
+
+def test_livro_ofertas():
+    print(f"\n{AMARELO}═══ TESTE 41: Giro é reposição do lote, não cada agressão ═══{RESET}")
+    import struct
+    from core.livro_ofertas import LivroOfertas
+    from profitdll.bridge import (ProfitDLLBridge, AGRESSAO_VENDA, decodificar_ofertas,
+                                  OFERTA_ADD, OFERTA_EDIT, OFERTA_DELETE)
+
+    livro = LivroOfertas()
+    ts = 1_000_000.0
+
+    def por(qtd, oid, preco=19.04, corr="UBS", lado="compra", quando=None):
+        return livro.atualizar("PETR4", lado, preco, qtd, corr, oid, ts if quando is None else quando)
+
+    def nego(qtd, quando, corr="UBS", lado="compra", preco=19.04):
+        return livro.negocio("PETR4", corr, lado, preco, qtd, quando)
+
+    por(1500, 10)
+    if nego(300, ts + 1) == [] and por(1200, 10) == [] and nego(300, ts + 2) == [] and por(900, 10) == []:
+        ok("UBS 1.500 na compra: agredir 300 e de novo 300 não é giro (o lote continua no book)")
+    else:
+        err("Agressão parcial contou como giro")
+
+    if nego(900, ts + 3) == [] and por(0, 10) == []:
+        volta = por(1500, 11)
+        if len(volta) == 1 and volta[0].corretora == "UBS" and volta[0].qtd == 1500 and volta[0].lado == "compra":
+            ok("Os 1.500 acabam e a UBS volta com 1.500 no mesmo preço: 1 giro")
+        else:
+            err(f"Reposição: {volta}")
+    else:
+        err("Consumir o lote não devia emitir giro antes da oferta voltar")
+
+    if nego(1500, ts + 4) == [] and por(0, 11) == [] and len(por(1500, 12)) == 1:
+        ok("Segunda vez que o lote acaba e volta: 2º giro")
+    else:
+        err("Segundo ciclo não contou um giro")
+
+    livro.reset()
+    por(1500, 20)
+    if por(0, 20) == [] and por(1500, 21) == [] and nego(1500, ts + 10.5) == []:
+        ok("Cancelar sem execução e repor, ou negociar depois da janela, não é giro")
+    else:
+        err("Cancelamento virou giro")
+
+    livro.reset()
+    por(1500, 30, corr="XP")
+    por(0, 30, corr="XP", quando=ts + 20)
+    cedo = por(1500, 31, corr="XP", quando=ts + 20.01)
+    tarde = nego(1500, ts + 20.04, corr="XP")
+    if cedo == [] and len(tarde) == 1 and tarde[0].corretora == "XP":
+        ok("Oferta some e volta antes do negócio: o lote que chega em seguida ainda conta")
+    else:
+        err(f"Fora de ordem: cedo={cedo} tarde={tarde}")
+
+    livro.reset()
+    por(1500, 40, corr="ITAU", lado="venda", preco=22.40)
+    if (nego(1500, ts + 30, corr="ITAU", lado="venda", preco=22.40) == []
+            and por(0, 40, corr="ITAU", lado="venda", preco=22.40) == []
+            and len(por(1500, 41, corr="ITAU", lado="venda", preco=22.40)) == 1):
+        ok("Venda: consumir o lote e a corretora voltar no mesmo preço é 1 giro")
+    else:
+        err("Giro na venda não saiu")
+
+    entrada = struct.pack("=dqiqH", 19.04, 1500, 8, 10, 0)
+    blob = struct.pack("ii", 1, 8 + len(entrada)) + entrada
+    ofertas, primeiro, ultimo = decodificar_ofertas(blob)
+    if ofertas == [(10, 19.04, 1500, 8)] and primeiro and ultimo and decodificar_ofertas(b"") == ([], True, True):
+        ok("Full book: uma oferta de 1.500 da corretora 8 no 19,04")
+    else:
+        err(f"Full book: {ofertas} primeiro={primeiro} ultimo={ultimo}")
+
+    ponte = ProfitDLLBridge("PETR4")
+    ponte.nomes = {8: "UBS", 3: "XP"}
+    giros = []
+    ponte.on_renovacao = lambda *a: giros.append(a)
+
+    def oferta(acao, qtd, oid, quando):
+        ponte._processar_oferta_giro("PETR4", acao, 0, 0, qtd, 8, oid, 19.04,
+                                True, True, True, True, None, None, quando)
+
+    oferta(OFERTA_ADD, 1500, 10, ts)
+    ponte._processar_trade(8, 3, 300, 19.04, AGRESSAO_VENDA, ts + 1, ativo="PETR4")
+    oferta(OFERTA_EDIT, 1200, 10, ts + 1)
+    ponte._processar_trade(8, 3, 1200, 19.04, AGRESSAO_VENDA, ts + 2, ativo="PETR4")
+    oferta(OFERTA_DELETE, 0, 10, ts + 2)
+    oferta(OFERTA_ADD, 1500, 11, ts + 2)
+    if len(giros) == 1 and giros[0][:4] == ("PETR4", "UBS", "compra", 19.04):
+        ok("Livro da DLL: 300 de 1.500 não gira; consumir e a UBS voltar gira uma vez")
+    else:
+        err(f"Ponte: {giros}")
 
 
 def test_radar():
@@ -3347,10 +3487,15 @@ def test_radar():
     radar = Radar(EngineConfig(), calibracao_tabela={})
     for t in [neg("RENT3", 0, 50.36, 800, "XP", Side.SELL, "AGORA"),
               neg("PETR4", 10, 38.00, 900, "BTG", Side.BUY, "ITAU"),
-              neg("RENT3", 1000, 50.36, 700, "BTG", Side.SELL, "AGORA"),     # iceberg RENT3 AGORA compra
-              neg("PETR4", 1010, 38.00, 600, "XP", Side.BUY, "ITAU"),        # iceberg PETR4 ITAU venda
-              neg("RENT3", 2000, 50.40, 100, "UBS", Side.BUY, "XP"),         # RENT3: 4 ticks a favor → segurou
-              neg("PETR4", 3000, 38.01, 100, "UBS", Side.BUY, "XP")]:        # PETR4: 1 além → rompeu
+              neg("RENT3", 1000, 50.36, 700, "BTG", Side.SELL, "AGORA"),
+              neg("PETR4", 1010, 38.00, 600, "XP", Side.BUY, "ITAU")]:
+        radar.on_tick(t)
+    radar.on_renovacao("RENT3", "AGORA", "compra", 50.36, 1_000_000.0)
+    radar.on_renovacao("RENT3", "AGORA", "compra", 50.36, 1_000_001.0)
+    radar.on_renovacao("PETR4", "ITAU", "venda", 38.00, 1_000_000.01)
+    radar.on_renovacao("PETR4", "ITAU", "venda", 38.00, 1_000_001.01)
+    for t in [neg("RENT3", 2000, 50.40, 100, "UBS", Side.BUY, "XP"),         # 4 ticks a favor → segurou
+              neg("PETR4", 3000, 38.01, 100, "UBS", Side.BUY, "XP")]:        # 1 além → rompeu
         radar.on_tick(t)
     lst = radar.lista()
     resumo = radar.resumo()
@@ -3375,9 +3520,15 @@ def test_radar():
     radar = Radar(EngineConfig(), calibracao_tabela={})
     for t in [neg("VALE3", 0, 60.00, 600, "XP", Side.SELL, "UBS"), neg("VALE3", 1000, 60.00, 600, "BTG", Side.SELL, "UBS"),
               neg("TAEE11", 0, 35.00, 2000, "XP", Side.SELL, "BTG"), neg("TAEE11", 1000, 35.00, 2000, "XP", Side.SELL, "BTG"),
-              neg("ABEV3", 0, 13.00, 600, "XP", Side.BUY, "ITAU"), neg("ABEV3", 1000, 13.00, 600, "XP", Side.BUY, "ITAU"),
-              neg("ABEV3", 2000, 13.01, 100, "XP", Side.BUY, "UBS")]:
+              neg("ABEV3", 0, 13.00, 600, "XP", Side.BUY, "ITAU"), neg("ABEV3", 1000, 13.00, 600, "XP", Side.BUY, "ITAU")]:
         radar.on_tick(t)
+    radar.on_renovacao("VALE3", "UBS", "compra", 60.00, 1_000_000.0)
+    radar.on_renovacao("VALE3", "UBS", "compra", 60.00, 1_000_001.0)
+    radar.on_renovacao("TAEE11", "BTG", "compra", 35.00, 1_000_000.0)
+    radar.on_renovacao("TAEE11", "BTG", "compra", 35.00, 1_000_001.0)
+    radar.on_renovacao("ABEV3", "ITAU", "venda", 13.00, 1_000_000.0)
+    radar.on_renovacao("ABEV3", "ITAU", "venda", 13.00, 1_000_001.0)
+    radar.on_tick(neg("ABEV3", 2000, 13.01, 100, "XP", Side.BUY, "UBS"))
     ordem = [(r["ativo"], r["situacao"]) for r in radar.lista()]
     if ordem == [("TAEE11", "segurando"), ("VALE3", "segurando"), ("ABEV3", "rompeu")]:
         ok("Ordem: segurando por volume, depois resolvidos")
@@ -3418,6 +3569,8 @@ def test_radar():
         radar = Radar(EngineConfig(), calibracao_tabela={})
         radar.on_tick(neg("RENT3", 0, 50.36, 800, "XP", Side.SELL, "AGORA"))
         radar.on_tick(neg("RENT3", 1000, 50.36, 700, "BTG", Side.SELL, "AGORA"))
+        radar.on_renovacao("RENT3", "AGORA", "compra", 50.36, 1_000_000.0)
+        radar.on_renovacao("RENT3", "AGORA", "compra", 50.36, 1_000_001.0)
     finally:
         _logging.getLogger("Defesas").removeHandler(pega)
     if radar.resumo()["segurando"] == 1 and not linhas:
@@ -3538,6 +3691,8 @@ def test_api_radar():
             t = _neg(ms, preco, qtd, agr, Side.SELL, "AGORA")
             t.asset = "RENT3"
             engine.add_tick(t)
+        radar.on_renovacao("RENT3", "AGORA", "compra", 50.36, 1_000_000.0)
+        radar.on_renovacao("RENT3", "AGORA", "compra", 50.36, 1_000_001.0)
         corpo = json.loads(urllib.request.urlopen(f"{base}/api/radar").read())
         if corpo["resumo"]["segurando"] == 1 and corpo["lista"][0]["corretora"] == "AGORA":
             ok("GET /api/radar traz resumo e lista")
@@ -3601,11 +3756,17 @@ def test_radar_revisao():
         t.asset = "RENT3"
         return t
     radar = Radar(EngineConfig(), calibracao_tabela={})
-    for t in [neg(0, 50.36, 800, "XP", Side.SELL, "AGORA"), neg(1000, 50.36, 700, "BTG", Side.SELL, "AGORA"),
-              neg(2000, 50.35, 100, "UBS", Side.SELL, "ITAU"),              # rompe
-              neg(3000, 50.32, 100, "UBS", Side.SELL, "ITAU"),              # 4 ticks além: sai do detector
-              neg(4000, 50.36, 800, "XP", Side.SELL, "AGORA"), neg(5000, 50.36, 700, "BTG", Side.SELL, "AGORA")]:
+    for t in [neg(0, 50.36, 800, "XP", Side.SELL, "AGORA"), neg(1000, 50.36, 700, "BTG", Side.SELL, "AGORA")]:
         radar.on_tick(t)
+    radar.on_renovacao("RENT3", "AGORA", "compra", 50.36, 1_000_000.0)
+    radar.on_renovacao("RENT3", "AGORA", "compra", 50.36, 1_000_001.0)   # confirmado_as do que vai romper
+    for t in [neg(2000, 50.35, 100, "UBS", Side.SELL, "ITAU"),              # rompe
+              neg(3000, 50.32, 100, "UBS", Side.SELL, "ITAU")]:             # 4 ticks além: sai do detector
+        radar.on_tick(t)
+    for t in [neg(4000, 50.36, 800, "XP", Side.SELL, "AGORA"), neg(5000, 50.36, 700, "BTG", Side.SELL, "AGORA")]:
+        radar.on_tick(t)
+    radar.on_renovacao("RENT3", "AGORA", "compra", 50.36, 1_000_004.0)
+    radar.on_renovacao("RENT3", "AGORA", "compra", 50.36, 1_000_005.0)
     agora = [(r["situacao"], r["confirmado_as"]) for r in radar.lista() if r["corretora"] == "AGORA"]
     if sorted(agora) == [("rompeu", 1_000_001.0), ("segurando", 1_000_005.0)]:
         ok("Mesmo nível, iceberg novo depois do antigo sair: dois registros (rompeu e segurando)")
@@ -4126,6 +4287,7 @@ def main():
     test_iceberg_corte_volume()
     test_acerto_iceberg()
     test_defesas_segurou()
+    test_livro_ofertas()
     test_radar()
     test_acoes_b3()
     test_dll_varios_papeis()

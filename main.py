@@ -198,13 +198,23 @@ def setup_dll_mode(engine: FlowEngine, args):
 # MODO REPLAY
 # ──────────────────────────────────────────────────────────────
 
-def iniciar_fonte_dll(engine: FlowEngine, args, server):
+def iniciar_fonte_dll(engine: FlowEngine, args, server, radar=None):
     """
     Cria a ponte da ProfitDLL, registra no servidor (contadores no /state, Reconectar)
     e faz a 1ª conexão. A ponte é devolvida MESMO se essa conexão falhar: o Reconectar
     da tela Conexão pode conectar depois, e o Ctrl+C precisa chamar stop() nela.
     """
     bridge = setup_dll_mode(engine, args)
+
+    def entregar_renovacao(ativo, corretora, lado, preco, ts):
+        # Mesmo lock do negócio: a lista do radar e a troca de papel leem com ele
+        with engine._lock:
+            if radar is not None:
+                radar.on_renovacao(ativo, corretora, lado, preco, ts)
+            if ativo == engine.asset:
+                engine._renovacao_sob_lock(corretora, lado, preco, ts)
+
+    bridge.on_renovacao = entregar_renovacao
     server.registrar_dll(bridge)
     if not bridge.start():
         logger.error("Falha ao iniciar ProfitDLL — veja o log acima (dá para tentar de novo pelo "
@@ -508,7 +518,7 @@ def main():
             logger.error("DDE não disponível — rodando em modo manual")
 
     elif args.modo == "dll":
-        data_source = iniciar_fonte_dll(engine, args, server)
+        data_source = iniciar_fonte_dll(engine, args, server, radar)
 
     elif args.modo == "rtd":
         logger.info("Modo RTD — dados recebidos via Excel RTD Bridge (POST /tick)")
