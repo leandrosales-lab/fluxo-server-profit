@@ -488,7 +488,12 @@ def main():
     radar = None
     if args.radar:
         from core.radar import Radar
-        radar = Radar(engine.cfg)
+        # Histórico do radar em disco só no ao vivo (o replay roda sobre arquivos e não deve gravar por cima)
+        pasta_radar = (os.path.join(os.path.dirname(os.path.abspath(__file__)), "historico")
+                       if args.modo == "dll" else None)
+        radar = Radar(engine.cfg, pasta_persistencia=pasta_radar)
+        if pasta_radar:
+            logger.info("Radar: %d registros do dia recarregados de %s", radar.carregar(), pasta_radar)
         engine.add_tick = radar.envolver(engine.add_tick, engine)
 
     # ── Modo replay: roda o arquivo e sai (não precisa de captura nem reset diário)
@@ -568,6 +573,8 @@ def main():
         if data_source:
             data_source.stop()
         server.stop()
+        if radar is not None:
+            radar.salvar()
         if gravador:
             gravador.fechar()
 

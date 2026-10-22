@@ -4138,6 +4138,98 @@ def test_livro_bridge():
     ok("stats() traz livro_ordens, livro_erros, livro_ativo, livro_atualizacoes")
 
 
+def test_radar_persistencia():
+    print(f"\n{AMARELO}═══ TESTE 53: Radar — histórico dos registros em disco ═══{RESET}")
+    import json
+    import os
+    import tempfile
+    from core.radar import Radar, _dia
+
+    def neg(ativo, ms, preco, qtd, agr, lado, pas=""):
+        t = _neg(ms, preco, qtd, agr, lado, pas)
+        t.asset = ativo
+        return t
+
+    with tempfile.TemporaryDirectory() as pasta:
+        radar = Radar(EngineConfig(), calibracao_tabela={}, pasta_persistencia=pasta)
+        for t in [neg("RENT3", 0, 50.36, 800, "XP", Side.SELL, "AGORA"),
+                  neg("PETR4", 10, 38.00, 900, "BTG", Side.BUY, "ITAU"),
+                  neg("VALE3", 20, 60.00, 900, "BTG", Side.BUY, "SANTANDER"),
+                  neg("RENT3", 1000, 50.36, 700, "BTG", Side.SELL, "AGORA"),
+                  neg("PETR4", 1010, 38.00, 600, "XP", Side.BUY, "ITAU"),
+                  neg("VALE3", 1020, 60.00, 600, "XP", Side.BUY, "SANTANDER")]:
+            radar.on_tick(t)
+        for ativo, corr, lado, preco, ts in [("RENT3", "AGORA", "compra", 50.36, 1_000_000.0),
+                                              ("RENT3", "AGORA", "compra", 50.36, 1_000_001.0),
+                                              ("PETR4", "ITAU", "venda", 38.00, 1_000_000.01),
+                                              ("PETR4", "ITAU", "venda", 38.00, 1_000_001.01),
+                                              ("VALE3", "SANTANDER", "venda", 60.00, 1_000_000.02),
+                                              ("VALE3", "SANTANDER", "venda", 60.00, 1_000_001.02)]:
+            radar.on_renovacao(ativo, corr, lado, preco, ts)
+        for t in [neg("RENT3", 2000, 50.40, 100, "UBS", Side.BUY, "XP"),         # 4 ticks a favor → segurou
+                  neg("PETR4", 3000, 38.01, 100, "UBS", Side.BUY, "XP")]:        # 1 além → rompeu
+            radar.on_tick(t)                                                     # VALE3 fica segurando
+        antes = {(r["ativo"]): r["situacao"] for r in radar.lista()}
+        gravados = radar.salvar()
+        dia = _dia(1_000_003.0)
+        arq = os.path.join(pasta, f"radar_{dia.isoformat()}.jsonl")
+        if gravados == 3 and os.path.exists(arq) and antes == {"RENT3": "segurou", "PETR4": "rompeu", "VALE3": "segurando"}:
+            ok("Salva os 3 registros (segurou, rompeu, segurando) em radar_AAAA-MM-DD.jsonl")
+        else:
+            err(f"Gravados {gravados}; arquivo {os.path.exists(arq)}; antes {antes}")
+        if radar.salvar() == 0:
+            ok("Sem mudança, não regrava")
+        else:
+            err("Regravou registros que não mudaram")
+
+        novo = Radar(EngineConfig(), calibracao_tabela={}, pasta_persistencia=pasta)
+        n = novo.carregar(dia)
+        por = {r["ativo"]: r for r in novo.lista()}
+        rent, petr, vale = por.get("RENT3"), por.get("PETR4"), por.get("VALE3")
+        if n == 3 and rent and rent["situacao"] == "segurou" and rent["giros"] == 2 and rent["segurou_as"] == 1_000_002.0 \
+                and petr and petr["situacao"] == "rompeu" and petr["rompeu_as"] == 1_000_003.0 \
+                and rent["volume"] == 1500 and rent["lado"] == "compra":
+            ok("Recarrega seguraram e romperam com giros, volume e horários")
+        else:
+            err(f"Recarregado: {n} {por}")
+        if vale and vale["situacao"] == "interrompido" and vale["giros"] == 2:
+            ok("O que estava segurando volta como interrompido (sem desfecho conhecido)")
+        else:
+            err(f"VALE3 recarregado: {vale}")
+        resumo = novo.resumo()
+        if resumo.get("seguraram") == 1 and resumo.get("romperam") == 1 and resumo.get("interrompidos") == 1 \
+                and resumo.get("segurando") == 0:
+            ok("Resumo conta seguraram, romperam e interrompidos")
+        else:
+            err(f"Resumo recarregado: {resumo}")
+        # o interrompido (situação alterada ao recarregar) é gravado de novo, e uma terceira subida lê a última linha
+        if novo.salvar() == 1:
+            ok("Grava só a mudança de situação do interrompido")
+        else:
+            err("Gravação após recarregar")
+        terceiro = Radar(EngineConfig(), calibracao_tabela={}, pasta_persistencia=pasta)
+        terceiro.carregar(dia)
+        if {r["ativo"]: r["situacao"] for r in terceiro.lista()}["VALE3"] == "interrompido":
+            ok("Vale a última linha de cada id")
+        else:
+            err("Última linha não prevaleceu")
+        # linha cortada (queda no meio da escrita) não derruba a subida
+        with open(arq, "a", encoding="utf-8") as f:
+            f.write('{"id": 9, "ativo": "ABEV3", "corr')
+        quarto = Radar(EngineConfig(), calibracao_tabela={}, pasta_persistencia=pasta)
+        if quarto.carregar(dia) == 3:
+            ok("Linha cortada no fim do arquivo é ignorada")
+        else:
+            err("Linha cortada")
+        # replay/sem pasta: não grava nada
+        sem = Radar(EngineConfig(), calibracao_tabela={})
+        sem.on_tick(neg("RENT3", 0, 50.36, 800, "XP", Side.SELL, "AGORA"))
+        if sem.salvar() == 0 and sem.carregar(dia) == 0:
+            ok("Sem pasta de persistência o radar não grava nem lê")
+        else:
+            err("Radar sem pasta gravou ou leu")
+
+
 def test_livro_protocolo_e_api():
     print(f"\n{AMARELO}═══ TESTE 44: Livro de ofertas — protocolo do processo filho, get_book e POST /book ═══{RESET}")
     import json
@@ -4703,6 +4795,7 @@ def main():
     test_giro_lote_minimo()
     test_radar_ordem_giros()
     test_radar_agrupa_papel()
+    test_radar_persistencia()
     test_livro_protocolo_e_api()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")

@@ -5,17 +5,29 @@ Um DefesaDetector por papel (criado no primeiro negócio dele). O giro do iceber
 corretora repondo o lote no mesmo preço (on_renovacao), não cada agressão. Cada iceberg
 confirmado vira um registro do dia, atualizado pelos eventos do detector: segurou
 (4 ticks a favor), rompida, virou sniper. Spec: docs/superpowers/specs/2026-10-17-radar-design.md.
+
+HISTÓRICO: com `pasta_persistencia`, cada registro (segurando, seguraram, romperam, viraram sniper) é gravado em
+`radar_AAAA-MM-DD.jsonl` (um por dia da B3; linha = registro inteiro, vale a última de cada id) e recarregado por
+`carregar()` ao subir. Só o REGISTRO (giros, volume, horários), não os negócios. Um registro que estava "segurando"
+quando o servidor caiu volta como "interrompido": o detector vivo se perdeu e o desfecho não é conhecido.
 """
 
 from __future__ import annotations
 
+import json
+import logging
+import os
+import time
 from datetime import datetime, timedelta, timezone
 
 from core import calibracao
 from core.defesas import DefesaDetector
 
+logger = logging.getLogger("Radar")
+
 FUSO_B3 = timezone(timedelta(hours=-3))
 LIMITE_LISTA = 300          # exibição; não é regra de mercado
+INTERVALO_SALVAR = 5.0      # s entre gravações do histórico (técnico; não é regra de mercado)
 
 
 def _dia(ts: float):
@@ -23,12 +35,17 @@ def _dia(ts: float):
 
 
 class Radar:
-    def __init__(self, cfg, calibracao_tabela: dict | None = None):
+    def __init__(self, cfg, calibracao_tabela: dict | None = None, pasta_persistencia: str | None = None):
         self.cfg = cfg
+        self._pasta = pasta_persistencia
+        self._t_salvo = 0.0
         self._tabela = calibracao.carregar() if calibracao_tabela is None else calibracao_tabela
         self.reset()
 
     def reset(self):
+        if getattr(self, "_registros", None):
+            self.salvar()                # fecha o dia anterior no arquivo dele antes de zerar
+        self._salvo: dict = {}           # id → última linha gravada (só grava o que mudou)
         self._detectores: dict = {}      # papel → DefesaDetector
         self._registros: dict = {}       # id → registro (um por iceberg confirmado, mesmo no mesmo nível)
         self._atual: dict = {}           # (papel, corretora, lado, nível) → id do registro da defesa atual
@@ -49,6 +66,7 @@ class Radar:
         ativo = tick.asset
         self._negocios += 1
         self._detector(ativo).on_tick(tick)
+        self._talvez_salvar()
 
     def _detector(self, ativo: str):
         det = self._detectores.get(ativo)
@@ -69,6 +87,73 @@ class Radar:
         self._dia = dia
         self._agora = max(self._agora, ts)
         self._detector(ativo).on_renovacao(corretora, lado, preco, ts)
+        self._talvez_salvar()
+
+    # ── histórico em disco
+    def _arquivo(self, dia) -> str:
+        return os.path.join(self._pasta, f"radar_{dia.isoformat()}.jsonl")
+
+    def _talvez_salvar(self) -> None:
+        if self._pasta and time.monotonic() - self._t_salvo >= INTERVALO_SALVAR:
+            self._t_salvo = time.monotonic()
+            self.salvar()
+
+    def salvar(self) -> int:
+        """Grava no arquivo do dia os registros que mudaram desde a última gravação; devolve quantos."""
+        if not self._pasta or self._dia is None:
+            return 0
+        try:
+            linhas = []
+            for idreg, reg in self._registros.items():
+                self._atualizar(idreg, reg)
+                linha = json.dumps({"id": idreg, **reg}, ensure_ascii=False, sort_keys=True)
+                if self._salvo.get(idreg) != linha:
+                    linhas.append(linha)
+                    self._salvo[idreg] = linha
+            if linhas:
+                os.makedirs(self._pasta, exist_ok=True)
+                with open(self._arquivo(self._dia), "a", encoding="utf-8") as f:
+                    f.write("\n".join(linhas) + "\n")
+            return len(linhas)
+        except Exception:
+            logger.exception("Radar: falha ao gravar o histórico em %s", self._pasta)
+            return 0
+
+    def carregar(self, dia=None) -> int:
+        """Recarrega os registros do dia (hoje na B3, ou `dia`) gravados antes; devolve quantos."""
+        if not self._pasta:
+            return 0
+        dia = dia or _dia(time.time())
+        arq = self._arquivo(dia)
+        if not os.path.exists(arq):
+            return 0
+        ultimos: dict = {}
+        try:
+            with open(arq, encoding="utf-8") as f:
+                for linha in f:
+                    linha = linha.strip()
+                    if not linha:
+                        continue
+                    try:
+                        d = json.loads(linha)
+                        ultimos[int(d.pop("id"))] = d
+                    except (ValueError, KeyError, TypeError):
+                        continue                 # linha cortada (queda no meio da escrita): ignora
+        except OSError:
+            logger.exception("Radar: falha ao ler o histórico %s", arq)
+            return 0
+        for idreg in sorted(ultimos):
+            reg = ultimos[idreg]
+            self._registros[idreg] = reg
+            self._chave_de[idreg] = (reg["ativo"], reg["corretora"], reg["lado"], ("restaurado", idreg))
+            self._salvo[idreg] = json.dumps({"id": idreg, **reg}, ensure_ascii=False, sort_keys=True)
+            if reg.get("situacao") == "segurando":
+                reg["situacao"] = "interrompido"        # o detector vivo se perdeu: o desfecho é desconhecido
+            self._agora = max(self._agora, reg.get("ultimo_giro_as") or 0, reg.get("confirmado_as") or 0)
+        if ultimos:
+            self._seq = max(ultimos)
+            self._dia = dia
+        return len(ultimos)
 
     def envolver(self, add_tick, engine):
         """Entrega todo negócio ao radar e só o do papel aberto (engine.asset) ao motor."""
@@ -167,9 +252,12 @@ class Radar:
         return saida
 
     def resumo(self) -> dict:
-        cont = {"segurando": 0, "segurou": 0, "rompeu": 0, "virou sniper": 0}
+        cont = {"segurando": 0, "segurou": 0, "rompeu": 0, "virou sniper": 0, "interrompido": 0}
         for reg in self._registros.values():
             cont[reg["situacao"]] += 1
-        return {"segurando": cont["segurando"], "seguraram": cont["segurou"], "romperam": cont["rompeu"],
-                "viraram_sniper": cont["virou sniper"], "papeis": len(self._detectores),
-                "negocios": self._negocios}
+        res = {"segurando": cont["segurando"], "seguraram": cont["segurou"], "romperam": cont["rompeu"],
+               "viraram_sniper": cont["virou sniper"], "papeis": len(self._detectores),
+               "negocios": self._negocios}
+        if cont["interrompido"]:
+            res["interrompidos"] = cont["interrompido"]    # restaurados do arquivo, sem desfecho conhecido
+        return res

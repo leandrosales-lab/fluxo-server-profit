@@ -5,6 +5,7 @@ import { duracao } from "./operar-paineis.js";
 /** "segurando", "segurou às 10:00:00", "segurou às 10:00:00, rompeu às 11:00:00", "rompeu às …", "virou sniper às …". */
 export function textoSituacao(r) {
   if (r.situacao === "segurando") return "segurando";
+  if (r.situacao === "interrompido") return "sem desfecho (servidor reiniciado)";
   if (r.situacao === "segurou") {
     return `segurou às ${horaB3(r.segurou_as)}` + (r.rompeu_as ? `, rompeu às ${horaB3(r.rompeu_as)}` : "");
   }

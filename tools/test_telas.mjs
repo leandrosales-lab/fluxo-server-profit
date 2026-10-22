@@ -138,6 +138,7 @@ assert.equal(textoSituacao({ ...reg, rompeu_as: 1792159200 }), "segurou às 10:0
 assert.equal(textoSituacao({ situacao: "rompeu", segurou_as: null, rompeu_as: 1792155600, desfecho_as: 1792155600 }),
   "rompeu às 10:00:00");
 assert.equal(textoSituacao({ situacao: "segurando" }), "segurando");
+assert.equal(textoSituacao({ situacao: "interrompido", desfecho_as: null }), "sem desfecho (servidor reiniciado)");
 assert.equal(textoSituacao({ situacao: "virou sniper", desfecho_as: 1792155600 }), "virou sniper às 10:00:00");
 const lr = linhaRadar({ ativo: "RENT3", corretora: "AGORA", lado: "compra", preco: 50.36, giros: 20, volume: 8500,
   confirmado_as: 1792155600, situacao: "segurando", acerto: { taxa: 0.408 } });
