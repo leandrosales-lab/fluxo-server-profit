@@ -126,11 +126,12 @@ class Radar:
 
     def lista(self, situacao: str | None = None, limite: int = LIMITE_LISTA,
               janela: float | None = None, ordem: str = "padrao") -> list[dict]:
-        """`janela` (s): só os icebergs com giro nos últimos `janela` segundos (2 ou 5 min no day trade),
+        """`janela` (s): só os icebergs com giro nos últimos `janela` segundos (2 ou 5 min: ESCOLHA DE TELA nossa, não vem das aulas),
         do giro mais recente para o mais antigo. `ordem="giros"`: agrupa as corretoras do mesmo papel, lado e
         preço (várias corretoras defendendo o mesmo nível ficam juntas); os grupos vão do maior para o menor
         número de giros (o do grupo é o da corretora com mais giros; empate: maior volume somado) e, dentro do
-        grupo, a corretora com mais giros vem primeiro. Vale sobre a lista inteira, antes do corte por `limite`."""
+        grupo, a corretora com mais giros vem primeiro. Vale sobre a lista inteira, antes do corte por `limite`.
+        Ordem e agrupamento também são escolha de exibição, não regra de mercado do professor."""
         segurando, resolvidos = [], []
         for idreg, reg in self._registros.items():
             self._atualizar(idreg, reg)

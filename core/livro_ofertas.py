@@ -13,15 +13,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-# Negócio que chega pouco depois da reposição ainda pode ser o lote que acabou
-# (o livro e o negócio não saem na mesma ordem). Janela curta quando ainda não
-# houve execução: um cancelamento seguido de ordem nova não vira giro.
+# TOLERÂNCIAS TÉCNICAS NOSSAS (não vêm das aulas): o professor só diz que a ordem "renova automaticamente"
+# / "imediatamente" quando o lote é consumido (aula-02 02:30; 9393845 04:35), sem dar tempo em segundos.
+# Servem só para casar o negócio com a reposição, porque o livro e o negócio não saem na mesma ordem.
+# Negócio que chega pouco depois da reposição ainda pode ser o lote que acabou. Janela curta quando ainda
+# não houve execução: um cancelamento seguido de ordem nova não vira giro. Calibrar com dados ao vivo.
 JANELA_REORDEM = 0.20
 JANELA_RESTO = 1.0
 
 # Lote mínimo de um iceberg, em ações. Curso (A1: aula-02, 9393831, 9393837, 9393840, 9393845): lote padrão
 # 1.000/1.500/2.000/2.500/5.000, "nunca < 1.000". Lote visível de 100 repetindo é o sniper ("pulguinha"), não giro.
 # O lote consumido volta "com a mesma quantidade" (A1): 1.500 consumidos e 1.200 repostos é absorção do player, não iceberg.
+# Giro = o lote visível é consumido POR INTEIRO e volta igual (aula-02 02:13–03:05: "mil ações… novecentas, oitocentas… cem,
+# acabou. Automaticamente, no mesmo nível, aparece de novo mil ações"). Consumo parcial sem reposição (5.000 -> 2.100 em
+# 9393837 03:52) é absorção do iceberg, não giro: o professor não conta giro sem o lote acabar e voltar.
 LOTE_MIN_ICEBERG = 1000
 
 
