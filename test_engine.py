@@ -4227,6 +4227,20 @@ def test_radar_persistencia():
             ok("Linha cortada no fim do arquivo é ignorada")
         else:
             err("Linha cortada")
+        # negócio ou giro de DIA ANTERIOR (ex.: "último negócio" antigo de papel ilíquido ao assinar 649 papéis) não pode zerar o dia recarregado
+        quinto = Radar(EngineConfig(), calibracao_tabela={}, pasta_persistencia=pasta)
+        quinto.carregar(dia)
+        quinto.on_tick(neg("ABEV3", -2 * 86_400_000, 14.00, 100, "XP", Side.BUY, "ITAU"))
+        quinto.on_renovacao("ABEV3", "ITAU", "venda", 14.00, 1_000_000.0 - 2 * 86_400)
+        if len(quinto.lista()) == 3 and quinto.resumo()["negocios"] == 0:
+            ok("Negócio/giro de dia anterior é ignorado: o dia recarregado não é apagado")
+        else:
+            err(f"Dia anterior zerou o radar: {len(quinto.lista())} registros, {quinto.resumo()}")
+        quinto.on_tick(neg("ABEV3", 2 * 86_400_000, 14.00, 100, "XP", Side.BUY, "ITAU"))
+        if quinto.lista() == [] and quinto._dia == _dia(1_000_000.0 + 2 * 86_400):
+            ok("Negócio de dia POSTERIOR vira o dia (zera como antes)")
+        else:
+            err("A virada para um dia posterior deixou de zerar")
         # replay/sem pasta: não grava nada
         sem = Radar(EngineConfig(), calibracao_tabela={})
         sem.on_tick(neg("RENT3", 0, 50.36, 800, "XP", Side.SELL, "AGORA"))

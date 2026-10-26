@@ -54,19 +54,36 @@ class Radar:
         self._seq = 0
         self._negocios = 0
         self._dia = None
+        self._ignorados_dia_anterior = 0
         self._agora = 0.0                # maior hora vista (negócio ou giro): o "agora" da janela de 2/5 min
 
     # ── entrada
     def on_tick(self, tick):
         dia = _dia(tick.timestamp)
-        if self._dia is not None and dia != self._dia:
-            self.reset()
+        if self._virou_o_dia(dia, tick.asset):
+            return
         self._dia = dia
         self._agora = max(self._agora, tick.timestamp)
         ativo = tick.asset
         self._negocios += 1
         self._detector(ativo).on_tick(tick)
         self._talvez_salvar()
+
+    def _virou_o_dia(self, dia, ativo) -> bool:
+        """Dia diferente do corrente. Posterior: zera e segue (devolve False). ANTERIOR: devolve True e o chamador
+        ignora o evento (ex.: "último negócio" velho de um papel ilíquido entregue ao assinar os 649 papéis;
+        sem isso ele zerava o dia recarregado do disco, e os registros novos reusavam ids dos antigos)."""
+        if self._dia is None or dia == self._dia:
+            return False
+        if dia < self._dia:
+            self._ignorados_dia_anterior += 1
+            if self._ignorados_dia_anterior in (1, 100, 10_000):
+                logger.info("Radar: %s com data %s (anterior a %s) ignorado; %d até agora",
+                            ativo, dia, self._dia, self._ignorados_dia_anterior)
+            return True
+        logger.info("Radar: virou o dia (%s -> %s, 1º evento de %s): zera os registros", self._dia, dia, ativo)
+        self.reset()
+        return False
 
     def _detector(self, ativo: str):
         det = self._detectores.get(ativo)
@@ -82,8 +99,8 @@ class Radar:
         if not ativo:
             return
         dia = _dia(ts)
-        if self._dia is not None and dia != self._dia:
-            self.reset()
+        if self._virou_o_dia(dia, ativo):
+            return
         self._dia = dia
         self._agora = max(self._agora, ts)
         self._detector(ativo).on_renovacao(corretora, lado, preco, ts)
