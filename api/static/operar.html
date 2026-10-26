@@ -14,7 +14,12 @@
 <div class="tela">
   <header id="topo"></header>
   <section class="faixa" id="faixa">
-    <div class="metrica ativo"><span class="valor" id="f-ativo">—</span><span class="rotulo" id="f-fonte"></span></div>
+    <div class="metrica ativo"><span class="valor" id="f-ativo" role="button" tabindex="0" title="Trocar de papel (clique ou tecla /)">—</span><span class="rotulo" id="f-fonte"></span>
+      <div class="busca-ativo" id="busca" hidden>
+        <input id="busca-in" class="mono" type="text" maxlength="8" autocomplete="off" spellcheck="false" placeholder="Digite o papel (ex.: PETR4)" role="combobox" aria-expanded="false" aria-controls="busca-lista" aria-autocomplete="list" aria-label="Buscar papel">
+        <ul id="busca-lista" role="listbox" hidden></ul>
+        <p class="meta" id="busca-msg" role="status"></p>
+      </div></div>
     <div class="metrica sem-fio"><span class="heroi" id="f-ultimo">—</span></div>
     <div class="metrica sem-fio"><span class="valor" id="f-var">—</span><span class="rotulo" id="f-var-pct">desde a abertura</span></div>
     <div class="metrica"><span class="rotulo">Delta acumulado</span><span class="valor" id="f-delta">—</span></div>

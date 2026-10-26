@@ -3703,6 +3703,11 @@ def test_api_radar():
             ok("GET /api/radar?situacao filtra")
         else:
             err(f"/api/radar filtro: {vazio}")
+        ativos = json.loads(urllib.request.urlopen(f"{base}/api/ativos").read())["ativos"]
+        if "PETR4" in ativos and "VALE3" in ativos and len(ativos) > 500 and not any(x.startswith("#") for x in ativos):
+            ok("GET /api/ativos traz a lista de papéis do autocompletar")
+        else:
+            err(f"/api/ativos: {len(ativos)} itens")
         pagina = urllib.request.urlopen(f"{base}/radar")
         if "text/html" in pagina.headers.get("Content-Type", ""):
             ok("GET /radar serve a tela")

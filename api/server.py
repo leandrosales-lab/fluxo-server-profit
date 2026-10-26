@@ -103,6 +103,22 @@ def caminho_estatico(nome: str):
 # HANDLER HTTP
 # ──────────────────────────────────────────────────────────────
 
+_PAPEIS = None
+
+
+def papeis_cadastrados() -> list[str]:
+    """Tickers de config/acoes_b3.txt (lidos uma vez; linhas com # são comentário)."""
+    global _PAPEIS
+    if _PAPEIS is None:
+        caminho = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "acoes_b3.txt")
+        try:
+            with open(caminho, encoding="utf-8") as f:
+                _PAPEIS = [l.strip().upper() for l in f if l.strip() and not l.lstrip().startswith("#")]
+        except OSError:
+            _PAPEIS = []
+    return _PAPEIS
+
+
 class FlowHandler(BaseHTTPRequestHandler):
     engine: FlowEngine = None   # referência estática, preenchida no start
     rtd: RTDTradeInferer = None
@@ -210,6 +226,10 @@ class FlowHandler(BaseHTTPRequestHandler):
                 "fonte": self.fonte,
                 "tick_size": self.engine.cfg.tick_size,
             })
+
+        elif path == "/api/ativos":
+            # Lista de papéis para o autocompletar da tela Operar (config/acoes_b3.txt; vazia se o arquivo faltar)
+            self._send_json({"ativos": papeis_cadastrados()})
 
         elif path == "/api/radar":
             radar = FlowHandler.radar

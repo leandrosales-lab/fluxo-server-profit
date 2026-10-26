@@ -5,6 +5,7 @@ import { textoStatus, estadoReconectar } from "../api/static/js/shell.js";
 import { tituloSinal, LOTE_GRANDE_PADRAO, textoEvento, duracao, medidaSinal, ordenarDefesas,
   linhasQueCabem, rotuloFonteBook, qtdBook, corretorasBook, linhasOfertas } from "../api/static/js/operar-paineis.js";
 import { textoSituacao, linhaRadar, textoUltimoGiro } from "../api/static/js/radar-lista.js";
+import { sugerirAtivos } from "../api/static/js/ativo-busca.js";
 import { sinceCandles, juntarCandles, precisaLimpar } from "../api/static/js/candles.js";
 
 assert.equal(f.preco(38.47), "38,47");
@@ -169,3 +170,13 @@ assert.equal(linhasOfertas(niveisOf, 4).length, 4);
 assert.deepEqual(linhasOfertas(undefined, 5), []);
 
 console.log("test_telas.mjs: tudo certo");
+
+// busca de papel (autocompletar): começa-com antes de contém; maiúsculas; vazio não sugere
+const LISTA = ["ABEV3", "BBAS3", "BBDC4", "PETR3", "PETR4", "RENT3", "SAPR4", "VALE3", "VBBR3"];
+assert.deepEqual(sugerirAtivos(LISTA, "pet"), ["PETR3", "PETR4"]);
+assert.deepEqual(sugerirAtivos(LISTA, "BB"), ["BBAS3", "BBDC4", "VBBR3"]);
+assert.deepEqual(sugerirAtivos(LISTA, "petr4"), ["PETR4"]);
+assert.deepEqual(sugerirAtivos(LISTA, "  "), []);
+assert.deepEqual(sugerirAtivos(LISTA, "xyz"), []);
+assert.equal(sugerirAtivos(LISTA, "3", 3).length, 3);
+console.log("busca de papel: ok");

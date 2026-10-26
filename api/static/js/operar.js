@@ -4,6 +4,7 @@ import { montarShell } from "./shell.js";
 import { criarGrafico } from "./operar-grafico.js";
 import { criarPaineis } from "./operar-paineis.js";
 import { sinceCandles, precisaLimpar } from "./candles.js";
+import { montarBuscaAtivo } from "./ativo-busca.js";
 import { casasDoTick, preco, comSinal, inteiro, financeiro, pct } from "./formato.js";
 
 const $ = (id) => document.getElementById(id);
@@ -13,6 +14,7 @@ let casas = 2;
 let tickAplicado = null;
 const grafico = criarGrafico($("grafico"), casas);
 const paineis = criarPaineis();
+montarBuscaAtivo();
 
 let sinais = [];
 let vistos = new Set();

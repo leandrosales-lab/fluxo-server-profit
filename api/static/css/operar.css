@@ -1,5 +1,15 @@
 /* Ajustes da tela Operar (layout de docs/design/v3/operar-escuro.png). */
 .faixa .ativo .valor { font-size: 20px; font-weight: 600; }
+#f-ativo { cursor: pointer; border-bottom: 1px dashed var(--faint); }
+#f-ativo:hover, #f-ativo:focus-visible { border-bottom-color: var(--accent); outline: none; }
+/* Busca de papel: caixa e lista logo abaixo do ticker, sobre o gráfico */
+.busca-ativo { position: fixed; z-index: 50; width: 240px; background: var(--raise); border: 1px solid var(--rule); padding: 8px; }
+.busca-ativo input { width: 100%; font-size: 15px; padding: 4px 6px; background: transparent; color: inherit; border: 1px solid var(--rule); border-radius: 0; text-transform: uppercase; }
+.busca-ativo input:focus { outline: 1px solid var(--accent); }
+.busca-ativo ul { list-style: none; margin: 4px 0 0; padding: 0; max-height: 220px; overflow: auto; }
+.busca-ativo li { padding: 3px 6px; cursor: pointer; font-size: 14px; }
+.busca-ativo li[aria-selected="true"] { background: var(--rule); }
+.busca-ativo p { margin: 4px 0 0; min-height: 1em; }
 .faixa .sem-fio { border-left: 0; padding-left: 4px; }
 #tfs { display: flex; gap: 14px; }
 .grafico { flex: 1; min-height: 0; }

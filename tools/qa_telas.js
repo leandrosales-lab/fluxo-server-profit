@@ -83,6 +83,34 @@ verificacoes.push(["operar: faixa e gráfico", async (page) => {
   checar(true, "capturas operar-escuro.png e operar-claro.png salvas");
 }]);
 
+verificacoes.push(["operar: busca de papel com autocompletar", async (page) => {
+  await page.goto(`${BASE}/operar`);
+  await page.waitForFunction(() => document.getElementById("f-ultimo")?.textContent !== "—", null, { timeout: 30000 });
+  checar(await page.locator("#busca").isHidden(), "caixa de busca começa fechada");
+  await page.click("#f-ativo");
+  checar(await page.locator("#busca").isVisible(), "clicar no ticker abre a busca");
+  await page.fill("#busca-in", "pet");
+  await page.waitForSelector("#busca-lista li");
+  const itens = await page.$$eval("#busca-lista li", (l) => l.map((x) => x.textContent));
+  checar(itens.length > 0 && itens.every((t) => t.startsWith("PET")) && itens.includes("PETR4"), `digitar "pet" sugere ${itens.join(", ")}`);
+  checar(await page.inputValue("#busca-in") === "PET", "texto vira maiúsculo");
+  await page.keyboard.press("ArrowDown");
+  checar(await page.getAttribute("#busca-lista li[aria-selected='true']", "id") === "busca-op-1", "seta para baixo move a seleção");
+  await page.screenshot({ path: path.join(SAIDA, "operar-busca.png") });
+  await page.keyboard.press("Escape");
+  checar(await page.locator("#busca").isHidden(), "Esc fecha a busca");
+  await page.keyboard.press("/");
+  checar(await page.locator("#busca").isVisible(), "tecla / abre a busca");
+  let corpo = null;
+  await page.route("**/operar/ativo", (r) => { corpo = r.request().postData(); r.fulfill({ status: 200, contentType: "application/json", body: '{"ativo":"PETR4","historico":false}' }); });
+  await page.fill("#busca-in", "PETR4");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => performance.getEntriesByType("navigation").length > 0 && document.getElementById("f-ativo"), null, { timeout: 5000 });
+  await esperar(800);
+  checar(corpo && JSON.parse(corpo).ativo === "PETR4", `Enter envia POST /operar/ativo com o papel (${corpo})`);
+  await page.unroute("**/operar/ativo");
+}]);
+
 verificacoes.push(["operar: reset com o replay rodando (mercado aberto)", async (page) => {
   await page.goto(`${BASE}/operar`);
   await page.click('#filtros [data-filtro="todos"]');   // o padrão é só iceberg; aqui vale qualquer sinal
