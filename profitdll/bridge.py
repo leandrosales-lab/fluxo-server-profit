@@ -118,7 +118,7 @@ TINYBOOK_ASK = 1
 # Livro de ofertas
 INTERVALO_LIVRO_PADRAO = 0.2     # s entre snapshots entregues (~5 por segundo)
 NIVEIS_LIVRO_PADRAO    = 15      # níveis por lado entregues ao engine
-TOLERANCIA_DIVERGENCIA = 1.0     # s que o livro pode divergir do TinyBook antes de voltar ao topo
+TOLERANCIA_DIVERGENCIA = 3.0     # s que o livro pode divergir do TinyBook antes de voltar ao topo (medido 26/10: PETR4 em queda rápida, os canais chegam até ~2 s defasados)
 MAX_ARRAY_BYTES        = 64 * 1024 * 1024
 
 
@@ -1227,6 +1227,8 @@ class ProfitDLLBridge:
                                        f"{TOLERANCIA_DIVERGENCIA:g} s - voltando ao topo")
                     return False
                 return True
+        if self._diverge_desde is not None and self._em_divergencia:
+            logger.info(f"Livro de ofertas voltou a bater com o TinyBook após {agora - self._diverge_desde:.1f} s")
         self._diverge_desde = None
         self._em_divergencia = False
         return True

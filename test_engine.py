@@ -4084,7 +4084,7 @@ def test_livro_bridge():
     else:
         err("reenviou sem mudança")
 
-    # fallback: TinyBook diverge por mais de 1 s
+    # fallback: TinyBook diverge por mais que a tolerância (TOLERANCIA_DIVERGENCIA)
     b, rel, got = monta()
     b._processar_evento(("book", 0, 29.99, 1700, 1.0))
     b._processar_evento(("book", 1, 30.01, 900, 1.0))
@@ -4097,14 +4097,15 @@ def test_livro_bridge():
     b._processar_evento(("book", 0, 29.50, 100, 2.0))       # TinyBook diz outro bid
     antes = len(got)
     if any(l.ordens for l in got[-1]):
-        ok("Divergência < 1 s: tolera (latência) e continua no livro")
+        ok("Divergência abaixo da tolerância: tolera (latência) e continua no livro")
     else:
         err("não deveria cair no topo antes de 1 s")
-    rel["t"] += 1.2
+    from profitdll.bridge import TOLERANCIA_DIVERGENCIA
+    rel["t"] += TOLERANCIA_DIVERGENCIA + 0.2
     b._descarregar_livro()
     if len(got) > antes and not any(l.ordens or l.corretoras for l in got[-1]) \
             and {l.price for l in got[-1]} == {29.50, 30.01}:
-        ok("Divergência > 1 s: volta ao topo do TinyBook (sem corretoras)")
+        ok("Divergência acima da tolerância: volta ao topo do TinyBook (sem corretoras)")
     else:
         err(f"fallback: {[(l.price, l.ordens) for l in got[-1]]}")
     st = b.stats()
