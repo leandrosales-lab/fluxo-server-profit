@@ -17,12 +17,15 @@ Protocolo (uma linha JSON por mensagem):
     {"tipo": "log", "nivel", "origem", "msg"}                  registros de log do filho
     {"tipo": "historico", "ativo", "ticks": [<tick>, ...]}     pedaço do histórico do dia (cronológico)
     {"tipo": "historico_fim", "ativo", "n"}                    o histórico do papel terminou
+    {"tipo": "leilao", "evento": "livro"|"teorico"|"fase"|"abertura", "ativo", ...}   só com --leilao
+        livro: "entradas" [[lado, preço, qtd, corretora], ...]; teorico: "preco" (None = sem teórico), "qtd";
+        fase: "codigo" (13 pré-abertura, 4 leilão, 0 aberto...); abertura: "preco", "qtd" (negócio de leilão)
   pai → filho (stdin):
     "trocar ATIVO"  = abrir outro papel (livro da tela, TinyBook e histórico do dia passam a ser dele)
     qualquer outra linha (ou EOF) = encerrar: bridge.stop() (Unsubscribe + DLLFinalize) e sair.
 
 Uso do filho (o pai monta o comando):
-  python -m profitdll.processo --asset PETR4 [--agentes agentes.json] [--timeout 30]
+  python -m profitdll.processo --asset PETR4 [--agentes agentes.json] [--timeout 30] [--radar lista] [--leilao]
 """
 import os
 import sys
@@ -116,7 +119,8 @@ class PonteDLLProcesso:
     """
 
     def __init__(self, asset: str, agentes_path: Optional[str] = None, timeout: int = 30,
-                 comando: Optional[list] = None, folga: float = 15.0, radar: Optional[str] = None):
+                 comando: Optional[list] = None, folga: float = 15.0, radar: Optional[str] = None,
+                 leilao: bool = False):
         self.asset = validar_ativo(asset)
         self.exchange = BOLSA
         self.timeout = timeout
@@ -127,6 +131,8 @@ class PonteDLLProcesso:
         # histórico do dia: (ativo, [Tick]) por pedaço; o fim vem em on_historico_fim(ativo, n)
         self.on_historico: Optional[Callable[[str, list], None]] = None
         self.on_historico_fim: Optional[Callable[[str, int], None]] = None
+        # leilão de abertura (--leilao): a mensagem inteira, {"evento", "ativo", ...}
+        self.on_leilao: Optional[Callable[[dict], None]] = None
         self.motivo_falha: Optional[str] = None
         if comando is None:
             comando = [sys.executable, "-X", "utf8", "-m", "profitdll.processo", "--asset", self.asset,
@@ -135,6 +141,8 @@ class PonteDLLProcesso:
                 comando += ["--agentes", agentes_path]
             if radar:
                 comando += ["--radar", radar]
+            if leilao:
+                comando += ["--leilao"]
         self._comando = comando
         self._proc: Optional[subprocess.Popen] = None
         self._leitor: Optional[threading.Thread] = None
@@ -284,6 +292,9 @@ class PonteDLLProcesso:
             if self.on_renovacao:
                 self.on_renovacao(m.get("ativo") or "", m.get("corretora") or "", m.get("lado") or "",
                                   float(m.get("preco") or 0), float(m.get("ts") or 0))
+        elif tipo == "leilao":
+            if self.on_leilao:
+                self.on_leilao(m)
         elif tipo == "stats":
             with self._trava:
                 self._ultimo = m.get("dados") or {}
@@ -342,6 +353,7 @@ def main_filho(argv=None, fabrica_ponte=None, entrada=None, saida=None) -> int:
     p.add_argument("--agentes", default=None)
     p.add_argument("--timeout", default=30, type=int)
     p.add_argument("--radar", default=None, help="lista de ações a assinar além do --asset (config/acoes_b3.txt)")
+    p.add_argument("--leilao", action="store_true", help="manda o leilão de abertura (livro, teórico, estado)")
     args = p.parse_args(argv)
 
     entrada = entrada or sys.stdin
@@ -385,6 +397,9 @@ def main_filho(argv=None, fabrica_ponte=None, entrada=None, saida=None) -> int:
         bridge.on_tick = lambda t: enviar(tick_para_msg(t))
         bridge.on_book = lambda niveis: enviar(book_para_msg(niveis, time.time(), getattr(bridge, "asset", "")))
         bridge.on_renovacao = lambda *a: enviar(renovacao_para_msg(*a))
+        if args.leilao:
+            bridge.leilao_ligado = True       # antes do start(): os callbacks do leilão são registrados na conexão
+            bridge.on_leilao = lambda m: enviar({"tipo": "leilao", **m})
 
         def enviar_historico(ativo, ticks):
             for msg in historico_para_msgs(ativo, ticks):

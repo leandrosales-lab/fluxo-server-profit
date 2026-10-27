@@ -15,13 +15,16 @@ Por papel, a cada mudança do livro:
   - escora: lote grande que sobra abaixo do teórico (compra) ou acima (venda), com a corretora dona;
   - "no perfil": desbalanceado, tendência a favor e escora do mesmo lado (ver no_perfil()).
 
-As ordens chegam por ordem(), cancelar() e limpar() (a ponte da DLL e o simulador usam as mesmas).
+As ordens chegam uma a uma por ordem(), cancelar() e limpar() (o simulador) ou em retratos do livro inteiro
+por definir_livro() (a ponte da DLL, cerca de 1 por segundo por papel; os eventos saem da diferença entre
+retratos). Fechamento anterior, tendência e liquidez vêm de carregar_diario() (tools/cotahist_b3.py).
 Os limites (banda, razão, tamanho da escora) são ESCOLHAS DE TELA, não regras do curso: calibrar com
 leilões reais gravados.
 """
 
 from __future__ import annotations
 
+import math
 import statistics
 import threading
 from collections import deque
@@ -58,15 +61,18 @@ def preco_teorico(compra: dict, venda: dict, referencia: float | None = None):
     """
     if not compra or not venda or max(compra) < min(venda):
         return None, 0
-    candidatos = sorted(set(compra) | set(venda))
-    melhor = None
-    for p in candidatos:
-        demanda = sum(q for x, q in compra.items() if x >= p)
-        oferta = sum(q for x, q in venda.items() if x <= p)
-        casado = min(demanda, oferta)
+    precos = sorted(set(compra) | set(venda))
+    demanda, acc = [0] * len(precos), 0
+    for i in range(len(precos) - 1, -1, -1):        # compra a p ou mais
+        acc += compra.get(precos[i], 0)
+        demanda[i] = acc
+    melhor, oferta = None, 0
+    for i, p in enumerate(precos):                   # venda a p ou menos
+        oferta += venda.get(p, 0)
+        casado = min(demanda[i], oferta)
         if casado <= 0:
             continue
-        chave = (casado, -abs(demanda - oferta), -abs(p - referencia) if referencia else 0.0)
+        chave = (casado, -abs(demanda[i] - oferta), -abs(p - referencia) if referencia else 0.0)
         if melhor is None or chave > melhor[0]:
             melhor = (chave, p)
     return (melhor[1], melhor[0][0]) if melhor else (None, 0)
@@ -211,6 +217,62 @@ class PainelLeilao:
             tipo = "entrou" if novo_player else ("aumentou" if delta > 0 else "reduziu")
             self._evento(p, tipo, lado, preco, delta, corretora, antes)
 
+    def definir_livro(self, ativo: str, entradas, ts: float | None = None) -> int:
+        """
+        Retrato do livro do papel: [(lado, preço, qtd, corretora)]. Ordens da mesma corretora no mesmo preço
+        somam. Substitui o livro e registra quem entrou, aumentou, reduziu, cancelou ou saiu pela diferença
+        para o retrato anterior (o teórico antes e depois é o do retrato inteiro). Devolve quantas entradas
+        foram descartadas por preço ou quantidade inválidos (ordem a mercado no leilão pode vir sem preço).
+        """
+        novo: dict = {}
+        descartadas = 0
+        for lado, preco, qtd, corretora in entradas:
+            if lado not in ("compra", "venda") or not qtd or qtd < 0 or not math.isfinite(preco) or preco <= 0:
+                descartadas += 1
+                continue
+            k = (lado, _arred(preco), corretora or "—")
+            novo[k] = novo.get(k, 0) + int(qtd)
+        with self._lock:
+            p = self._papel(ativo)
+            self._relogio(ts)
+            antes = self._teorico(p)[0]
+            velho: dict = {}
+            for lado, preco, qtd, corretora in p.ordens.values():
+                k = (lado, preco, corretora)
+                velho[k] = velho.get(k, 0) + qtd
+            corr_antes = {k[2] for k in velho}
+            corr_depois = {k[2] for k in novo}
+            p.ordens = {k: [k[0], k[1], q, k[2]] for k, q in novo.items()}
+            self._marcar_teorico(p)
+            depois = self._teorico(p)[0]
+            for k in sorted(set(velho) | set(novo)):
+                delta = novo.get(k, 0) - velho.get(k, 0)
+                if not delta:
+                    continue
+                lado, preco, c = k
+                if delta > 0:
+                    tipo = "aumentou" if c in corr_antes else "entrou"
+                else:
+                    tipo = "saiu" if c not in corr_depois else "cancelou" if k not in novo else "reduziu"
+                self._registrar(p, tipo, lado, preco, delta, c, antes, depois)
+        return descartadas
+
+    def carregar_diario(self, diario: dict) -> int:
+        """
+        {ativo: {"fechamentos": [...], "volumes": [...]}} (do mais antigo ao mais recente, R$ por pregão):
+        fechamento anterior, tendência e liquidez (média dos últimos 20 pregões). Devolve quantos papéis.
+        """
+        n = 0
+        for ativo, d in (diario or {}).items():
+            fech = [float(x) for x in d.get("fechamentos") or [] if x]
+            vols = [float(x) for x in d.get("volumes") or []][-20:]
+            if not fech:
+                continue
+            self.cadastrar(ativo.upper(), referencia=fech[-1], tendencia_=tendencia(fech),
+                           liquidez=(sum(vols) / len(vols)) if vols else None)
+            n += 1
+        return n
+
     def cancelar(self, ativo: str, oid, ts: float | None = None):
         with self._lock:
             p = self._papel(ativo)
@@ -249,7 +311,9 @@ class PainelLeilao:
 
     def _evento(self, p: _Papel, tipo, lado, preco, delta, corretora, antes):
         self._marcar_teorico(p)
-        depois = self._teorico(p)[0]
+        self._registrar(p, tipo, lado, preco, delta, corretora, antes, self._teorico(p)[0])
+
+    def _registrar(self, p: _Papel, tipo, lado, preco, delta, corretora, antes, depois):
         # Só o que importa: quem entrou/saiu, ordem grande ou ordem que mexeu o teórico
         if tipo in ("entrou", "saiu") or antes != depois or abs(delta) * preco >= self.cfg.escora_min_fin / 4:
             p.eventos.append({"ts": self.agora, "tipo": tipo, "lado": lado, "preco": preco, "qtd": delta,

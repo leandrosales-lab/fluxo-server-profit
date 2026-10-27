@@ -249,7 +249,7 @@ verificacoes.push(["radar sem --radar", async (page) => {
   await page.screenshot({ path: path.join(SAIDA, "radar-desligado.png") });
 }]);
 
-verificacoes.push(["leilão sem --leilao-demo", async (page) => {
+verificacoes.push(["leilão sem --leilao", async (page) => {
   await page.goto(`${BASE}/leilao`);
   await page.waitForFunction(() => !document.getElementById("lista-vazio").hidden);
   checar((await page.textContent("#lista-vazio")).includes("Leilão desligado"), "leilão avisa que está desligado");

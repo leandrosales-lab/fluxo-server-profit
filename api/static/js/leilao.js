@@ -97,8 +97,9 @@ async function passo() {
     $("lista-meta").textContent = desligado ? "" : `${inteiro(visiveis.length)} de ${inteiro(dados.lista.length)} · clique abre o book`;
     $("lista-vazio").hidden = !desligado && visiveis.length > 0;
     $("lista-vazio").textContent = desligado
-      ? "Leilão desligado — a ponte da DLL ainda não manda o leilão; suba o servidor com --leilao-demo para ver a simulação"
-      : "Nenhum papel com esse filtro";
+      ? "Leilão desligado — suba o servidor com --modo dll --leilao (ou --leilao-demo para a simulação)"
+      : dados.lista.length ? "Nenhum papel com esse filtro"
+      : "Nenhum papel em leilão ainda — o livro chega na pré-abertura (9:45 às 10:00)";
 
     resumoBook(dados.book);
     escada(dados.book);

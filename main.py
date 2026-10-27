@@ -188,9 +188,11 @@ def setup_dll_mode(engine: FlowEngine, args):
     """
     from profitdll.processo import PonteDLLProcesso
 
+    # O leilão precisa do livro de todos os papéis: assina a mesma lista do radar
+    leilao = getattr(args, "leilao", False)
     lista_radar = (os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "acoes_b3.txt")
-                   if getattr(args, "radar", False) else None)
-    bridge = PonteDLLProcesso(asset=args.asset, agentes_path=args.agentes, radar=lista_radar)
+                   if getattr(args, "radar", False) or leilao else None)
+    bridge = PonteDLLProcesso(asset=args.asset, agentes_path=args.agentes, radar=lista_radar, leilao=leilao)
     bridge.on_tick = engine.add_tick
     bridge.on_book = livro_do_papel_aberto(engine, lambda: bridge.asset)   # livro de ofertas / TinyBook
     return bridge
@@ -200,7 +202,29 @@ def setup_dll_mode(engine: FlowEngine, args):
 # MODO REPLAY
 # ──────────────────────────────────────────────────────────────
 
-def iniciar_fonte_dll(engine: FlowEngine, args, server, radar=None, portao=None):
+def entregar_leilao(painel):
+    """Mensagem do leilão vinda da ponte (on_leilao) → core.leilao.PainelLeilao."""
+    from core.leilao import abertura_do_dia
+
+    def entregar(m: dict):
+        ativo, ts = m.get("ativo") or "", m.get("ts")
+        if not ativo:
+            return
+        if ts:
+            painel.abertura_prevista = abertura_do_dia(ts)
+        evento = m.get("evento")
+        if evento == "livro":
+            painel.definir_livro(ativo, [tuple(e) for e in m.get("entradas") or []], ts)
+        elif evento == "teorico":
+            painel.definir_teorico(ativo, m.get("preco"), int(m.get("qtd") or 0), ts)
+        elif evento == "fase":
+            painel.definir_fase(ativo, int(m["codigo"]), ts)
+        elif evento == "abertura":
+            painel.abrir(ativo, float(m["preco"]), ts)
+    return entregar
+
+
+def iniciar_fonte_dll(engine: FlowEngine, args, server, radar=None, portao=None, leilao=None):
     """
     Cria a ponte da ProfitDLL, registra no servidor (contadores no /state, Reconectar)
     e faz a 1ª conexão. A ponte é devolvida MESMO se essa conexão falhar: o Reconectar
@@ -217,6 +241,8 @@ def iniciar_fonte_dll(engine: FlowEngine, args, server, radar=None, portao=None)
                 engine._renovacao_sob_lock(corretora, lado, preco, ts)
 
     bridge.on_renovacao = entregar_renovacao
+    if leilao is not None:
+        bridge.on_leilao = entregar_leilao(leilao)
     if portao is not None:       # histórico do dia: entra direto no motor, na ordem do relógio
         bridge.on_historico = portao.historico
         bridge.on_historico_fim = portao.fim
@@ -412,6 +438,9 @@ def parse_args():
                    help="CSV do pregão a reproduzir (modo replay)")
     p.add_argument("--radar",       action="store_true",
                    help="Radar de fluxo: icebergs de todas as ações (dll: config/acoes_b3.txt; replay: --arquivos)")
+    p.add_argument("--leilao",      action="store_true",
+                   help="Modo dll: tela Leilão com o leilão de abertura de todas as ações (assina a lista do radar). "
+                        "Fechamento anterior, tendência e liquidez vêm de historico/diario_b3.json (tools/cotahist_b3.py)")
     p.add_argument("--leilao-demo", action="store_true",
                    help="Tela Leilão com um leilão de abertura SIMULADO (a ponte da DLL ainda não manda o leilão)")
     p.add_argument("--arquivos",    nargs="+", default=None,
@@ -520,7 +549,23 @@ def main():
     if radar is not None:
         server.registrar_radar(radar)
     simulador_leilao = None
-    if args.leilao_demo:
+    painel_leilao = None
+    if args.leilao and args.modo == "dll":
+        import json
+        from core.leilao import PainelLeilao
+        painel_leilao = PainelLeilao(tick=args.tick_size, fonte="dll")
+        diario = os.path.join(os.path.dirname(os.path.abspath(__file__)), "historico", "diario_b3.json")
+        try:
+            with open(diario, encoding="utf-8") as f:
+                logger.info("Leilão: %d papéis com fechamento, tendência e liquidez de %s",
+                            painel_leilao.carregar_diario(json.load(f)), diario)
+        except (OSError, ValueError) as e:
+            logger.warning("Leilão sem fechamento anterior, tendência e liquidez (%s): rode "
+                           "python -X utf8 tools/cotahist_b3.py antes do pregão", e)
+        server.registrar_leilao(painel_leilao)
+    elif args.leilao:
+        logger.warning("--leilao só funciona no modo dll (use --leilao-demo para a simulação)")
+    elif args.leilao_demo:
         from core.leilao import PainelLeilao
         from core.leilao_simulado import SimuladorLeilao
         painel_leilao = PainelLeilao(tick=args.tick_size, fonte="simulado")
@@ -551,7 +596,7 @@ def main():
             logger.error("DDE não disponível — rodando em modo manual")
 
     elif args.modo == "dll":
-        data_source = iniciar_fonte_dll(engine, args, server, radar, portao)
+        data_source = iniciar_fonte_dll(engine, args, server, radar, portao, painel_leilao)
 
     elif args.modo == "rtd":
         logger.info("Modo RTD — dados recebidos via Excel RTD Bridge (POST /tick)")

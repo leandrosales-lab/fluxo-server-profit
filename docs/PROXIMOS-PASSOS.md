@@ -38,15 +38,24 @@
     processo filho (`profitdll/processo.py`) e o Reconectar reinicia só o filho.
   - Credenciais: `tools\configurar_profitdll.ps1`; subir: `tools\rodar_dll.ps1 -Asset PETR4`.
   - Histórico: `python -m profitdll.historico` (ainda não confirmado com dados reais).
-- **Tela Leilão (F4, 27/10/2026) — só com dados SIMULADOS por enquanto:** `python main.py --leilao-demo` e abrir
-  `/leilao`. Lista os papéis do leilão de abertura com teórico, seta de pressão (▲/▼, dupla a 3×), sobra de compra e
-  venda na banda de ±2% do teórico, desequilíbrio (2× = desbalanceado), tendência (fechamento contra a média de 20
-  pregões), escora abaixo (compra) e acima (venda) e liquidez. "No perfil" = desbalanceado + tendência a favor + escora
-  do mesmo lado (decisão de 27/10/2026: escora do lado do desequilíbrio, não do lado oposto). À direita, o book do papel (sobra na abertura ou livro inteiro) e quem entrou e saiu, com o efeito no
-  teórico. Cálculo em `core/leilao.py`, simulador em `core/leilao_simulado.py`. **Falta:** ligar a ponte da DLL
-  (`SetChangeStateTickerCallback`, `SetTheoreticalPriceCallback` com quantidade Int64, livro de ofertas de todos os
-  papéis no pré-pregão, fechamentos diários para tendência e liquidez) e calibrar banda, razão e escora com leilões
-  gravados.
+- **Tela Leilão (F4, 27/10/2026):** lista os papéis do leilão de abertura com teórico, seta de pressão (▲/▼, dupla
+  a 3×), sobra de compra e venda na banda de ±2% do teórico, desequilíbrio (2× = desbalanceado), tendência (fechamento
+  contra a média de 20 pregões), escora abaixo (compra) e acima (venda) e liquidez. "No perfil" = desbalanceado +
+  tendência a favor + escora do mesmo lado (decisão de 27/10/2026: escora do lado do desequilíbrio, não do lado
+  oposto). À direita, o book do papel (sobra na abertura ou livro inteiro) e quem entrou e saiu, com o efeito no
+  teórico. Cálculo em `core/leilao.py`.
+  - **Simulação:** `python main.py --leilao-demo` (`core/leilao_simulado.py`).
+  - **Ao vivo (falta conferir num pré-pregão):** antes do pregão, `python -X utf8 tools/cotahist_b3.py` (grava
+    `historico/diario_b3.json` com 25 pregões do COTAHIST da B3: fechamento anterior, tendência, liquidez). Se a B3
+    recusar o download (403), baixe os `COTAHIST_DDDMMAAAA.ZIP` pelo site da B3 para `historico/cotahist/` e rode de
+    novo (ele usa o que já está na pasta). Depois `tools\rodar_dll.ps1 -Asset PETR4 -Leilao` (ou
+    `python main.py --modo dll --leilao`), que assina o livro de todas as ações da lista do radar.
+  - **A conferir ao vivo** (bloco `leilao` do GET /state, com amostras): se `SetTheoreticalPriceCallback`
+    (ativo, preço, qtd Int64) e `SetChangeStateTickerCallback` (ativo, data, estado) chegam com essas assinaturas
+    (são do manual; assinatura errada derruba a DLL, por isso só ligam com `--leilao`); como vem a ordem a mercado
+    no livro do leilão (`amostras.invalida`, hoje fica de fora do cálculo); se o teórico calculado pelo livro bate
+    com o da DLL; quantos papéis a licença aceita no livro de ofertas. Sem o estado do papel, o livro vai para a
+    tela entre 9:30 e 10:15. Calibrar banda, razão e escora com leilões gravados.
 - **Telas (design v3):** `http://127.0.0.1:5000/operar` (F1) e `/conexao` (F2), tema escuro/claro (T), Reconectar
   da DLL na Conexão. Testes: `node tools/test_telas.mjs` e `node tools/qa_telas.js` (QA no navegador com Playwright).
 

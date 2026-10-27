@@ -23,6 +23,10 @@ negócio é perdido e o lado agressor vem pronto no TradeType.
     on_book(níveis com ordens/corretoras) no máximo ~5 vezes por segundo. O TinyBook continua
     como fallback: se a assinatura falhar, o livro estiver vazio ou divergir do TinyBook por
     mais de 1 s, o topo do TinyBook é entregue como antes.
+  - Leilão de abertura (só com leilao_ligado, --leilao no main.py): estado do papel
+    (SetChangeStateTickerCallback), preço teórico (SetTheoreticalPriceCallback), negócio de
+    abertura (TradeType 4) e, a cada INTERVALO_LEILAO, o retrato do livro por ordem dos papéis
+    em pré-abertura/leilão. Tudo sai por on_leilao(dict) para o core.leilao.PainelLeilao.
   - Negócios e book passam pela MESMA fila, preservando a ordem de chegada.
   - Contadores em stats() (expostos no GET /state, bloco "dll").
 
@@ -120,6 +124,14 @@ INTERVALO_LIVRO_PADRAO = 0.2     # s entre snapshots entregues (~5 por segundo)
 NIVEIS_LIVRO_PADRAO    = 15      # níveis por lado entregues ao engine
 TOLERANCIA_DIVERGENCIA = 3.0     # s que o livro pode divergir do TinyBook antes de voltar ao topo (medido 26/10: PETR4 em queda rápida, os canais chegam até ~2 s defasados)
 MAX_ARRAY_BYTES        = 64 * 1024 * 1024
+
+# Leilão de abertura
+TRADE_LEILAO     = 4                  # TradeType do negócio de leilão (abertura, fechamento)
+FASES_LEILAO     = (13, 4)            # estado do papel: pré-abertura, leilão (manual p.32, p.75)
+INTERVALO_LEILAO = 1.0                # s entre retratos do livro de cada papel em leilão (técnico, não é regra)
+# Sem estado do papel (callback não chegou), o livro vai para a tela nesta janela do horário da B3 (minutos do dia)
+JANELA_LEILAO    = (9 * 60 + 30, 10 * 60 + 15)
+FUSO_B3          = timezone(timedelta(hours=-3))
 
 
 def copiar_array_v2(ptr) -> Optional[bytes]:
@@ -379,6 +391,15 @@ class ProfitDLLBridge:
         # EDIT/DELETE/DELETE_FROM do livro de ofertas chegam só com lado e POSIÇÃO (sem offer_id, agente nem
         # preço): para o giro, cada papel mantém o livro por posição e traduz o evento na ordem afetada
         self._livros_pos: dict[str, LivroPos] = {}
+        # Leilão de abertura (ligado pelo --leilao): on_leilao recebe {"evento": "livro"|"teorico"|"fase"|"abertura", ...}
+        self.leilao_ligado = False
+        self.on_leilao: Optional[Callable[[dict], None]] = None
+        self._fases: dict[str, int] = {}
+        self._leilao_sujo: set = set()
+        self._ultimo_leilao = float("-inf")
+        self.leilao_contadores = {"retratos": 0, "teoricos": 0, "fases": 0, "aberturas": 0, "entradas_invalidas": 0}
+        # diagnóstico ao vivo: as assinaturas dos callbacks do leilão vêm do manual e ainda não foram conferidas
+        self.leilao_amostras: dict[str, list] = {"fase": [], "teorico": [], "invalida": []}
         self._pacote_pos: dict[tuple, list] = {}
         self.giro_erros = 0
         self.giro_erros_motivo: dict[str, int] = {}
@@ -472,6 +493,9 @@ class ProfitDLLBridge:
                                   "amostra_erro": [list(a) for a in self.amostra_erro],
                                   "amostra_edit": [list(a) for a in self.amostra_edit],
                                   "papeis_com_livro": len(self._livros_pos)},
+            "leilao":            ({**self.leilao_contadores, "em_leilao": sum(1 for f in self._fases.values() if f in FASES_LEILAO),
+                                   "amostras": {k: [list(a) for a in v] for k, v in self.leilao_amostras.items()}}
+                                  if self.leilao_ligado else None),
             "livros":            {"assinados": self.livros_assinados,
                                   "recusados": list(self.livros_recusados)},
             "ativo":             self.asset,
@@ -592,6 +616,8 @@ class ProfitDLLBridge:
         self._em_divergencia = False
         self._livro_giro.reset()
         self._livros_pos.clear()
+        self._fases.clear()
+        self._leilao_sujo.clear()
         self._pacote_pos.clear()
         self._pacote.clear()
         self.livros_assinados = 0
@@ -678,6 +704,11 @@ class ProfitDLLBridge:
         dll.UnsubscribeOfferBook.restype = c_int
         dll.SetOfferBookCallbackV2.argtypes = [TOfferBookCallbackV2]
         dll.SetOfferBookCallbackV2.restype = c_int
+        # Leilão (manual p.32, p.55): teórico com quantidade Int64 (o profitTypes oficial erra: c_uint) e
+        # estado do papel com a data em texto. Só registrados com o leilão ligado: callback stdcall com a
+        # assinatura errada corrompe a pilha da thread da DLL. CONFERIR AO VIVO (amostras no /state).
+        TTheoreticalPriceCallback = WINFUNCTYPE(None, TAssetID, c_double, c_longlong)
+        TChangeStateTickerCallback = WINFUNCTYPE(None, TAssetID, c_wchar_p, c_int)
         dll.GetAgentNameLength.argtypes = [c_int, c_uint]
         dll.GetAgentNameLength.restype = c_int
         dll.GetAgentName.argtypes = [c_int, c_int, c_wchar_p, c_uint]
@@ -737,6 +768,15 @@ class ProfitDLLBridge:
             if progresso >= 100:
                 self.fila.put(("hist_fim", ativo_p))
 
+        def on_teorico(asset, preco, qtd):
+            self.fila.put(("teorico", ticker_do_ativo(asset), float(preco), int(qtd), time.time()))
+
+        def on_fase(asset, data, estado):
+            self.fila.put(("fase", ticker_do_ativo(asset), int(estado), str(data or ""), time.time()))
+
+        cb_teorico = TTheoreticalPriceCallback(on_teorico)
+        cb_fase = TChangeStateTickerCallback(on_fase)
+        self._callbacks += [cb_teorico, cb_fase]
         cb_hist = THistoryTradeCallback(on_historico)
         cb_prog = TProgressCallback(on_progresso)
         self._callbacks += [cb_estado, cb_trade, cb_tiny, cb_oferta, cb_hist, cb_prog]
@@ -763,6 +803,18 @@ class ProfitDLLBridge:
             logger.warning(f"SetOfferBookCallbackV2 indisponível: {e}")
         if not self._livro_disponivel:
             logger.warning("ProfitDLL: livro de ofertas não registrado - usando só o topo (TinyBook)")
+        if self.leilao_ligado:
+            for nome, cb in (("SetTheoreticalPriceCallback", cb_teorico), ("SetChangeStateTickerCallback", cb_fase)):
+                funcao = getattr(dll, nome, None)
+                try:
+                    ok = funcao is not None and funcao(cb) == 0
+                except Exception as e:
+                    ok = False
+                    logger.warning(f"{nome} falhou: {e}")
+                if not ok:
+                    logger.warning(f"Leilão: {nome} indisponível - a tela usa o teórico calculado pelo livro"
+                                   if "Theoretical" in nome else
+                                   f"Leilão: {nome} indisponível - o livro vai para a tela entre 9:30 e 10:15")
         try:
             self._hist_disponivel = (dll.SetHistoryTradeCallback(cb_hist) == 0
                                      and dll.SetSerieProgressCallback(cb_prog) == 0)
@@ -865,8 +917,10 @@ class ProfitDLLBridge:
                     self._descarregar_livro()
                 except Exception as e:
                     logger.error(f"Erro ao entregar o livro de ofertas: {e}")
+                self._descarregar_leilao()
                 continue
             self._processar_evento(evento)
+            self._descarregar_leilao()
 
     def _processar_evento(self, evento: tuple):
         """Despacha um evento da fila (trade, book ou oferta) - sem DLL, testável."""
@@ -879,6 +933,10 @@ class ProfitDLLBridge:
                 self._processar_oferta_bruta(*evento[1:])
             elif evento[0] == "hist_fim":
                 self._concluir_historico(evento[1])
+            elif evento[0] == "teorico":
+                self._processar_teorico(*evento[1:])
+            elif evento[0] == "fase":
+                self._processar_fase(*evento[1:])
             elif evento[0] == "trocar":
                 self._executar_troca(evento[1])
             elif evento[0] == "oferta":     # só o livro da tela
@@ -1025,6 +1083,10 @@ class ProfitDLLBridge:
             ts = time.time()
         else:
             self.latencia_ms = max(0, round((time.time() - ts) * 1000))
+        if ttype == TRADE_LEILAO and self.leilao_ligado:
+            self.leilao_contadores["aberturas"] += 1
+            self._enviar_leilao({"evento": "abertura", "ativo": (ativo or self.asset).upper(), "preco": float(price),
+                                 "qtd": int(qty), "ts": ts})
         tick = trade_para_tick(buy, sell, qty, price, ttype, ts, self._nomes_para(buy, sell))
         if tick is None:
             self.trades_ignorados += 1
@@ -1173,6 +1235,8 @@ class ProfitDLLBridge:
         """Evento do callback: alimenta o giro de iceberg (todos os papéis) e o livro da tela (o principal)."""
         self._processar_oferta_giro(ativo, action, position, side, qty, agent, offer_id, price,
                                     has_price, has_qty, has_offer, has_agent, compra, venda, ts)
+        if self.leilao_ligado:
+            self._leilao_sujo.add((ativo or self.asset).upper())
         if (ativo or self.asset).upper() == self.asset:
             self._processar_oferta(action, position, side, float(price) if has_price else 0.0,
                                    int(qty) if has_qty else 0, int(agent) if has_agent else 0,
@@ -1309,3 +1373,84 @@ class ProfitDLLBridge:
         if (utilizavel and (self._livro_pendente or self._modo_book != "ofertas")) \
                 or (not utilizavel and self._modo_book == "ofertas"):
             self._publicar()
+
+    # ──────────────────────────────────────────────────────────
+    # LEILÃO DE ABERTURA (sem DLL, testável)
+    # ──────────────────────────────────────────────────────────
+
+    def _enviar_leilao(self, msg: dict) -> None:
+        if self.on_leilao is None:
+            return
+        try:
+            self.on_leilao(msg)
+        except Exception as e:
+            logger.error(f"Erro ao entregar o leilão: {e}")
+
+    @staticmethod
+    def _amostrar(lista: list, item, n: int = 8) -> None:
+        if len(lista) < n:
+            lista.append(item)
+
+    def _processar_teorico(self, ativo, preco, qtd, ts):
+        if not self.leilao_ligado:
+            return
+        self.leilao_contadores["teoricos"] += 1
+        self._amostrar(self.leilao_amostras["teorico"], (ativo, preco, qtd))
+        valido = preco == preco and 0 < preco < float("inf")          # sem teórico: 0 ou -INF
+        self._enviar_leilao({"evento": "teorico", "ativo": ativo, "preco": preco if valido else None,
+                             "qtd": int(qtd) if valido else 0, "ts": ts})
+
+    def _processar_fase(self, ativo, codigo, data, ts):
+        if not self.leilao_ligado:
+            return
+        self.leilao_contadores["fases"] += 1
+        self._amostrar(self.leilao_amostras["fase"], (ativo, codigo, data))
+        self._fases[ativo] = codigo
+        if codigo in FASES_LEILAO:
+            self._leilao_sujo.add(ativo)          # o retrato sai no próximo intervalo
+        self._enviar_leilao({"evento": "fase", "ativo": ativo, "codigo": codigo, "ts": ts})
+
+    def _em_leilao(self, ativo: str, agora: float) -> bool:
+        fase = self._fases.get(ativo)
+        if fase is not None:
+            return fase in FASES_LEILAO
+        h = datetime.fromtimestamp(agora, FUSO_B3)
+        return JANELA_LEILAO[0] <= h.hour * 60 + h.minute < JANELA_LEILAO[1]
+
+    def retrato_leilao(self, ativo: str) -> list:
+        """Livro por ordem do papel somado por (lado, preço, corretora): [[lado, preço, qtd, corretora], ...]."""
+        pos = self._livros_pos.get(ativo)
+        if pos is None:
+            return []
+        soma: dict = {}
+        for lado, lista in (("compra", pos.compra), ("venda", pos.venda)):
+            for preco, qtd, agente, _oid in lista:
+                if not (preco == preco and 0 < preco < float("inf")) or qtd <= 0:
+                    # ordem a mercado no leilão pode vir sem preço: fica de fora e entra na amostra
+                    self.leilao_contadores["entradas_invalidas"] += 1
+                    self._amostrar(self.leilao_amostras["invalida"], (ativo, lado, preco, qtd))
+                    continue
+                k = (lado, round(float(preco), 4), int(agente))
+                soma[k] = soma.get(k, 0) + int(qtd)
+        return [[lado, preco, qtd, self._corretora(agente) or "—"] for (lado, preco, agente), qtd in soma.items()]
+
+    def _descarregar_leilao(self, agora: Optional[float] = None) -> None:
+        """A cada INTERVALO_LEILAO, manda o retrato dos papéis em leilão cujo livro mudou."""
+        if not self.leilao_ligado or not self._leilao_sujo:
+            return
+        relogio = self._agora()
+        if relogio - self._ultimo_leilao < INTERVALO_LEILAO:
+            return
+        self._ultimo_leilao = relogio
+        agora = time.time() if agora is None else agora
+        sujos, self._leilao_sujo = self._leilao_sujo, set()
+        for ativo in sorted(sujos):
+            if not self._em_leilao(ativo, agora):
+                continue
+            try:
+                entradas = self.retrato_leilao(ativo)
+            except Exception as e:
+                logger.error(f"Leilão: retrato de {ativo} falhou: {e}")
+                continue
+            self.leilao_contadores["retratos"] += 1
+            self._enviar_leilao({"evento": "livro", "ativo": ativo, "entradas": entradas, "ts": agora})

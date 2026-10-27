@@ -4904,6 +4904,181 @@ def test_leilao_simulado_e_api():
         server.stop()
 
 
+def test_leilao_dll():
+    print(f"\n{AMARELO}═══ TESTE 56: Leilão pela ProfitDLL — estado, teórico, retrato do livro e abertura ═══{RESET}")
+    from datetime import datetime
+    from profitdll.bridge import ProfitDLLBridge, FUSO_B3
+    from profitdll.livro import AT_FULLBOOK, AT_ADD
+    from profitdll.processo import PonteDLLProcesso
+    from core.leilao import PainelLeilao
+    import main as principal
+
+    ts = datetime(2026, 10, 27, 9, 50, tzinfo=FUSO_B3).timestamp()
+    b = ProfitDLLBridge("PETR4", extras=["VALE3"])
+    b.leilao_ligado = True
+    msgs = []
+    b.on_leilao = msgs.append
+    b.nomes = {3: "XP", 8: "UBS"}
+    rel = {"t": 100.0}
+    b._agora = lambda: rel["t"]
+
+    b._processar_evento(("fase", "VALE3", 13, "27/10/2026 09:45:00", ts))
+    if msgs[-1] == {"evento": "fase", "ativo": "VALE3", "codigo": 13, "ts": ts}:
+        ok("Estado do papel (13 = pré-abertura) vai para a tela")
+    else:
+        err(f"fase {msgs}")
+    compra = _array_v2([(45.60, 1000, 3, 1), (45.50, 300, 8, 2), (45.50, 200, 8, 3), (0.0, 500, 3, 4)], flags=3)
+    venda = _array_v2([(45.40, 800, 8, 5), (45.70, 900, 3, 6)], flags=3)
+    b._processar_evento(("offer", "VALE3", AT_FULLBOOK, 0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0, compra, venda, ts))
+    msgs.clear()
+    rel["t"] += 1.5
+    b._descarregar_leilao(agora=ts)
+    livro = [m for m in msgs if m["evento"] == "livro"]
+    if len(livro) == 1 and sorted(map(tuple, livro[0]["entradas"])) == sorted([
+            ("compra", 45.6, 1000, "XP"), ("compra", 45.5, 500, "UBS"), ("venda", 45.4, 800, "UBS"), ("venda", 45.7, 900, "XP")]):
+        ok("Retrato do livro em leilão somado por lado, preço e corretora")
+    else:
+        err(f"retrato {msgs}")
+    if b.leilao_contadores["entradas_invalidas"] == 1 and b.stats()["leilao"]["amostras"]["invalida"][0][2] == 0.0:
+        ok("Ordem sem preço (a mercado no leilão) fica de fora e entra na amostra do /state")
+    else:
+        err(f"inválidas {b.stats()['leilao']}")
+    msgs.clear()
+    rel["t"] += 1.5
+    b._descarregar_leilao(agora=ts)
+    if not msgs:
+        ok("Livro sem mudança não é reenviado")
+    else:
+        err(f"reenvio {msgs}")
+    rel["t"] = b._ultimo_leilao + 0.3
+    b._processar_evento(("offer", "VALE3", AT_ADD, 0, 0, 100, 8, 7, 45.45, 1, 1, 1, 1, None, None, ts))
+    b._descarregar_leilao(agora=ts)
+    if not msgs:
+        ok("Dentro do intervalo de 1 s o retrato espera")
+    else:
+        err("taxa do retrato")
+    rel["t"] += 1.0
+    b._descarregar_leilao(agora=ts)
+    if msgs and ("compra", 45.45, 100, "UBS") in map(tuple, msgs[-1]["entradas"]):
+        ok("Ordem nova entra no próximo retrato")
+    else:
+        err(f"ordem nova {msgs}")
+
+    b._processar_evento(("teorico", "VALE3", 45.5, 1300, ts))
+    b._processar_evento(("teorico", "VALE3", float("-inf"), 0, ts))
+    if msgs[-2]["preco"] == 45.5 and msgs[-2]["qtd"] == 1300 and msgs[-1]["preco"] is None:
+        ok("Teórico vai para a tela; -INF (sem teórico) vira None")
+    else:
+        err(f"teórico {msgs[-2:]}")
+    b._processar_evento(("trade", 3, 8, 1300, 45.5, 4, ts + 600, 0, 1, "VALE3"))
+    if msgs[-1]["evento"] == "abertura" and msgs[-1]["preco"] == 45.5 and b.trades_ignorados == 1:
+        ok("Negócio de leilão (tipo 4) abre o papel na tela e continua fora do motor")
+    else:
+        err(f"abertura {msgs[-1]} {b.trades_ignorados}")
+
+    # Fora do leilão: aberto (0) não manda retrato; sem estado, só na janela 9:30-10:15
+    b._processar_evento(("fase", "VALE3", 0, "", ts))
+    b._leilao_sujo.add("VALE3")
+    b._leilao_sujo.add("PETR4")
+    msgs.clear()
+    rel["t"] += 2
+    b._descarregar_leilao(agora=ts)
+    if [m["ativo"] for m in msgs] == ["PETR4"]:
+        ok("Papel aberto para de mandar o livro; sem estado, vale a janela do horário")
+    else:
+        err(f"fora do leilão {msgs}")
+    msgs.clear()
+    b._leilao_sujo.add("PETR4")
+    rel["t"] += 2
+    b._descarregar_leilao(agora=ts + 3 * 3600)
+    if not msgs:
+        ok("Sem estado e fora da janela (12:50): nada")
+    else:
+        err("janela do horário")
+    b2 = ProfitDLLBridge("PETR4")
+    b2.on_leilao = msgs.append
+    b2._processar_evento(("teorico", "PETR4", 38.0, 100, ts))
+    if b2.stats()["leilao"] is None and msgs == []:
+        ok("Sem --leilao a ponte não manda nada do leilão")
+    else:
+        err("leilão desligado")
+
+    # Pai: comando do filho e repasse da mensagem; main: mensagem → painel
+    ponte = PonteDLLProcesso("PETR4", radar="lista.txt", leilao=True)
+    recebidas = []
+    ponte.on_leilao = recebidas.append
+    ponte._tratar({"tipo": "leilao", "evento": "teorico", "ativo": "VALE3", "preco": 45.5, "qtd": 10, "ts": ts})
+    if "--leilao" in ponte._comando and recebidas and recebidas[0]["ativo"] == "VALE3":
+        ok("Processo filho sobe com --leilao e a mensagem chega ao pai")
+    else:
+        err(f"processo {ponte._comando} {recebidas}")
+    painel = PainelLeilao(fonte="dll")
+    entregar = principal.entregar_leilao(painel)
+    entregar({"evento": "fase", "ativo": "VALE3", "codigo": 13, "ts": ts})
+    entregar({"evento": "livro", "ativo": "VALE3", "ts": ts, "entradas": [
+        ["compra", 45.6, 1000, "XP"], ["compra", 45.5, 500, "UBS"], ["venda", 45.4, 800, "UBS"], ["venda", 45.7, 900, "XP"]]})
+    r = painel.lista()[0]
+    if r["fase"] == "pré-abertura" and r["teorico"] == 45.6 and r["qtd_teorica"] == 800 \
+            and painel.abertura_prevista == datetime(2026, 10, 27, 10, 0, tzinfo=FUSO_B3).timestamp():
+        ok("Painel recebe estado e livro; teórico pelo livro: 45,60 (800 casados com a menor sobra); abertura às 10:00")
+    else:
+        err(f"painel {r} {painel.abertura_prevista}")
+    entregar({"evento": "livro", "ativo": "VALE3", "ts": ts + 1, "entradas": [
+        ["compra", 45.6, 1000, "XP"], ["compra", 45.5, 500, "UBS"], ["venda", 45.4, 800, "UBS"], ["venda", 45.7, 900, "XP"],
+        ["compra", 45.65, 2000, "GOLDMAN"]]})
+    ev = painel.book("VALE3")["eventos"][0]
+    if ev["tipo"] == "entrou" and ev["corretora"] == "GOLDMAN" and ev["qtd"] == 2000:
+        ok("Retrato novo: quem entrou sai da diferença entre retratos")
+    else:
+        err(f"evento do retrato {ev}")
+    entregar({"evento": "livro", "ativo": "VALE3", "ts": ts + 2, "entradas": [
+        ["compra", 45.6, 1000, "XP"], ["compra", 45.5, 500, "UBS"], ["venda", 45.4, 800, "UBS"]]})
+    tipos = {(e["corretora"], e["tipo"]) for e in painel.book("VALE3")["eventos"][:2]}
+    if tipos == {("GOLDMAN", "saiu"), ("XP", "cancelou")}:
+        ok("Saída da corretora e cancelamento de um preço viram eventos")
+    else:
+        err(f"saída {tipos}")
+    entregar({"evento": "teorico", "ativo": "VALE3", "preco": 45.48, "qtd": 700, "ts": ts + 3})
+    entregar({"evento": "abertura", "ativo": "VALE3", "preco": 45.48, "ts": ts + 600})
+    r = painel.lista()[0]
+    if r["teorico"] == 45.48 and r["fase"] == "aberto" and r["abertura"] == 45.48:
+        ok("Teórico da DLL e negócio de abertura chegam ao painel")
+    else:
+        err(f"abertura no painel {r}")
+
+
+def test_cotahist():
+    print(f"\n{AMARELO}═══ TESTE 57: COTAHIST da B3 — fechamento, tendência e liquidez do leilão ═══{RESET}")
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools"))
+    from cotahist_b3 import ler_linhas, juntar
+    from core.leilao import PainelLeilao
+
+    def linha(data, bdi, ticker, mercado, fech, vol):
+        l = ("01" + data + bdi + ticker.ljust(12) + mercado).ljust(108)
+        l += f"{round(fech * 100):013d}".ljust(170 - 108, "0") + f"{round(vol * 100):018d}"
+        return l.ljust(245)
+    # linha real do COTAHIST (PETR4 em 01/09/2026) e as sintéticas
+    real = ("012026090102PETR4       010PETROBRAS   PN  EDJ N2   R$  0000000004550000000000469400000000045500000000004643"
+            "00000000046870000000004686000000000468775161000000000049726600000000230881483100000000000000009999123100000010"
+            "000000000000BRPETRACNPR6230")
+    dia = ler_linhas([real, linha("20260901", "96", "PETR4F", "020", 46.0, 1.0), "00COTAHIST.2026BOVESPA 20260930"])
+    if dia == {"PETR4": ("2026-09-01", 46.87, 2308814831.0)}:
+        ok("Lê o registro 01 (lote padrão, à vista): fechamento 46,87 e R$ 2,3 bi; ignora fracionário e cabeçalho")
+    else:
+        err(f"COTAHIST {dia}")
+    pregoes = [ler_linhas([linha(f"202609{i + 1:02d}", "02", "VALE3", "010", 60 + i, 1e9 + i)]) for i in range(25)]
+    series = juntar(pregoes)
+    painel = PainelLeilao()
+    if painel.carregar_diario(series) == 1:
+        p = painel._papeis["VALE3"]
+        if p.referencia == 84 and p.tendencia == "alta" and abs(p.liquidez - (1e9 + 14.5)) < 1e-3:
+            ok("Diário → fechamento anterior 84, tendência de alta e liquidez média de 20 pregões")
+        else:
+            err(f"diário {p.referencia} {p.tendencia} {p.liquidez}")
+    else:
+        err("carregar_diario")
+
+
 def main():
     print(f"\n{AZUL}╔══════════════════════════════════════════════╗{RESET}")
     print(f"{AZUL}║   FLUXO SERVER — Suite de Testes Automáticos  ║{RESET}")
@@ -4974,6 +5149,8 @@ def main():
     test_livro_protocolo_e_api()
     test_leilao()
     test_leilao_simulado_e_api()
+    test_leilao_dll()
+    test_cotahist()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")
