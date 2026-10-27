@@ -204,23 +204,22 @@ def setup_dll_mode(engine: FlowEngine, args):
 
 def entregar_leilao(painel):
     """Mensagem do leilão vinda da ponte (on_leilao) → core.leilao.PainelLeilao."""
-    from core.leilao import abertura_do_dia
 
     def entregar(m: dict):
         ativo, ts = m.get("ativo") or "", m.get("ts")
         if not ativo:
             return
-        if ts:
-            painel.abertura_prevista = abertura_do_dia(ts)
         evento = m.get("evento")
         if evento == "livro":
             painel.definir_livro(ativo, [tuple(e) for e in m.get("entradas") or []], ts)
         elif evento == "teorico":
             painel.definir_teorico(ativo, m.get("preco"), int(m.get("qtd") or 0), ts)
         elif evento == "fase":
-            painel.definir_fase(ativo, int(m["codigo"]), ts)
+            painel.definir_fase(ativo, int(m["codigo"]), ts, m.get("referencia"))
         elif evento == "abertura":
             painel.abrir(ativo, float(m["preco"]), ts)
+        if ts:
+            painel.abertura_prevista = painel.fim_previsto(ts)
     return entregar
 
 

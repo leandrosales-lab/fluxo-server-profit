@@ -265,6 +265,7 @@ class FlowHandler(BaseHTTPRequestHandler):
             lista = painel.lista()
             ativo = (qs.get("ativo", [""])[0] or "").strip().upper() or (lista[0]["ativo"] if lista else "")
             self._send_json({"fonte": painel.fonte, "agora": painel.agora, "abertura_prevista": painel.abertura_prevista,
+                             "modo": painel.modo,
                              "razao_min": painel.cfg.razao_min, "banda": painel.cfg.banda,
                              "resumo": painel.resumo(lista), "lista": lista,
                              "book": painel.book(ativo, visao) if ativo else None})

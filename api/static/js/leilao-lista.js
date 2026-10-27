@@ -114,10 +114,10 @@ export function linhaEvento(ev, casas = 2) {
   };
 }
 
-/** Contagem até a abertura: "04:12" (mm:ss); depois dela, "aberto". */
-export function contagem(agora, abertura) {
+/** Contagem até o fim do leilão: "04:12" (mm:ss); depois dele, "aberto" (ou o texto dado, ex. "encerrado"). */
+export function contagem(agora, abertura, depois = "aberto") {
   if (agora == null || abertura == null) return "—";
   const s = Math.floor(abertura - agora);
-  if (s <= 0) return "aberto";
+  if (s <= 0) return depois;
   return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 }

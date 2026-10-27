@@ -125,12 +125,14 @@ NIVEIS_LIVRO_PADRAO    = 15      # níveis por lado entregues ao engine
 TOLERANCIA_DIVERGENCIA = 3.0     # s que o livro pode divergir do TinyBook antes de voltar ao topo (medido 26/10: PETR4 em queda rápida, os canais chegam até ~2 s defasados)
 MAX_ARRAY_BYTES        = 64 * 1024 * 1024
 
-# Leilão de abertura
+# Leilão de abertura e de fechamento
 TRADE_LEILAO     = 4                  # TradeType do negócio de leilão (abertura, fechamento)
-FASES_LEILAO     = (13, 4)            # estado do papel: pré-abertura, leilão (manual p.32, p.75)
+FASE_PRE_FECHAMENTO = 10              # estado do papel no leilão de fechamento do dia (manual p.32, p.75)
+FASES_LEILAO     = (13, 4, FASE_PRE_FECHAMENTO)   # pré-abertura, leilão, pré-fechamento
 INTERVALO_LEILAO = 1.0                # s entre retratos do livro de cada papel em leilão (técnico, não é regra)
 # Sem estado do papel (callback não chegou), o livro vai para a tela nesta janela do horário da B3 (minutos do dia)
-JANELA_LEILAO    = (9 * 60 + 30, 10 * 60 + 15)
+# (abertura 10:00; fechamento 17:00 ou 18:00 conforme o horário de verão dos EUA, então a janela cobre os dois)
+JANELA_LEILAO    = ((9 * 60 + 30, 10 * 60 + 15), (16 * 60 + 45, 18 * 60 + 10))
 FUSO_B3          = timezone(timedelta(hours=-3))
 
 
@@ -397,6 +399,7 @@ class ProfitDLLBridge:
         self._fases: dict[str, int] = {}
         self._leilao_sujo: set = set()
         self._ultimo_leilao = float("-inf")
+        self._ultimo_preco: dict[str, tuple] = {}     # papel → (ts, preço) do último negócio do pregão (não leilão)
         self.leilao_contadores = {"retratos": 0, "teoricos": 0, "fases": 0, "aberturas": 0, "ordens_a_mercado": 0}
         # diagnóstico ao vivo: as assinaturas dos callbacks do leilão vêm do manual e ainda não foram conferidas
         self.leilao_amostras: dict[str, list] = {"fase": [], "teorico": [], "mercado": []}
@@ -814,7 +817,7 @@ class ProfitDLLBridge:
                 if not ok:
                     logger.warning(f"Leilão: {nome} indisponível - a tela usa o teórico calculado pelo livro"
                                    if "Theoretical" in nome else
-                                   f"Leilão: {nome} indisponível - o livro vai para a tela entre 9:30 e 10:15")
+                                   f"Leilão: {nome} indisponível - o livro vai para a tela entre 9:30 e 10:15 e entre 16:45 e 18:10")
         try:
             self._hist_disponivel = (dll.SetHistoryTradeCallback(cb_hist) == 0
                                      and dll.SetSerieProgressCallback(cb_prog) == 0)
@@ -1083,6 +1086,8 @@ class ProfitDLLBridge:
             ts = time.time()
         else:
             self.latencia_ms = max(0, round((time.time() - ts) * 1000))
+        if self.leilao_ligado and ttype != TRADE_LEILAO and price == price and 0 < price < float("inf"):
+            self._ultimo_preco[(ativo or self.asset).upper()] = (ts, float(price))
         if ttype == TRADE_LEILAO and self.leilao_ligado:
             self.leilao_contadores["aberturas"] += 1
             self._enviar_leilao({"evento": "abertura", "ativo": (ativo or self.asset).upper(), "preco": float(price),
@@ -1408,14 +1413,22 @@ class ProfitDLLBridge:
         self._fases[ativo] = codigo
         if codigo in FASES_LEILAO:
             self._leilao_sujo.add(ativo)          # o retrato sai no próximo intervalo
-        self._enviar_leilao({"evento": "fase", "ativo": ativo, "codigo": codigo, "ts": ts})
+        msg = {"evento": "fase", "ativo": ativo, "codigo": codigo, "ts": ts}
+        if codigo == FASE_PRE_FECHAMENTO:
+            # Leilão de fechamento do dia: a referência é o último negócio do pregão de hoje, não o fechamento de ontem
+            ultimo = self._ultimo_preco.get(ativo)
+            hoje = datetime.fromtimestamp(ts, FUSO_B3).date() if ts else None
+            if ultimo and ultimo[0] and hoje and datetime.fromtimestamp(ultimo[0], FUSO_B3).date() == hoje:
+                msg["referencia"] = ultimo[1]
+        self._enviar_leilao(msg)
 
     def _em_leilao(self, ativo: str, agora: float) -> bool:
         fase = self._fases.get(ativo)
         if fase is not None:
             return fase in FASES_LEILAO
         h = datetime.fromtimestamp(agora, FUSO_B3)
-        return JANELA_LEILAO[0] <= h.hour * 60 + h.minute < JANELA_LEILAO[1]
+        minuto = h.hour * 60 + h.minute
+        return any(ini <= minuto < fim for ini, fim in JANELA_LEILAO)
 
     def retrato_leilao(self, ativo: str) -> list:
         """

@@ -79,9 +79,10 @@ async function passo() {
     shell.atualizarStatus(estado);
     const desligado = dados.resumo === null;
     const r = dados.resumo || {};
-    $("l-abre").textContent = contagem(dados.agora, dados.abertura_prevista);
+    const fecha = dados.modo === "fechamento";
+    $("l-abre").textContent = contagem(dados.agora, dados.abertura_prevista, fecha ? "encerrado" : "aberto");
     $("l-fase").textContent = dados.agora != null && dados.abertura_prevista != null && dados.agora < dados.abertura_prevista
-      ? "Abre em" : "Abertura";
+      ? (fecha ? "Fecha em" : "Abre em") : (fecha ? "Fechamento" : "Abertura");
     for (const [id, chave] of [["l-em-leilao", "em_leilao"], ["l-desbal-c", "desbal_compra"], ["l-desbal-v", "desbal_venda"], ["l-perfil", "no_perfil"]]) {
       $(id).textContent = r[chave] == null ? "—" : inteiro(r[chave]);
     }
@@ -99,7 +100,7 @@ async function passo() {
     $("lista-vazio").textContent = desligado
       ? "Leilão desligado — suba o servidor com --modo dll --leilao (ou --leilao-demo para a simulação)"
       : dados.lista.length ? "Nenhum papel com esse filtro"
-      : "Nenhum papel em leilão ainda — o livro chega na pré-abertura (9:45 às 10:00)";
+      : "Nenhum papel em leilão agora — o livro chega na pré-abertura (9:45 às 10:00) e no pré-fechamento (5 min antes do fim do pregão)";
 
     resumoBook(dados.book);
     escada(dados.book);

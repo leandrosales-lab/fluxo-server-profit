@@ -36,7 +36,9 @@ from datetime import datetime, timedelta, timezone
 FUSO_B3 = timezone(timedelta(hours=-3))
 
 # Fases (SetChangeStateTickerCallback, p.32 e p.75 do manual): 13 pré-abertura, 4 leilão, 0 aberto
-EM_LEILAO = (13, 4, 10)      # pré-abertura, leilão, pré-fechamento: só nessas fases o papel aparece na tela
+FASE_PRE_FECHAMENTO = 10
+DURACAO_FECHAMENTO = 300.0   # s: o leilão de fechamento dura 5 min a partir da entrada em pré-fechamento
+EM_LEILAO = (13, 4, FASE_PRE_FECHAMENTO)      # pré-abertura, leilão, pré-fechamento: só nessas fases o papel aparece na tela
 FASES = {13: "pré-abertura", 4: "leilão", 0: "aberto", 2: "congelado", 3: "inibido", 6: "fechado", 10: "pré-fechamento"}
 
 
@@ -199,7 +201,8 @@ class PainelLeilao:
         self.cfg = cfg or ConfigLeilao()
         self.tick = tick
         self.fonte = fonte                     # "dll" ou "simulado" (a tela avisa)
-        self.abertura_prevista: float | None = None   # epoch do fim do leilão (10:00 B3)
+        self.abertura_prevista: float | None = None   # epoch do fim do leilão: 10:00 B3 ou o fim do pré-fechamento
+        self.fechamento_inicio: float | None = None   # epoch em que o 1º papel entrou em pré-fechamento hoje
         self.agora: float | None = None        # relógio dos dados
         self._papeis: dict[str, _Papel] = {}
         self._lock = threading.Lock()
@@ -221,10 +224,16 @@ class PainelLeilao:
             if liquidez is not None:
                 p.liquidez = liquidez
 
-    def definir_fase(self, ativo: str, codigo: int, ts: float | None = None):
+    def definir_fase(self, ativo: str, codigo: int, ts: float | None = None, referencia: float | None = None):
+        """referencia: no pré-fechamento, o último preço do pregão de hoje (substitui o fechamento de ontem)."""
         with self._lock:
             p = self._papel(ativo)
             p.fase = codigo
+            if codigo == FASE_PRE_FECHAMENTO:
+                if ts and self.fechamento_inicio is None:
+                    self.fechamento_inicio = ts
+                if referencia:
+                    p.referencia = referencia
             if not p.em_leilao:
                 p.zerar()
             self._relogio(ts)
@@ -334,6 +343,8 @@ class PainelLeilao:
 
     def limpar(self, ativo: str | None = None):
         with self._lock:
+            if ativo is None:
+                self.fechamento_inicio = None
             for p in ([self._papeis[ativo]] if ativo in self._papeis else [] if ativo else self._papeis.values()):
                 p.ordens.clear()
                 p.eventos.clear()
@@ -466,6 +477,17 @@ class PainelLeilao:
         with self._lock:
             p = self._papeis.get(ativo)
             return self._teorico(p) if p else (None, 0)
+
+    @property
+    def modo(self) -> str:
+        """"fechamento" desde que o 1º papel entrou em pré-fechamento hoje; antes disso, "abertura"."""
+        return "fechamento" if self.fechamento_inicio is not None else "abertura"
+
+    def fim_previsto(self, ts: float) -> float:
+        """Epoch do fim do leilão do momento: 10:00 na abertura; no fechamento, 5 min após a entrada em pré-fechamento."""
+        if self.fechamento_inicio is not None and ts >= self.fechamento_inicio:
+            return self.fechamento_inicio // 60 * 60 + DURACAO_FECHAMENTO
+        return abertura_do_dia(ts)
 
     def lista(self) -> list[dict]:
         with self._lock:

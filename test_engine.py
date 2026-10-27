@@ -5132,6 +5132,62 @@ def test_leilao_dll():
         err(f"reentrada no leilão {lista} {b and b['eventos']}")
 
 
+def test_leilao_fechamento():
+    print(f"\n{AMARELO}═══ TESTE 59: Leilão de fechamento do dia — referência, cronômetro e ponte ═══{RESET}")
+    from core.leilao import PainelLeilao, abertura_do_dia
+    from datetime import datetime, timedelta, timezone
+    f = timezone(timedelta(hours=-3))
+    dia = datetime(2026, 10, 27, tzinfo=f)
+    ts = lambda h, m, s=0: dia.replace(hour=h, minute=m, second=s).timestamp()
+    pn = PainelLeilao(tick=0.01)
+    pn.cadastrar("MGLU3", referencia=10.00)                      # fechamento de ontem
+    pn.definir_fase("MGLU3", 0, ts(10, 1))                       # abriu
+    if pn.modo == "abertura" and pn.fim_previsto(ts(10, 30)) == abertura_do_dia(ts(10, 30)):
+        ok("Antes do pré-fechamento o modo é abertura e o fim previsto é 10:00")
+    else:
+        err(f"modo antes do fechamento {pn.modo}")
+    pn.definir_fase("MGLU3", 10, ts(17, 55, 3), referencia=10.40)  # último preço de hoje
+    pn.definir_livro("MGLU3", [("compra", 10.43, 1000, "XP"), ("venda", 10.43, 600, "BTG")], ts(17, 55, 4))
+    r = pn.lista()[0]
+    fim = pn.fim_previsto(ts(17, 56))
+    if r["fase"] == "pré-fechamento" and pn.modo == "fechamento" and fim == ts(18, 0):
+        ok("Pré-fechamento mostra o papel e o cronômetro vai até 5 min depois da entrada (18:00)")
+    else:
+        err(f"fechamento {r['fase']} {pn.modo} {fim - ts(18, 0)}")
+    if abs(r["var_pct"] - 100 * (10.43 / 10.40 - 1)) < 1e-6:
+        ok("Var. do fechamento usa o último preço do dia (10,40), não o fechamento de ontem (10,00)")
+    else:
+        err(f"var_pct {r['var_pct']}")
+    pn.abrir("MGLU3", 10.43, ts(18, 0, 10))
+    if pn.lista() == []:
+        ok("Negócio de fechamento tira o papel da tela")
+    else:
+        err("papel continua depois do fechamento")
+
+    # Ponte: guarda o último negócio do pregão (não o de leilão) e manda como referência na entrada do pré-fechamento
+    from profitdll.bridge import ProfitDLLBridge
+    br = ProfitDLLBridge("PETR4", extras=["MGLU3"])
+    br.leilao_ligado = True
+    msgs = []
+    br.on_leilao = msgs.append
+    br._processar_trade(1, 2, 100, 10.38, 2, ts(17, 40), ativo="MGLU3")
+    br._processar_trade(1, 2, 100, 10.40, 2, ts(17, 50), ativo="MGLU3")
+    br._processar_trade(1, 2, 100, 10.00, 4, ts(10, 0), ativo="MGLU3")            # leilão de abertura: não conta
+    br._processar_trade(1, 2, 100, 7.00, 2, ts(17, 51) - 86400, ativo="PETR4")      # negócio de ontem
+    br._processar_evento(("fase", "MGLU3", 10, "27/10/2026 17:55:00", ts(17, 55)))
+    br._processar_evento(("fase", "PETR4", 10, "27/10/2026 17:55:00", ts(17, 55)))
+    fases = {m["ativo"]: m for m in msgs if m["evento"] == "fase"}
+    if fases["MGLU3"].get("referencia") == 10.40 and "referencia" not in fases["PETR4"]:
+        ok("Ponte manda o último preço de hoje como referência; sem negócio de hoje, não manda")
+    else:
+        err(f"referência da ponte {fases}")
+    br._fases["MGLU3"] = 10
+    if br._em_leilao("MGLU3", ts(17, 56)) and br._em_leilao("XXXX3", ts(17, 56)) and not br._em_leilao("XXXX3", ts(14, 0)):
+        ok("Pré-fechamento conta como leilão (por estado e pela janela de reserva da tarde)")
+    else:
+        err("_em_leilao no fechamento")
+
+
 def test_giro_ordem_a_mercado():
     print(f"\n{AMARELO}═══ TESTE 58: Giro de iceberg ignora ordem a mercado (preço infinito) ═══{RESET}")
     import math
@@ -5260,6 +5316,7 @@ def main():
     test_leilao()
     test_leilao_simulado_e_api()
     test_leilao_dll()
+    test_leilao_fechamento()
     test_giro_ordem_a_mercado()
     test_cotahist()
 
