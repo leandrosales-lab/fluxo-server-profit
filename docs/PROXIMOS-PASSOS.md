@@ -42,7 +42,7 @@
   `/leilao`. Lista os papéis do leilão de abertura com teórico, seta de pressão (▲/▼, dupla a 3×), sobra de compra e
   venda na banda de ±2% do teórico, desequilíbrio (2× = desbalanceado), tendência (fechamento contra a média de 20
   pregões), escora abaixo (compra) e acima (venda) e liquidez. "No perfil" = desbalanceado + tendência a favor + escora
-  do mesmo lado. À direita, o book do papel (sobra na abertura ou livro inteiro) e quem entrou e saiu, com o efeito no
+  do mesmo lado (decisão de 27/10/2026: escora do lado do desequilíbrio, não do lado oposto). À direita, o book do papel (sobra na abertura ou livro inteiro) e quem entrou e saiu, com o efeito no
   teórico. Cálculo em `core/leilao.py`, simulador em `core/leilao_simulado.py`. **Falta:** ligar a ponte da DLL
   (`SetChangeStateTickerCallback`, `SetTheoreticalPriceCallback` com quantidade Int64, livro de ofertas de todos os
   papéis no pré-pregão, fechamentos diários para tendência e liquidez) e calibrar banda, razão e escora com leilões

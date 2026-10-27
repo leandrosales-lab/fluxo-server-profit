@@ -108,6 +108,7 @@ def no_perfil(r: dict) -> bool:
     """
     Desbalanceado, tendência a favor da pressão e escora sustentando o mesmo lado:
     sobra de compra + tendência de alta + escora de compra abaixo do teórico (ou o espelho na venda).
+    Escora do MESMO lado do desequilíbrio: decisão de 27/10/2026 (a escora segura o movimento e o stop).
     """
     lado = r.get("desbalanceado")
     if lado == "compra":
