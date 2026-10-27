@@ -35,6 +35,16 @@ export function textoEscora(e, casas = 2) {
     title: `${qtdCurta(e.qtd)} parados · ${e.corretora} com ${pct(100 * e.fatia, 0)} · ${e.dist_ticks} ticks do teórico` };
 }
 
+/** "A mercado" da lista: compra × venda a mercado + agressivas (as duas casam em qualquer teórico). */
+export function textoMercado(r) {
+  const c = (r.mercado_compra || 0) + (r.agressiva_compra || 0);
+  const v = (r.mercado_venda || 0) + (r.agressiva_venda || 0);
+  if (!c && !v) return { t: "—", c: "num faint", title: "" };
+  return { t: `${c ? qtdCurta(c) : "—"} × ${v ? qtdCurta(v) : "—"}`, c: `num ${c > v ? "compra" : v > c ? "venda" : ""}`,
+    title: `compra: ${qtdCurta(r.mercado_compra || 0)} a mercado + ${qtdCurta(r.agressiva_compra || 0)} agressiva · `
+      + `venda: ${qtdCurta(r.mercado_venda || 0)} a mercado + ${qtdCurta(r.agressiva_venda || 0)} agressiva` };
+}
+
 export function textoTendencia(t) {
   return { t: t || "—", c: t === "alta" ? "compra" : t === "baixa" ? "venda" : "faint" };
 }
@@ -54,7 +64,7 @@ export function linhaLeilao(r, selecionado = false, casas = 2) {
       { t: r.var_pct == null ? "—" : comSinal(r.var_pct, (v) => pct(v, 2)), c: `num opc ${r.var_pct > 0 ? "compra" : r.var_pct < 0 ? "venda" : "faint"}` },
       { t: r.delta_ticks == null ? "—" : comSinal(r.delta_ticks), c: `num ${r.delta_ticks > 0 ? "compra" : r.delta_ticks < 0 ? "venda" : "faint"}` },
       { t: qtdCurta(r.banda_compra), c: "num" }, { t: qtdCurta(r.banda_venda), c: "num" },
-      d, tend, ea, ec,
+      textoMercado(r), d, tend, ea, ec,
       { t: r.liquidez == null ? "—" : financeiro(r.liquidez), c: "num opc faint" },
     ],
   };
@@ -71,18 +81,22 @@ export function filtrarLeilao(lista, filtro = "", liqMin = 0) {
 export function linhasEscada(niveis, casas = 2) {
   const maior = Math.max(1, ...(niveis || []).map((n) => Math.max(n.compra, n.venda)));
   return (niveis || []).map((n) => ({
-    classe: [n.teorico ? "teorico" : "", n.escora === "compra" ? "lote-compra" : n.escora === "venda" ? "lote-venda" : ""]
-      .filter(Boolean).join(" "),
-    corrCompra: n.corretora_compra || "", corrVenda: n.corretora_venda || "",
+    classe: [n.teorico ? "teorico" : "", n.mercado ? "mercado" : "", n.agressiva ? "agressiva" : "",
+      n.escora === "compra" ? "lote-compra" : n.escora === "venda" ? "lote-venda" : ""].filter(Boolean).join(" "),
+    corrCompra: (n.corretora_compra || "") + (n.agressiva === "compra" ? " · agressiva" : ""),
+    corrVenda: (n.agressiva === "venda" ? "agressiva · " : "") + (n.corretora_venda || ""),
     compra: n.compra ? qtdCurta(n.compra) : "", venda: n.venda ? qtdCurta(n.venda) : "",
     wCompra: Math.round((100 * n.compra) / maior), wVenda: Math.round((100 * n.venda) / maior),
-    preco: preco(n.preco, casas),
+    preco: n.mercado ? "a mercado" : preco(n.preco, casas),
   }));
 }
 
 const VERBO = { entrou: "entrou na", saiu: "saiu da", aumentou: "aumentou a", reduziu: "reduziu a", cancelou: "cancelou na" };
 
-/** "entrou na compra · 25 mil a 45,60" e o teórico "45,39 → 45,41" (ou só "45,39" se não mexeu). */
+/**
+ * "entrou na compra · 25 mil a 45,60", "… · 300 mil a mercado", "… · 50 mil a 39,50 (agressiva)" e o teórico
+ * "45,39 → 45,41" (ou só "45,39" se não mexeu).
+ */
 export function linhaEvento(ev, casas = 2) {
   const mexeu = ev.teorico_antes !== ev.teorico_depois;
   const subiu = mexeu && (ev.teorico_depois ?? 0) > (ev.teorico_antes ?? 0);
@@ -90,7 +104,8 @@ export function linhaEvento(ev, casas = 2) {
     classe: "",
     celulas: [
       { t: horaB3(ev.ts), c: "faint" }, { t: ev.corretora, c: ev.tipo === "entrou" ? "ambar" : "" },
-      { t: `${VERBO[ev.tipo] || ev.tipo} ${ev.lado} · ${qtdCurta(ev.qtd)} a ${preco(ev.preco, casas)}`, c: ev.lado },
+      { t: `${VERBO[ev.tipo] || ev.tipo} ${ev.lado} · ${qtdCurta(ev.qtd)} `
+          + (ev.preco == null ? "a mercado" : `a ${preco(ev.preco, casas)}${ev.agressiva ? " (agressiva)" : ""}`), c: ev.lado },
       { t: mexeu ? `${preco(ev.teorico_antes, casas)} → ${preco(ev.teorico_depois, casas)}` : preco(ev.teorico_depois, casas),
         c: `num ${mexeu ? (subiu ? "compra" : "venda") : "faint"}` },
     ],

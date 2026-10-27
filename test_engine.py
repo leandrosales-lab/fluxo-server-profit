@@ -4763,11 +4763,25 @@ def test_leilao():
         ok("Livro sem cruzamento não tem teórico")
     else:
         err("livro sem cruzamento")
-    c, v = sobra({10.02: 500, 10.00: 300}, {9.99: 400, 10.01: 300}, 10.01, 500)
-    if c == {10.00: 300} and v == {10.01: 200}:
+    c, v, mc, mv = sobra({10.02: 500, 10.00: 300}, {9.99: 400, 10.01: 300}, 10.01, 500)
+    if c == {10.00: 300} and v == {10.01: 200} and (mc, mv) == (0, 0):
         ok("Sobra: tira o casado das melhores compras e vendas")
     else:
         err(f"sobra {c} {v}")
+    # Ordem a mercado casa em qualquer preço e tem prioridade
+    if preco_teorico({10.00: 300}, {10.05: 200}, None, 0, 500) == (10.00, 300):
+        ok("Venda a mercado entra na oferta de todos os preços (teórico 10,00 com 300)")
+    else:
+        err(f"teórico com mercado {preco_teorico({10.00: 300}, {10.05: 200}, None, 0, 500)}")
+    if preco_teorico({}, {}, 10.0, 400, 100) == (10.0, 100) and preco_teorico({}, {}, None, 400, 100) == (None, 0):
+        ok("Só ordens a mercado: casa na referência (sem referência, sem teórico)")
+    else:
+        err("só mercado")
+    c, v, mc, mv = sobra({10.00: 300}, {10.05: 200}, 10.00, 300, 0, 500)
+    if c == {} and v == {10.05: 200} and mv == 200:
+        ok("Sobra: a mercado é consumida primeiro (sobram 200 a mercado na venda)")
+    else:
+        err(f"sobra com mercado {c} {v} {mc} {mv}")
 
     # Exemplo do VALE3: teórico 45,50, sobram 300 mil na compra (45,00) e 900 mil na venda
     painel = PainelLeilao(ConfigLeilao(escora_min_liq=0))
@@ -4837,6 +4851,33 @@ def test_leilao():
         ok("Teórico da DLL vence o calculado")
     else:
         err("teórico da DLL")
+
+    # A mercado e agressiva no painel (preço None = a mercado; além de ±3% do fechamento = agressiva)
+    pm = PainelLeilao(ConfigLeilao(escora_min_liq=0))
+    pm.cadastrar("PETR4", referencia=38.00)
+    pm.definir_livro("PETR4", [("compra", 38.00, 100_000, "XP"), ("venda", 38.00, 100_000, "UBS"),
+                               ("compra", None, 300_000, "BTG"), ("compra", 39.50, 50_000, "GENIAL"),
+                               ("venda", 38.10, 120_000, "ITAU")], 2000.0)
+    r = pm.lista()[0]
+    if (r["mercado_compra"], r["agressiva_compra"], r["teorico"], r["qtd_teorica"]) == (300_000, 50_000, 38.10, 220_000):
+        ok("Compra a mercado (300 mil) e agressiva a 39,50 (50 mil) puxam o teórico para 38,10 (220 mil casados)")
+    else:
+        err(f"mercado/agressiva {r}")
+    if r["desbalanceado"] == "compra" and r["banda_compra"] == 230_000 and r["banda_venda"] == 0:
+        ok("Sobra 230 mil na compra (80 mil a mercado, 50 mil agressiva, 100 mil a 38,00) contra nada na venda")
+    else:
+        err(f"pressão com mercado {r['banda_compra']} {r['banda_venda']} {r['desbalanceado']}")
+    niv = pm.book("PETR4", "livro")["niveis"]
+    if niv[0]["mercado"] and niv[0]["compra"] == 300_000 and niv[0]["corretora_compra"] == "BTG" \
+            and {n["preco"]: n for n in niv[1:]}[39.5]["agressiva"] == "compra":
+        ok("Book: linha 'a mercado' no topo e nível agressivo marcado")
+    else:
+        err(f"book mercado {niv[:3]}")
+    evs = {e["corretora"]: e for e in pm.book("PETR4")["eventos"]}
+    if evs["BTG"]["mercado"] and evs["BTG"]["preco"] is None and evs["GENIAL"]["agressiva"] and not evs["XP"]["agressiva"]:
+        ok("Eventos marcam a mercado e agressiva")
+    else:
+        err(f"eventos mercado {evs}")
 
     fech = [10 + 0.1 * i for i in range(25)]
     if tendencia(fech) == "alta" and tendencia(fech[::-1]) == "baixa" and tendencia([10.0] * 25) == "lateral":
@@ -4934,15 +4975,24 @@ def test_leilao_dll():
     rel["t"] += 1.5
     b._descarregar_leilao(agora=ts)
     livro = [m for m in msgs if m["evento"] == "livro"]
-    if len(livro) == 1 and sorted(map(tuple, livro[0]["entradas"])) == sorted([
-            ("compra", 45.6, 1000, "XP"), ("compra", 45.5, 500, "UBS"), ("venda", 45.4, 800, "UBS"), ("venda", 45.7, 900, "XP")]):
+    if len(livro) == 1 and sorted(map(tuple, livro[0]["entradas"]), key=str) == sorted([
+            ("compra", 45.6, 1000, "XP"), ("compra", 45.5, 500, "UBS"), ("compra", None, 500, "XP"),
+            ("venda", 45.4, 800, "UBS"), ("venda", 45.7, 900, "XP")], key=str):
         ok("Retrato do livro em leilão somado por lado, preço e corretora")
     else:
         err(f"retrato {msgs}")
-    if b.leilao_contadores["entradas_invalidas"] == 1 and b.stats()["leilao"]["amostras"]["invalida"][0][2] == 0.0:
-        ok("Ordem sem preço (a mercado no leilão) fica de fora e entra na amostra do /state")
+    if ("compra", None, 500, "XP") in map(tuple, livro[0]["entradas"]) and b.leilao_contadores["ordens_a_mercado"] == 1 \
+            and b.stats()["leilao"]["amostras"]["mercado"][0] == ["VALE3", "compra", 0.0, 500, 0]:
+        ok("Ordem sem preço vai como a mercado (preço None) e entra na amostra com a posição na fila")
     else:
-        err(f"inválidas {b.stats()['leilao']}")
+        err(f"a mercado {livro[0]['entradas']} {b.stats()['leilao']}")
+    b._processar_evento(("offer", "VALE3", AT_ADD, 0, 0, 700, 3, 9, 0.0, 0, 1, 1, 1, None, None, ts))
+    if b._livros_pos["VALE3"].compra[-1][:2] == [0.0, 700]:
+        ok("Ordem nova sem preço entra no livro por posição (a fila não desloca)")
+    else:
+        err(f"add sem preço {b._livros_pos['VALE3'].compra}")
+    rel["t"] += 1.5
+    b._descarregar_leilao(agora=ts)
     msgs.clear()
     rel["t"] += 1.5
     b._descarregar_leilao(agora=ts)

@@ -7,7 +7,7 @@ import { tituloSinal, LOTE_GRANDE_PADRAO, textoEvento, duracao, medidaSinal, ord
 import { textoSituacao, linhaRadar, textoUltimoGiro } from "../api/static/js/radar-lista.js";
 import { sugerirAtivos } from "../api/static/js/ativo-busca.js";
 import { qtdCurta, seta, textoDesequilibrio, textoEscora, linhaLeilao, filtrarLeilao, linhasEscada, linhaEvento,
-  contagem } from "../api/static/js/leilao-lista.js";
+  contagem, textoMercado } from "../api/static/js/leilao-lista.js";
 import { sinceCandles, juntarCandles, precisaLimpar } from "../api/static/js/candles.js";
 
 assert.equal(f.preco(38.47), "38,47");
@@ -203,7 +203,22 @@ const lv = linhaLeilao(vale, true);
 assert.equal(lv.classe, "perfil");
 assert.equal(lv.selecionado, true);
 assert.deepEqual(lv.celulas.map((c) => c.t),
-  ["VALE3", "▼▼", "45,50", "+0,22%", "-3", "300 mil", "900 mil", "3,0× venda", "baixa", "—", "45,65", "R$ 1,5 bi"]);
+  ["VALE3", "▼▼", "45,50", "+0,22%", "-3", "300 mil", "900 mil", "—", "3,0× venda", "baixa", "—", "45,65", "R$ 1,5 bi"]);
+// A mercado: compra × venda (a mercado + agressiva), cor do lado maior, detalhe no title
+const merc = textoMercado({ mercado_compra: 300000, agressiva_compra: 50000, mercado_venda: 0, agressiva_venda: 20000 });
+assert.deepEqual([merc.t, merc.c], ["350 mil × 20 mil", "num compra"]);
+assert.equal(merc.title, "compra: 300 mil a mercado + 50 mil agressiva · venda: 0 a mercado + 20 mil agressiva");
+assert.equal(textoMercado({ mercado_compra: 0, mercado_venda: 0 }).t, "—");
+const escM = linhasEscada([
+  { preco: null, mercado: true, compra: 300000, venda: 0, corretora_compra: "BTG" },
+  { preco: 39.5, compra: 50000, venda: 0, corretora_compra: "GENIAL", agressiva: "compra" },
+  { preco: 36.5, compra: 0, venda: 10000, corretora_venda: "XP", agressiva: "venda" }]);
+assert.deepEqual(escM.map((l) => [l.classe, l.preco, l.corrCompra, l.corrVenda]), [
+  ["mercado", "a mercado", "BTG", ""], ["agressiva", "39,50", "GENIAL · agressiva", ""], ["agressiva", "36,50", "", "agressiva · XP"]]);
+assert.equal(linhaEvento({ ts: 1792155600, tipo: "entrou", lado: "compra", preco: null, qtd: 300000, corretora: "BTG",
+  teorico_antes: 38, teorico_depois: 38.1, mercado: true }).celulas[2].t, "entrou na compra · 300 mil a mercado");
+assert.equal(linhaEvento({ ts: 1792155600, tipo: "aumentou", lado: "compra", preco: 39.5, qtd: 50000, corretora: "GENIAL",
+  teorico_antes: 38.1, teorico_depois: 38.1, agressiva: true }).celulas[2].t, "aumentou a compra · 50 mil a 39,50 (agressiva)");
 const papeis = [vale, { ...vale, ativo: "HAPV3", no_perfil: false, liquidez: 9.5e7 }, { ...vale, ativo: "RDOR3", no_perfil: false, desbalanceado: null }];
 assert.deepEqual(filtrarLeilao(papeis, "").map((r) => r.ativo), ["VALE3", "HAPV3", "RDOR3"]);
 assert.deepEqual(filtrarLeilao(papeis, "desbalanceados").map((r) => r.ativo), ["VALE3", "HAPV3"]);

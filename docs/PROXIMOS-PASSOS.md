@@ -43,7 +43,9 @@
   contra a média de 20 pregões), escora abaixo (compra) e acima (venda) e liquidez. "No perfil" = desbalanceado +
   tendência a favor + escora do mesmo lado (decisão de 27/10/2026: escora do lado do desequilíbrio, não do lado
   oposto). À direita, o book do papel (sobra na abertura ou livro inteiro) e quem entrou e saiu, com o efeito no
-  teórico. Cálculo em `core/leilao.py`.
+  teórico. Ordem a mercado (sem preço) e agressiva (limitada além de ±3% do fechamento anterior) entram no
+  teórico (casam em qualquer preço, a mercado com prioridade), na pressão (coluna "A mercado") e numa linha "a mercado"
+  no topo do book. Cálculo em `core/leilao.py`.
   - **Simulação:** `python main.py --leilao-demo` (`core/leilao_simulado.py`).
   - **Ao vivo (falta conferir num pré-pregão):** antes do pregão, `python -X utf8 tools/cotahist_b3.py` (grava
     `historico/diario_b3.json` com 25 pregões do COTAHIST da B3: fechamento anterior, tendência, liquidez). Se a B3
@@ -53,7 +55,8 @@
   - **A conferir ao vivo** (bloco `leilao` do GET /state, com amostras): se `SetTheoreticalPriceCallback`
     (ativo, preço, qtd Int64) e `SetChangeStateTickerCallback` (ativo, data, estado) chegam com essas assinaturas
     (são do manual; assinatura errada derruba a DLL, por isso só ligam com `--leilao`); como vem a ordem a mercado
-    no livro do leilão (`amostras.invalida`, hoje fica de fora do cálculo); se o teórico calculado pelo livro bate
+    no livro do leilão (`amostras.mercado`: papel, lado, preço cru, qtd e posição na fila; hoje vale como a mercado
+    o que vem sem preço, com 0, negativo ou infinito, e o esperado é que fique na posição 0, à frente da fila); se o teórico calculado pelo livro bate
     com o da DLL; quantos papéis a licença aceita no livro de ofertas. Sem o estado do papel, o livro vai para a
     tela entre 9:30 e 10:15. Calibrar banda, razão e escora com leilões gravados.
 - **Telas (design v3):** `http://127.0.0.1:5000/operar` (F1) e `/conexao` (F2), tema escuro/claro (T), Reconectar

@@ -11,10 +11,11 @@
 .lista-leilao col:nth-child(4) { width: 66px; }
 .lista-leilao col:nth-child(5) { width: 60px; }
 .lista-leilao col:nth-child(6), .lista-leilao col:nth-child(7) { width: 92px; }
-.lista-leilao col:nth-child(8) { width: auto; }
-.lista-leilao col:nth-child(9) { width: 76px; }
-.lista-leilao col:nth-child(10), .lista-leilao col:nth-child(11) { width: 72px; }
-.lista-leilao col:nth-child(12) { width: 110px; }
+.lista-leilao col:nth-child(8) { width: 156px; }
+.lista-leilao col:nth-child(9) { width: auto; }
+.lista-leilao col:nth-child(10) { width: 76px; }
+.lista-leilao col:nth-child(11), .lista-leilao col:nth-child(12) { width: 72px; }
+.lista-leilao col:nth-child(13) { width: 110px; }
 #lista tr { cursor: pointer; }
 #lista tr:hover { background: var(--raise); }
 #lista tr.perfil td { font-weight: 600; }
@@ -44,6 +45,9 @@ td.seta { letter-spacing: -2px; }
 .escada td.q.v { --dir: to right; --cor: color-mix(in srgb, var(--sell) 26%, transparent); }
 .escada tr.teorico td { border-top: 1px solid var(--accent); border-bottom: 1px solid var(--accent); }
 .escada tr.teorico td.preco { color: var(--accent); }
+.escada tr.mercado td { font-weight: 600; border-bottom: 1px solid var(--rule); }
+.escada tr.mercado td.preco { font-family: "IBM Plex Sans", sans-serif; font-weight: 500; }
+.escada tr.agressiva td.preco { font-style: italic; }
 
 .eventos-leilao { font-size: 12px; line-height: 20px; }
 .eventos-leilao col:nth-child(1) { width: 88px; }

@@ -397,9 +397,9 @@ class ProfitDLLBridge:
         self._fases: dict[str, int] = {}
         self._leilao_sujo: set = set()
         self._ultimo_leilao = float("-inf")
-        self.leilao_contadores = {"retratos": 0, "teoricos": 0, "fases": 0, "aberturas": 0, "entradas_invalidas": 0}
+        self.leilao_contadores = {"retratos": 0, "teoricos": 0, "fases": 0, "aberturas": 0, "ordens_a_mercado": 0}
         # diagnóstico ao vivo: as assinaturas dos callbacks do leilão vêm do manual e ainda não foram conferidas
-        self.leilao_amostras: dict[str, list] = {"fase": [], "teorico": [], "invalida": []}
+        self.leilao_amostras: dict[str, list] = {"fase": [], "teorico": [], "mercado": []}
         self._pacote_pos: dict[tuple, list] = {}
         self.giro_erros = 0
         self.giro_erros_motivo: dict[str, int] = {}
@@ -1176,11 +1176,11 @@ class ProfitDLLBridge:
             self.amostra_erro = (self.amostra_erro + [(motivo, ativo, int(action), lado, int(position), len(lista))])[-12:]
 
         if action == OFERTA_ADD:
-            # entra no livro por posição mesmo sem offer_id/agente (senão as posições deslocam)
-            if not pos.aplicar(action, position, side, price, qty, agent, offer_id):
+            # entra no livro por posição mesmo sem offer_id/agente/preço (senão as posições deslocam)
+            if not pos.aplicar(action, position, side, price if has_price else 0.0, qty, agent, offer_id):
                 return _erro("add_posicao_invalida")
-            if not has_offer or offer_id == 0:
-                return
+            if not has_offer or offer_id == 0 or not has_price or not price > 0:
+                return                      # ordem a mercado não faz giro de iceberg
             corretora = self._corretora(agent) if agent else ""
             self._emitir(self._livro_giro.atualizar(ativo, lado, float(price), int(qty), corretora,
                                                     int(offer_id), ts), ts)
@@ -1418,19 +1418,25 @@ class ProfitDLLBridge:
         return JANELA_LEILAO[0] <= h.hour * 60 + h.minute < JANELA_LEILAO[1]
 
     def retrato_leilao(self, ativo: str) -> list:
-        """Livro por ordem do papel somado por (lado, preço, corretora): [[lado, preço, qtd, corretora], ...]."""
+        """
+        Livro por ordem do papel somado por (lado, preço, corretora): [[lado, preço, qtd, corretora], ...].
+        Ordem sem preço (0, negativo, infinito: a mercado no leilão) vai com preço None. A amostra "mercado"
+        do /state guarda (papel, lado, preço cru, qtd, posição na fila: 0 = primeira) para conferir ao vivo.
+        """
         pos = self._livros_pos.get(ativo)
         if pos is None:
             return []
         soma: dict = {}
         for lado, lista in (("compra", pos.compra), ("venda", pos.venda)):
-            for preco, qtd, agente, _oid in lista:
-                if not (preco == preco and 0 < preco < float("inf")) or qtd <= 0:
-                    # ordem a mercado no leilão pode vir sem preço: fica de fora e entra na amostra
-                    self.leilao_contadores["entradas_invalidas"] += 1
-                    self._amostrar(self.leilao_amostras["invalida"], (ativo, lado, preco, qtd))
+            for i, (preco, qtd, agente, _oid) in enumerate(lista):
+                if qtd <= 0:
                     continue
-                k = (lado, round(float(preco), 4), int(agente))
+                if not (preco == preco and 0 < preco < float("inf")):
+                    self.leilao_contadores["ordens_a_mercado"] += 1
+                    self._amostrar(self.leilao_amostras["mercado"], (ativo, lado, preco, qtd, len(lista) - 1 - i))
+                    k = (lado, None, int(agente))
+                else:
+                    k = (lado, round(float(preco), 4), int(agente))
                 soma[k] = soma.get(k, 0) + int(qtd)
         return [[lado, preco, qtd, self._corretora(agente) or "—"] for (lado, preco, agente), qtd in soma.items()]
 

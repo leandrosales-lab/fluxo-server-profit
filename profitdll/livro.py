@@ -122,7 +122,7 @@ class LivroOfertas:
         lista = self._lista(lado)
         if not lista:
             return None
-        precos = [round(o[0], CASAS_PRECO) for o in lista if o[1] > 0]
+        precos = [round(o[0], CASAS_PRECO) for o in lista if o[1] > 0 and o[0] > 0]
         if not precos:
             return None
         return max(precos) if lado == LADO_COMPRA else min(precos)
@@ -137,9 +137,14 @@ class LivroOfertas:
                 return self._erro()
             tam = len(lista)
             if acao == AT_ADD:
-                if not 0 <= posicao <= tam or preco <= 0 or qtd <= 0:
+                if not 0 <= posicao <= tam or qtd <= 0:
                     return self._erro()
-                lista.insert(tam - posicao, [float(preco), int(qtd), int(agente), int(offer_id)])
+                # Ordem a mercado (leilão) vem sem preço: entra com 0 para não deslocar as posições da fila;
+                # o topo e os níveis da tela a ignoram, o leilão a conta como "a mercado"
+                preco = float(preco)
+                if not (preco == preco and 0 < preco < float("inf")):
+                    preco = 0.0
+                lista.insert(tam - posicao, [preco, int(qtd), int(agente), int(offer_id)])
                 return True
             if acao in (AT_EDIT, AT_DELETE, AT_DELETE_FROM):
                 idx = tam - posicao - 1
@@ -211,7 +216,7 @@ class LivroOfertas:
     def _niveis(lista: list, maior_primeiro: bool, n: int, nome_de: Callable[[int], str]) -> list[dict]:
         por_preco: dict[float, list] = {}
         for preco, qtd, agente, _oid in lista:
-            if qtd <= 0:
+            if qtd <= 0 or not preco > 0:       # sem preço = a mercado (leilão): não é nível
                 continue
             nivel = por_preco.setdefault(round(preco, CASAS_PRECO), [0, 0, {}, []])
             nivel[0] += qtd

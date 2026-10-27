@@ -7,7 +7,8 @@ mostra "dados simulados" e o servidor só liga isto com --leilao-demo.
 
 Cada ciclo vai de 09:45:00 a 10:00:00 (horário da B3 do dia), abre o papel no último teórico, fica
 ABERTO_POR segundos e recomeça. Cada papel tem um viés (mais compradores ou vendedores) e alguns
-recebem, no meio do leilão, um lote grande parado (a escora) de um lado.
+recebem, no meio do leilão, um lote grande parado (a escora) de um lado. Umas poucas ordens vêm a mercado
+(sem preço) ou agressivas (limitadas além de ±3% do fechamento).
 """
 
 from __future__ import annotations
@@ -79,7 +80,14 @@ class SimuladorLeilao:
         r = self.rnd
         if lado is None:
             lado = "compra" if r.random() < 0.5 + 0.15 * s["vies"] else "venda"
-        if preco is None:
+        sorteio = r.random() if preco is None else 1.0
+        if sorteio < 0.04:
+            preco = 0.0                               # a mercado (o painel trata preço sem valor como a mercado)
+        elif sorteio < 0.07:
+            # agressiva: compra 3,5% a 5% acima do fechamento, venda abaixo (casa como se fosse a mercado)
+            desvio = r.uniform(0.035, 0.05) * (1 if lado == "compra" else -1)
+            preco = round(s["ref"] * (1 + desvio), 2)
+        elif preco is None:
             # compra cara e venda barata existem no leilão (é o que cruza o livro); o viés desloca as duas
             desvio = r.gauss(0.0015 * s["vies"] + (0.002 if lado == "venda" else -0.002), 0.006)
             ticks = round(s["ref"] * desvio / self.painel.tick)

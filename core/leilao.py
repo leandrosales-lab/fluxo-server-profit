@@ -13,6 +13,8 @@ Por papel, a cada mudança do livro:
   - sobra no teórico, banda de compra e banda de venda (só o que sobra, a ±BANDA do teórico);
   - pressão: lado e força do desequilíbrio (seta da tela);
   - escora: lote grande que sobra abaixo do teórico (compra) ou acima (venda), com a corretora dona;
+  - a mercado: ordem sem preço (casa em qualquer teórico, com prioridade) e agressiva: limitada além de
+    ±AGRESSIVA do fechamento anterior (compra muito cara, venda muito barata), que na prática também casa;
   - "no perfil": desbalanceado, tendência a favor e escora do mesmo lado (ver no_perfil()).
 
 As ordens chegam uma a uma por ordem(), cancelar() e limpar() (o simulador) ou em retratos do livro inteiro
@@ -46,6 +48,7 @@ class ConfigLeilao:
     escora_min_fin: float = 1e6    # ...com pelo menos R$ 1 mi parado no preço...
     escora_min_liq: float = 0.004  # ...e pelo menos 0,4% do volume financeiro médio do papel
     janela_delta: float = 30.0     # s: quanto o teórico andou neste tempo (coluna "Δ 30 s")
+    agressiva: float = 0.03        # limitada além de ±3% do fechamento anterior = "a mercado disfarçada"
     max_eventos: int = 200
 
 
@@ -53,20 +56,26 @@ def _arred(p: float) -> float:
     return round(p, 4)
 
 
-def preco_teorico(compra: dict, venda: dict, referencia: float | None = None):
+def _com_preco(p) -> bool:
+    return p is not None and p == p and 0 < p < math.inf
+
+
+def preco_teorico(compra: dict, venda: dict, referencia: float | None = None,
+                  mercado_compra: int = 0, mercado_venda: int = 0):
     """
     (preço, quantidade casada) que maximiza o casamento entre compra (preço → qtd) e venda.
+    Ordem a mercado casa em qualquer preço: a compra entra na demanda e a venda na oferta de todos.
     Empates: menor sobra, depois o mais perto da referência (fechamento anterior), como na B3.
-    Sem cruzamento: (None, 0).
+    Sem cruzamento: (None, 0). Só ordens a mercado dos dois lados: a referência, se houver.
     """
-    if not compra or not venda or max(compra) < min(venda):
+    if not (compra or mercado_compra) or not (venda or mercado_venda):
         return None, 0
-    precos = sorted(set(compra) | set(venda))
-    demanda, acc = [0] * len(precos), 0
+    precos = sorted(set(compra) | set(venda)) or ([referencia] if referencia else [])
+    demanda, acc = [0] * len(precos), mercado_compra
     for i in range(len(precos) - 1, -1, -1):        # compra a p ou mais
         acc += compra.get(precos[i], 0)
         demanda[i] = acc
-    melhor, oferta = None, 0
+    melhor, oferta = None, mercado_venda
     for i, p in enumerate(precos):                   # venda a p ou menos
         oferta += venda.get(p, 0)
         casado = min(demanda[i], oferta)
@@ -78,23 +87,30 @@ def preco_teorico(compra: dict, venda: dict, referencia: float | None = None):
     return (melhor[1], melhor[0][0]) if melhor else (None, 0)
 
 
-def sobra(compra: dict, venda: dict, teorico: float | None, casado: int):
+def sobra(compra: dict, venda: dict, teorico: float | None, casado: int, mercado_compra: int = 0,
+          mercado_venda: int = 0):
     """
-    Livro que fica depois do casamento no teórico: tira `casado` das melhores compras (maior preço
-    primeiro) e das melhores vendas (menor preço primeiro). Devolve (compra, venda) por preço.
+    Livro que fica depois do casamento no teórico: tira `casado` primeiro da ordem a mercado (prioridade),
+    depois das melhores compras (maior preço primeiro) e das melhores vendas (menor preço primeiro).
+    Devolve (compra, venda, mercado_compra, mercado_venda) que sobram.
     """
-    def consumir(niveis: dict, ordem_desc: bool) -> dict:
-        resto, falta = {}, casado
+    def consumir(niveis: dict, mercado: int, ordem_desc: bool):
+        falta = casado
+        casa = min(mercado, falta)
+        mercado, falta = mercado - casa, falta - casa
+        resto = {}
         for p in sorted(niveis, reverse=ordem_desc):
             q = niveis[p]
-            casa = min(q, falta) if (teorico is not None and (p >= teorico if ordem_desc else p <= teorico)) else 0
+            casa = min(q, falta) if (p >= teorico if ordem_desc else p <= teorico) else 0
             falta -= casa
             if q - casa > 0:
                 resto[p] = q - casa
-        return resto
+        return resto, mercado
     if teorico is None:
-        return dict(compra), dict(venda)
-    return consumir(compra, True), consumir(venda, False)
+        return dict(compra), dict(venda), mercado_compra, mercado_venda
+    rc, mc = consumir(compra, mercado_compra, True)
+    rv, mv = consumir(venda, mercado_venda, False)
+    return rc, rv, mc, mv
 
 
 def tendencia(fechamentos: list[float], n: int = 20) -> str:
@@ -127,7 +143,7 @@ def no_perfil(r: dict) -> bool:
 class _Papel:
     def __init__(self, ativo: str):
         self.ativo = ativo
-        self.ordens: dict = {}                 # id → [lado, preço, qtd, corretora]
+        self.ordens: dict = {}                 # id → [lado, preço (None = a mercado), qtd, corretora]
         self.fase = 13
         self.referencia: float | None = None   # fechamento anterior
         self.tendencia = "lateral"
@@ -138,11 +154,15 @@ class _Papel:
         self.abertura: float | None = None     # preço do negócio de abertura (fase "aberto")
 
     def niveis(self, lado: str) -> dict:
+        """Preço → qtd das ordens limitadas do lado (a mercado fica em mercado())."""
         out: dict = {}
         for l, p, q, _c in self.ordens.values():
-            if l == lado:
+            if l == lado and p is not None:
                 out[p] = out.get(p, 0) + q
         return out
+
+    def mercado(self, lado: str) -> int:
+        return sum(q for l, p, q, _c in self.ordens.values() if l == lado and p is None)
 
     def corretoras(self, lado: str, preco: float) -> list:
         soma: dict = {}
@@ -212,25 +232,26 @@ class PainelLeilao:
             antes = self._teorico(p)[0]
             velha = p.ordens.get(oid)
             novo_player = not p.tem_corretora(corretora)
-            p.ordens[oid] = [lado, _arred(preco), int(qtd), corretora]
+            preco = _arred(preco) if _com_preco(preco) else None      # sem preço = a mercado
+            p.ordens[oid] = [lado, preco, int(qtd), corretora]
             delta = int(qtd) - (velha[2] if velha else 0)
             tipo = "entrou" if novo_player else ("aumentou" if delta > 0 else "reduziu")
             self._evento(p, tipo, lado, preco, delta, corretora, antes)
 
     def definir_livro(self, ativo: str, entradas, ts: float | None = None) -> int:
         """
-        Retrato do livro do papel: [(lado, preço, qtd, corretora)]. Ordens da mesma corretora no mesmo preço
-        somam. Substitui o livro e registra quem entrou, aumentou, reduziu, cancelou ou saiu pela diferença
+        Retrato do livro do papel: [(lado, preço, qtd, corretora)]; preço None (ou 0, negativo, infinito) =
+        ordem a mercado. Ordens da mesma corretora no mesmo preço somam. Substitui o livro e registra quem entrou, aumentou, reduziu, cancelou ou saiu pela diferença
         para o retrato anterior (o teórico antes e depois é o do retrato inteiro). Devolve quantas entradas
-        foram descartadas por preço ou quantidade inválidos (ordem a mercado no leilão pode vir sem preço).
+        foram descartadas por lado ou quantidade inválidos.
         """
         novo: dict = {}
         descartadas = 0
         for lado, preco, qtd, corretora in entradas:
-            if lado not in ("compra", "venda") or not qtd or qtd < 0 or not math.isfinite(preco) or preco <= 0:
+            if lado not in ("compra", "venda") or not qtd or qtd < 0:
                 descartadas += 1
                 continue
-            k = (lado, _arred(preco), corretora or "—")
+            k = (lado, _arred(preco) if _com_preco(preco) else None, corretora or "—")
             novo[k] = novo.get(k, 0) + int(qtd)
         with self._lock:
             p = self._papel(ativo)
@@ -245,7 +266,7 @@ class PainelLeilao:
             p.ordens = {k: [k[0], k[1], q, k[2]] for k, q in novo.items()}
             self._marcar_teorico(p)
             depois = self._teorico(p)[0]
-            for k in sorted(set(velho) | set(novo)):
+            for k in sorted(set(velho) | set(novo), key=lambda k: (k[0], -1.0 if k[1] is None else k[1], k[2])):
                 delta = novo.get(k, 0) - velho.get(k, 0)
                 if not delta:
                     continue
@@ -302,7 +323,7 @@ class PainelLeilao:
     def _teorico(self, p: _Papel):
         if p.teorico_dll:
             return p.teorico_dll
-        return preco_teorico(p.niveis("compra"), p.niveis("venda"), p.referencia)
+        return preco_teorico(p.niveis("compra"), p.niveis("venda"), p.referencia, p.mercado("compra"), p.mercado("venda"))
 
     def _marcar_teorico(self, p: _Papel):
         t = self._teorico(p)[0]
@@ -313,11 +334,22 @@ class PainelLeilao:
         self._marcar_teorico(p)
         self._registrar(p, tipo, lado, preco, delta, corretora, antes, self._teorico(p)[0])
 
+    def _agressiva(self, p: _Papel, lado: str, preco, teorico=None) -> bool:
+        """Limitada além de ±agressiva do fechamento anterior (sem ele, do teórico): casa como se fosse a mercado."""
+        ref = p.referencia or teorico
+        if preco is None or not ref:
+            return False
+        return preco > ref * (1 + self.cfg.agressiva) if lado == "compra" else preco < ref * (1 - self.cfg.agressiva)
+
     def _registrar(self, p: _Papel, tipo, lado, preco, delta, corretora, antes, depois):
-        # Só o que importa: quem entrou/saiu, ordem grande ou ordem que mexeu o teórico
-        if tipo in ("entrou", "saiu") or antes != depois or abs(delta) * preco >= self.cfg.escora_min_fin / 4:
+        # Só o que importa: quem entrou/saiu, ordem a mercado ou agressiva, ordem grande ou que mexeu o teórico
+        valor = preco if preco is not None else (depois or antes or p.referencia or 0)
+        agressiva = self._agressiva(p, lado, preco, depois)
+        if tipo in ("entrou", "saiu") or preco is None or agressiva or antes != depois \
+                or abs(delta) * valor >= self.cfg.escora_min_fin / 4:
             p.eventos.append({"ts": self.agora, "tipo": tipo, "lado": lado, "preco": preco, "qtd": delta,
-                              "corretora": corretora, "teorico_antes": antes, "teorico_depois": depois})
+                              "corretora": corretora, "teorico_antes": antes, "teorico_depois": depois,
+                              "mercado": preco is None, "agressiva": agressiva})
             while len(p.eventos) > self.cfg.max_eventos:
                 p.eventos.popleft()
 
@@ -353,24 +385,31 @@ class PainelLeilao:
     def _analisar(self, p: _Papel) -> dict:
         cfg = self.cfg
         compra, venda = p.niveis("compra"), p.niveis("venda")
+        mc, mv = p.mercado("compra"), p.mercado("venda")
         teorico, casado = self._teorico(p)
-        resto_c, resto_v = sobra(compra, venda, teorico, casado)
+        resto_c, resto_v, rmc, rmv = sobra(compra, venda, teorico, casado, mc, mv)
         ref = teorico if teorico is not None else p.referencia
         r = {"ativo": p.ativo, "fase": FASES.get(p.fase, str(p.fase)), "teorico": teorico, "qtd_teorica": casado,
              "referencia": p.referencia, "abertura": p.abertura, "tendencia": p.tendencia, "liquidez": p.liquidez,
              "var_pct": (100 * (teorico / p.referencia - 1)) if teorico and p.referencia else None,
              "delta_ticks": self._delta_ticks(p, teorico), "sobra_lado": None, "sobra_qtd": 0,
              "banda_compra": 0, "banda_venda": 0, "razao": None, "desbalanceado": None, "pressao": 0,
-             "escora_abaixo": None, "escora_acima": None, "no_perfil": False, "ordens": len(p.ordens)}
+             "escora_abaixo": None, "escora_acima": None, "no_perfil": False, "ordens": len(p.ordens),
+             "mercado_compra": mc, "mercado_venda": mv,
+             "agressiva_compra": sum(q for x, q in compra.items() if self._agressiva(p, "compra", x, teorico)),
+             "agressiva_venda": sum(q for x, q in venda.items() if self._agressiva(p, "venda", x, teorico))}
         if ref is None:
             return r
         lo, hi = ref * (1 - cfg.banda), ref * (1 + cfg.banda)
         banda_c = {x: q for x, q in resto_c.items() if lo <= x <= hi}
         banda_v = {x: q for x, q in resto_v.items() if lo <= x <= hi}
-        bc, bv = sum(banda_c.values()), sum(banda_v.values())
+        # A pressão de compra é a sobra na banda MAIS a que sobra acima dela (agressiva) e a mercado; o
+        # espelho na venda. Só a ponta passiva longe do teórico fica de fora.
+        bc = sum(q for x, q in resto_c.items() if x >= lo) + rmc
+        bv = sum(q for x, q in resto_v.items() if x <= hi) + rmv
         r["banda_compra"], r["banda_venda"] = bc, bv
         if teorico is not None:
-            sc, sv = resto_c.get(teorico, 0), resto_v.get(teorico, 0)
+            sc, sv = resto_c.get(teorico, 0) + rmc, resto_v.get(teorico, 0) + rmv
             r["sobra_lado"] = "compra" if sc > sv else "venda" if sv > sc else None
             r["sobra_qtd"] = abs(sc - sv)
         if bc or bv:
@@ -421,23 +460,34 @@ class PainelLeilao:
                 return None
             r = self._analisar(p)
             compra, venda = p.niveis("compra"), p.niveis("venda")
+            mc, mv = r["mercado_compra"], r["mercado_venda"]
             if visao == "sobra":
-                compra, venda = sobra(compra, venda, r["teorico"], r["qtd_teorica"])
+                compra, venda, mc, mv = sobra(compra, venda, r["teorico"], r["qtd_teorica"], mc, mv)
             ref = r["teorico"] if r["teorico"] is not None else p.referencia
-            if ref is not None:
+            if ref is not None:          # a ponta passiva longe do teórico sai; a agressiva fica
                 lo, hi = ref * (1 - self.cfg.banda), ref * (1 + self.cfg.banda)
-                compra = {x: q for x, q in compra.items() if lo <= x <= hi}
-                venda = {x: q for x, q in venda.items() if lo <= x <= hi}
+                compra = {x: q for x, q in compra.items() if x >= lo}
+                venda = {x: q for x, q in venda.items() if x <= hi}
             esc_c = (r["escora_abaixo"] or {}).get("preco")
             esc_v = (r["escora_acima"] or {}).get("preco")
             niveis = []
+            if mc or mv:
+                cc, cv = p.corretoras("compra", None), p.corretoras("venda", None)
+                niveis.append({"preco": None, "mercado": True, "compra": mc, "venda": mv,
+                               "corretora_compra": cc[0][0] if cc and mc else None,
+                               "corretora_venda": cv[0][0] if cv and mv else None,
+                               "teorico": False, "escora": None, "agressiva": None})
             for preco in sorted(set(compra) | set(venda) | ({r["teorico"]} if r["teorico"] else set()), reverse=True):
                 cc, cv = p.corretoras("compra", preco), p.corretoras("venda", preco)
                 niveis.append({"preco": preco, "compra": compra.get(preco, 0), "venda": venda.get(preco, 0),
                                "corretora_compra": cc[0][0] if cc and compra.get(preco) else None,
                                "corretora_venda": cv[0][0] if cv and venda.get(preco) else None,
                                "teorico": preco == r["teorico"],
-                               "escora": "compra" if preco == esc_c else "venda" if preco == esc_v else None})
+                               "escora": "compra" if preco == esc_c else "venda" if preco == esc_v else None,
+                               "mercado": False,
+                               "agressiva": "compra" if compra.get(preco) and self._agressiva(p, "compra", preco, r["teorico"])
+                               else "venda" if venda.get(preco) and self._agressiva(p, "venda", preco, r["teorico"])
+                               else None})
             eventos = list(p.eventos)[-n_eventos:][::-1]
             return {**r, "visao": visao, "niveis": niveis, "eventos": eventos}
 
