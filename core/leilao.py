@@ -36,6 +36,7 @@ from datetime import datetime, timedelta, timezone
 FUSO_B3 = timezone(timedelta(hours=-3))
 
 # Fases (SetChangeStateTickerCallback, p.32 e p.75 do manual): 13 pré-abertura, 4 leilão, 0 aberto
+EM_LEILAO = (13, 4, 10)      # pré-abertura, leilão, pré-fechamento: só nessas fases o papel aparece na tela
 FASES = {13: "pré-abertura", 4: "leilão", 0: "aberto", 2: "congelado", 3: "inibido", 6: "fechado", 10: "pré-fechamento"}
 
 
@@ -47,7 +48,6 @@ class ConfigLeilao:
     escora_fator: float = 4.0      # escora = nível com 4× a mediana dos níveis do mesmo lado na banda...
     escora_min_fin: float = 1e6    # ...com pelo menos R$ 1 mi parado no preço...
     escora_min_liq: float = 0.004  # ...e pelo menos 0,4% do volume financeiro médio do papel
-    janela_delta: float = 30.0     # s: quanto o teórico andou neste tempo (coluna "Δ 30 s")
     agressiva: float = 0.03        # limitada além de ±3% do fechamento anterior = "a mercado disfarçada"
     max_eventos: int = 200
 
@@ -150,8 +150,25 @@ class _Papel:
         self.liquidez: float | None = None     # média de volume financeiro diário (R$)
         self.teorico_dll: tuple | None = None  # (preço, qtd) do SetTheoreticalPriceCallback
         self.teorico_hist: deque = deque(maxlen=600)   # (ts, preço)
+        self.preco_inicio: float | None = None  # primeiro teórico do leilão: base da coluna "Δ leilão"
+        self.lado_inicio = 0                   # teórico acima (+1), abaixo (−1) ou no preço de partida (0)
+        self.cruzou_acima = 0                  # vezes que o teórico passou a ficar acima do preço de partida
+        self.cruzou_abaixo = 0                 # ... e abaixo
         self.eventos: deque = deque()
         self.abertura: float | None = None     # preço do negócio de abertura (fase "aberto")
+
+    @property
+    def em_leilao(self) -> bool:
+        return self.fase in EM_LEILAO
+
+    def zerar(self):
+        """Esquece livro, eventos e teórico (o papel saiu do leilão; o próximo começa limpo)."""
+        self.ordens.clear()
+        self.eventos.clear()
+        self.teorico_hist.clear()
+        self.preco_inicio = None
+        self.lado_inicio = self.cruzou_acima = self.cruzou_abaixo = 0
+        self.teorico_dll = None
 
     def niveis(self, lado: str) -> dict:
         """Preço → qtd das ordens limitadas do lado (a mercado fica em mercado())."""
@@ -206,7 +223,10 @@ class PainelLeilao:
 
     def definir_fase(self, ativo: str, codigo: int, ts: float | None = None):
         with self._lock:
-            self._papel(ativo).fase = codigo
+            p = self._papel(ativo)
+            p.fase = codigo
+            if not p.em_leilao:
+                p.zerar()
             self._relogio(ts)
 
     def definir_teorico(self, ativo: str, preco: float | None, qtd: int, ts: float | None = None):
@@ -222,6 +242,7 @@ class PainelLeilao:
         with self._lock:
             p = self._papel(ativo)
             p.fase, p.abertura = 0, preco
+            p.zerar()
             self._relogio(ts)
 
     def ordem(self, ativo: str, oid, lado: str, preco: float, qtd: int, corretora: str, ts: float | None = None):
@@ -229,6 +250,8 @@ class PainelLeilao:
         with self._lock:
             p = self._papel(ativo)
             self._relogio(ts)
+            if not p.em_leilao:
+                return
             antes = self._teorico(p)[0]
             velha = p.ordens.get(oid)
             novo_player = not p.tem_corretora(corretora)
@@ -256,6 +279,8 @@ class PainelLeilao:
         with self._lock:
             p = self._papel(ativo)
             self._relogio(ts)
+            if not p.em_leilao:          # livro do pregão aberto não é leilão
+                return descartadas
             antes = self._teorico(p)[0]
             velho: dict = {}
             for lado, preco, qtd, corretora in p.ordens.values():
@@ -298,7 +323,7 @@ class PainelLeilao:
         with self._lock:
             p = self._papel(ativo)
             velha = p.ordens.get(oid)
-            if velha is None:
+            if velha is None or not p.em_leilao:
                 return
             self._relogio(ts)
             antes = self._teorico(p)[0]
@@ -313,6 +338,8 @@ class PainelLeilao:
                 p.ordens.clear()
                 p.eventos.clear()
                 p.teorico_hist.clear()
+                p.preco_inicio = None
+                p.lado_inicio = p.cruzou_acima = p.cruzou_abaixo = 0
                 p.teorico_dll, p.abertura, p.fase = None, None, 13
 
     # ── cálculo ────────────────────────────────────────────────
@@ -327,6 +354,15 @@ class PainelLeilao:
 
     def _marcar_teorico(self, p: _Papel):
         t = self._teorico(p)[0]
+        if t is not None and p.preco_inicio is None:
+            p.preco_inicio = t
+        if t is not None:
+            ticks = round((t - p.preco_inicio) / self.tick)
+            lado = (ticks > 0) - (ticks < 0)
+            if lado != p.lado_inicio:
+                p.cruzou_acima += lado > 0
+                p.cruzou_abaixo += lado < 0
+                p.lado_inicio = lado
         if t is not None and self.agora is not None and (not p.teorico_hist or p.teorico_hist[-1][1] != t):
             p.teorico_hist.append((self.agora, t))
 
@@ -354,17 +390,10 @@ class PainelLeilao:
                 p.eventos.popleft()
 
     def _delta_ticks(self, p: _Papel, teorico):
-        if teorico is None or self.agora is None:
+        """Ticks que o teórico está acima (+) ou abaixo (−) do preço em que o leilão começou."""
+        if teorico is None or p.preco_inicio is None:
             return None
-        base = None
-        for ts, t in p.teorico_hist:              # último teórico de antes da janela
-            if ts <= self.agora - self.cfg.janela_delta:
-                base = t
-            else:
-                break
-        if base is None and p.teorico_hist:
-            base = p.teorico_hist[0][1]
-        return None if base is None else round((teorico - base) / self.tick)
+        return round((teorico - p.preco_inicio) / self.tick)
 
     def _escora(self, p: _Papel, niveis: dict, lado: str, teorico: float):
         """Nível da sobra mais perto do teórico com escora_fator × a mediana do lado e escora_min_fin."""
@@ -392,7 +421,8 @@ class PainelLeilao:
         r = {"ativo": p.ativo, "fase": FASES.get(p.fase, str(p.fase)), "teorico": teorico, "qtd_teorica": casado,
              "referencia": p.referencia, "abertura": p.abertura, "tendencia": p.tendencia, "liquidez": p.liquidez,
              "var_pct": (100 * (teorico / p.referencia - 1)) if teorico and p.referencia else None,
-             "delta_ticks": self._delta_ticks(p, teorico), "sobra_lado": None, "sobra_qtd": 0,
+             "delta_ticks": self._delta_ticks(p, teorico),
+             "cruzou_acima": p.cruzou_acima, "cruzou_abaixo": p.cruzou_abaixo, "sobra_lado": None, "sobra_qtd": 0,
              "banda_compra": 0, "banda_venda": 0, "razao": None, "desbalanceado": None, "pressao": 0,
              "escora_abaixo": None, "escora_acima": None, "no_perfil": False, "ordens": len(p.ordens),
              "mercado_compra": mc, "mercado_venda": mv,
@@ -439,7 +469,7 @@ class PainelLeilao:
 
     def lista(self) -> list[dict]:
         with self._lock:
-            linhas = [self._analisar(p) for p in self._papeis.values()]
+            linhas = [self._analisar(p) for p in self._papeis.values() if p.em_leilao]
         # No perfil primeiro, depois o mais desbalanceado (lado vazio conta como o maior)
         return sorted(linhas, key=lambda r: (not r["no_perfil"], r["desbalanceado"] is None,
                                              -(r["razao"] or (1e9 if r["desbalanceado"] else 0)), r["ativo"]))
@@ -456,7 +486,7 @@ class PainelLeilao:
         """Escada de preços do papel (só a sobra ou o livro inteiro), com a corretora maior de cada lado."""
         with self._lock:
             p = self._papeis.get(ativo)
-            if p is None:
+            if p is None or not p.em_leilao:
                 return None
             r = self._analisar(p)
             compra, venda = p.niveis("compra"), p.niveis("venda")

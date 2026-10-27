@@ -63,6 +63,8 @@ export function linhaLeilao(r, selecionado = false, casas = 2) {
       { t: preco(r.teorico, casas), c: "num" },
       { t: r.var_pct == null ? "—" : comSinal(r.var_pct, (v) => pct(v, 2)), c: `num opc ${r.var_pct > 0 ? "compra" : r.var_pct < 0 ? "venda" : "faint"}` },
       { t: r.delta_ticks == null ? "—" : comSinal(r.delta_ticks), c: `num ${r.delta_ticks > 0 ? "compra" : r.delta_ticks < 0 ? "venda" : "faint"}` },
+      { t: `${r.cruzou_acima ?? 0} ▲ ${r.cruzou_abaixo ?? 0} ▼`, c: `num ${r.cruzou_acima || r.cruzou_abaixo ? "" : "faint"}`,
+        title: `O teórico passou ${r.cruzou_acima ?? 0}× para cima e ${r.cruzou_abaixo ?? 0}× para baixo do preço de partida` },
       { t: qtdCurta(r.banda_compra), c: "num" }, { t: qtdCurta(r.banda_venda), c: "num" },
       textoMercado(r), d, tend, ea, ec,
       { t: r.liquidez == null ? "—" : financeiro(r.liquidez), c: "num opc faint" },

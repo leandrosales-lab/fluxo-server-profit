@@ -193,6 +193,7 @@ assert.deepEqual(seta(0), { t: "—", c: "faint" });
 const vale = { ativo: "VALE3", pressao: -2, teorico: 45.5, var_pct: 0.22, delta_ticks: -3, banda_compra: 300000,
   banda_venda: 900000, razao: 3, desbalanceado: "venda", tendencia: "baixa", liquidez: 1.5e9, no_perfil: true,
   escora_abaixo: null, escora_acima: { preco: 45.65, qtd: 500000, corretora: "JP MORGAN", fatia: 1, dist_ticks: 15 } };
+assert.equal(linhaLeilao({ ...vale, cruzou_acima: 2, cruzou_abaixo: 1 }).celulas[5].t, "2 ▲ 1 ▼");
 assert.deepEqual(textoDesequilibrio(vale), { t: "3,0× venda", c: "venda" });
 assert.deepEqual(textoDesequilibrio({ banda_compra: 5, banda_venda: 0, razao: null, desbalanceado: "compra" }), { t: "só compra", c: "compra" });
 assert.deepEqual(textoDesequilibrio({ banda_compra: 140, banda_venda: 100, razao: 1.4, desbalanceado: null }), { t: "1,4×", c: "faint" });
@@ -203,7 +204,7 @@ const lv = linhaLeilao(vale, true);
 assert.equal(lv.classe, "perfil");
 assert.equal(lv.selecionado, true);
 assert.deepEqual(lv.celulas.map((c) => c.t),
-  ["VALE3", "▼▼", "45,50", "+0,22%", "-3", "300 mil", "900 mil", "—", "3,0× venda", "baixa", "—", "45,65", "R$ 1,5 bi"]);
+  ["VALE3", "▼▼", "45,50", "+0,22%", "-3", "0 ▲ 0 ▼", "300 mil", "900 mil", "—", "3,0× venda", "baixa", "—", "45,65", "R$ 1,5 bi"]);
 // A mercado: compra × venda (a mercado + agressiva), cor do lado maior, detalhe no title
 const merc = textoMercado({ mercado_compra: 300000, agressiva_compra: 50000, mercado_venda: 0, agressiva_venda: 20000 });
 assert.deepEqual([merc.t, merc.c], ["350 mil × 20 mil", "num compra"]);

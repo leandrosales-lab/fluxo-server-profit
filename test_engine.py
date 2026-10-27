@@ -4833,6 +4833,28 @@ def test_leilao():
     else:
         err(f"delta {painel.lista()[0]['delta_ticks']}")
 
+    # Δ leilão: ticks do teórico contra o preço em que o leilão começou
+    pd = PainelLeilao(tick=0.01)
+    pd.definir_teorico("MGLU3", 10.40, 1000, 1000.0)
+    seq = []
+    for preco in (10.41, 10.43, 10.39, 10.40):
+        pd.definir_teorico("MGLU3", preco, 1000, 1001.0)
+        seq.append(pd.lista()[0]["delta_ticks"])
+    r = pd.lista()[0]
+    pd.definir_teorico("MGLU3", 10.42, 1000, 1002.0)
+    r2 = pd.lista()[0]
+    if (r["cruzou_acima"], r["cruzou_abaixo"]) == (1, 1) and (r2["cruzou_acima"], r2["cruzou_abaixo"]) == (2, 1):
+        ok("Cruzadas: subir de 1 a 3 ticks conta uma vez; ir abaixo e voltar acima conta de novo")
+    else:
+        err(f"cruzadas {r['cruzou_acima']}/{r['cruzou_abaixo']} e {r2['cruzou_acima']}/{r2['cruzou_abaixo']}")
+    pd.definir_fase("MGLU3", 0)
+    pd.definir_fase("MGLU3", 4)
+    pd.definir_teorico("MGLU3", 10.55, 1000, 5000.0)
+    if seq == [1, 3, -1, 0] and pd.lista()[0]["delta_ticks"] == 0:
+        ok("Δ leilão: +1, +3, −1 e 0 contra o início (10,40); novo leilão parte do novo preço")
+    else:
+        err(f"delta contra o início {seq} {pd.lista()[0]['delta_ticks']}")
+
     # Book: sobra (sem o casado) e livro inteiro (cruzado)
     b = painel.book("VALE3", "sobra")
     linha = {n["preco"]: n for n in b["niveis"]}
@@ -5090,11 +5112,24 @@ def test_leilao_dll():
         err(f"saída {tipos}")
     entregar({"evento": "teorico", "ativo": "VALE3", "preco": 45.48, "qtd": 700, "ts": ts + 3})
     entregar({"evento": "abertura", "ativo": "VALE3", "preco": 45.48, "ts": ts + 600})
-    r = painel.lista()[0]
-    if r["teorico"] == 45.48 and r["fase"] == "aberto" and r["abertura"] == 45.48:
-        ok("Teórico da DLL e negócio de abertura chegam ao painel")
+    if painel.lista() == [] and painel.book("VALE3") is None and painel.resumo()["em_leilao"] == 0:
+        ok("Abertura tira o papel da tela (lista e book vazios)")
     else:
-        err(f"abertura no painel {r}")
+        err(f"papel aberto ainda na tela {painel.lista()}")
+    entregar({"evento": "livro", "ativo": "VALE3", "ts": ts + 601, "entradas": [["compra", 45.5, 100, "XP"]]})
+    if painel.lista() == []:
+        ok("Livro do pregão aberto não volta o papel à tela")
+    else:
+        err("livro do pregão aberto reapareceu na tela")
+    entregar({"evento": "fase", "ativo": "VALE3", "codigo": 4, "ts": ts + 3600})
+    entregar({"evento": "livro", "ativo": "VALE3", "ts": ts + 3601, "entradas": [
+        ["compra", 46.0, 300, "BTG"], ["venda", 46.0, 200, "UBS"]]})
+    lista = painel.lista()
+    b = painel.book("VALE3")
+    if len(lista) == 1 and lista[0]["fase"] == "leilão" and b and {e["corretora"] for e in b["eventos"]} == {"BTG", "UBS"}:
+        ok("Novo leilão do papel volta à tela sem o estado do anterior")
+    else:
+        err(f"reentrada no leilão {lista} {b and b['eventos']}")
 
 
 def test_cotahist():
