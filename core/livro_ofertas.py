@@ -10,6 +10,7 @@ Quando os 1.500 acabam e a UBS volta com oferta no mesmo preço, aí é 1 giro.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 
@@ -28,6 +29,11 @@ JANELA_RESTO = 1.0
 # acabou. Automaticamente, no mesmo nível, aparece de novo mil ações"). Consumo parcial sem reposição (5.000 -> 2.100 em
 # 9393837 03:52) é absorção do iceberg, não giro: o professor não conta giro sem o lote acabar e voltar.
 LOTE_MIN_ICEBERG = 1000
+
+
+def _preco_finito(preco) -> bool:
+    """Ordem a mercado chega da DLL com preço infinito (ou NaN): não tem nível."""
+    return preco is not None and math.isfinite(preco)
 
 
 @dataclass(frozen=True)
@@ -78,7 +84,7 @@ class LivroOfertas:
 
     def negocio(self, ativo: str, corretora: str, lado: str, preco: float, qtd: int, ts: float) -> list[Renovacao]:
         """Execução contra a passiva. Sozinha não é giro; só completa uma reposição pendente."""
-        if qtd <= 0 or not corretora:
+        if qtd <= 0 or not corretora or not _preco_finito(preco):
             return []
         chave = self._chave(ativo, corretora, lado, preco)
         f = self._fatias.get(chave)
@@ -103,8 +109,8 @@ class LivroOfertas:
         novas: dict[tuple, dict[int, int]] = {}
         precos: dict[tuple, float] = {}
         for offer_id, preco, qtd, corretora in ofertas:
-            if qtd <= 0 or not corretora or offer_id == 0:
-                continue
+            if qtd <= 0 or not corretora or offer_id == 0 or not _preco_finito(preco):
+                continue        # a mercado (preço infinito) não forma nível de iceberg
             p = self._preco(preco)
             chave = (ativo, corretora, lado, p)
             novas.setdefault(chave, {})[int(offer_id)] = int(qtd)
@@ -135,6 +141,10 @@ class LivroOfertas:
             return []
         ident = (ativo, int(offer_id))
         antiga = self._onde.get(ident)
+        if preco and not _preco_finito(preco):      # a mercado: sem preço para o nível
+            if antiga is None:
+                return []
+            preco = 0.0
         p = self._preco(preco) if preco else (antiga[3] if antiga else 0.0)
         nova = None if apagar or qtd <= 0 or not corretora else (ativo, corretora, lado, p)
         # Mesma oferta, mesmo preço: muda a quantidade direto. Tirar e pôr de novo

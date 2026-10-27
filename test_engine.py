@@ -5132,6 +5132,31 @@ def test_leilao_dll():
         err(f"reentrada no leilão {lista} {b and b['eventos']}")
 
 
+def test_giro_ordem_a_mercado():
+    print(f"\n{AMARELO}═══ TESTE 58: Giro de iceberg ignora ordem a mercado (preço infinito) ═══{RESET}")
+    import math
+    from core.livro_ofertas import LivroOfertas
+    L = LivroOfertas(tick_size=0.01)
+    try:
+        a = L.definir("PETR4", "compra", [(1, math.inf, 100, "XP"), (2, 10.0, 100, "XP")], 1.0)
+        b = L.atualizar("PETR4", "venda", -math.inf, 100, "XP", 3, 1.0)
+        c = L.atualizar("PETR4", "venda", math.nan, 100, "XP", 4, 1.0)
+        d = L.negocio("PETR4", "XP", "compra", math.inf, 100, 1.0)
+    except OverflowError as e:
+        err(f"ordem a mercado derrubou o giro: {e}")
+        return
+    if (a, b, c, d) == ([], [], [], []) and L.preco_de("PETR4", 2) == 10.0 and L.preco_de("PETR4", 1) == 0.0:
+        ok("Preço infinito/NaN (a mercado) é ignorado; a ordem de preço normal do mesmo livro fica")
+    else:
+        err(f"giro com a mercado {(a, b, c, d)} {L.preco_de('PETR4', 2)} {L.preco_de('PETR4', 1)}")
+    L.atualizar("PETR4", "compra", 10.0, 100, "XP", 5, 2.0)
+    L.atualizar("PETR4", "compra", math.inf, 200, "XP", 5, 2.1)      # mesma oferta vira a mercado: mantém o preço
+    if L.preco_de("PETR4", 5) == 10.0:
+        ok("Oferta existente que passa a preço infinito mantém o nível anterior")
+    else:
+        err(f"preço da oferta editada {L.preco_de('PETR4', 5)}")
+
+
 def test_cotahist():
     print(f"\n{AMARELO}═══ TESTE 57: COTAHIST da B3 — fechamento, tendência e liquidez do leilão ═══{RESET}")
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools"))
@@ -5235,6 +5260,7 @@ def main():
     test_leilao()
     test_leilao_simulado_e_api()
     test_leilao_dll()
+    test_giro_ordem_a_mercado()
     test_cotahist()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
