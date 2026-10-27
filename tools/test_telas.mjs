@@ -6,6 +6,8 @@ import { tituloSinal, LOTE_GRANDE_PADRAO, textoEvento, duracao, medidaSinal, ord
   linhasQueCabem, rotuloFonteBook, qtdBook, corretorasBook, linhasOfertas } from "../api/static/js/operar-paineis.js";
 import { textoSituacao, linhaRadar, textoUltimoGiro } from "../api/static/js/radar-lista.js";
 import { sugerirAtivos } from "../api/static/js/ativo-busca.js";
+import { qtdCurta, seta, textoDesequilibrio, textoEscora, linhaLeilao, filtrarLeilao, linhasEscada, linhaEvento,
+  contagem } from "../api/static/js/leilao-lista.js";
 import { sinceCandles, juntarCandles, precisaLimpar } from "../api/static/js/candles.js";
 
 assert.equal(f.preco(38.47), "38,47");
@@ -180,3 +182,46 @@ assert.deepEqual(sugerirAtivos(LISTA, "  "), []);
 assert.deepEqual(sugerirAtivos(LISTA, "xyz"), []);
 assert.equal(sugerirAtivos(LISTA, "3", 3).length, 3);
 console.log("busca de papel: ok");
+
+// Leilão de abertura: seta, desequilíbrio, escora, filtros, escada e eventos
+assert.equal(qtdCurta(950), "950");
+assert.equal(qtdCurta(300000), "300 mil");
+assert.equal(qtdCurta(-1234567), "1,2 mi");
+assert.deepEqual(seta(2), { t: "▲▲", c: "compra" });
+assert.deepEqual(seta(-1), { t: "▼", c: "venda" });
+assert.deepEqual(seta(0), { t: "—", c: "faint" });
+const vale = { ativo: "VALE3", pressao: -2, teorico: 45.5, var_pct: 0.22, delta_ticks: -3, banda_compra: 300000,
+  banda_venda: 900000, razao: 3, desbalanceado: "venda", tendencia: "baixa", liquidez: 1.5e9, no_perfil: true,
+  escora_abaixo: null, escora_acima: { preco: 45.65, qtd: 500000, corretora: "JP MORGAN", fatia: 1, dist_ticks: 15 } };
+assert.deepEqual(textoDesequilibrio(vale), { t: "3,0× venda", c: "venda" });
+assert.deepEqual(textoDesequilibrio({ banda_compra: 5, banda_venda: 0, razao: null, desbalanceado: "compra" }), { t: "só compra", c: "compra" });
+assert.deepEqual(textoDesequilibrio({ banda_compra: 140, banda_venda: 100, razao: 1.4, desbalanceado: null }), { t: "1,4×", c: "faint" });
+assert.deepEqual(textoDesequilibrio({ banda_compra: 0, banda_venda: 0 }), { t: "—", c: "faint" });
+assert.equal(textoEscora(vale.escora_acima).title, "500 mil parados · JP MORGAN com 100% · 15 ticks do teórico");
+assert.equal(textoEscora(null).t, "—");
+const lv = linhaLeilao(vale, true);
+assert.equal(lv.classe, "perfil");
+assert.equal(lv.selecionado, true);
+assert.deepEqual(lv.celulas.map((c) => c.t),
+  ["VALE3", "▼▼", "45,50", "+0,22%", "-3", "300 mil", "900 mil", "3,0× venda", "baixa", "—", "45,65", "R$ 1,5 bi"]);
+const papeis = [vale, { ...vale, ativo: "HAPV3", no_perfil: false, liquidez: 9.5e7 }, { ...vale, ativo: "RDOR3", no_perfil: false, desbalanceado: null }];
+assert.deepEqual(filtrarLeilao(papeis, "").map((r) => r.ativo), ["VALE3", "HAPV3", "RDOR3"]);
+assert.deepEqual(filtrarLeilao(papeis, "desbalanceados").map((r) => r.ativo), ["VALE3", "HAPV3"]);
+assert.deepEqual(filtrarLeilao(papeis, "perfil").map((r) => r.ativo), ["VALE3"]);
+assert.deepEqual(filtrarLeilao(papeis, "", 1e8).map((r) => r.ativo), ["VALE3", "RDOR3"]);
+const esc = linhasEscada([
+  { preco: 45.65, compra: 0, venda: 500000, corretora_venda: "JP MORGAN", escora: "venda" },
+  { preco: 45.5, compra: 0, venda: 0, teorico: true },
+  { preco: 45.0, compra: 250000, venda: 0, corretora_compra: "ITAU" }]);
+assert.deepEqual(esc.map((l) => [l.classe, l.compra, l.preco, l.venda, l.wCompra, l.wVenda]), [
+  ["lote-venda", "", "45,65", "500 mil", 0, 100], ["teorico", "", "45,50", "", 0, 0], ["", "250 mil", "45,00", "", 50, 0]]);
+const evGoldman = { ts: 1792155600, tipo: "entrou", lado: "compra", preco: 45.7, qtd: 400000, corretora: "GOLDMAN",
+  teorico_antes: 45.5, teorico_depois: 45.65 };
+const le = linhaEvento(evGoldman);
+assert.deepEqual(le.celulas.map((c) => c.t), ["10:00:00", "GOLDMAN", "entrou na compra · 400 mil a 45,70", "45,50 → 45,65"]);
+assert.equal(le.celulas[3].c, "num compra");
+assert.equal(linhaEvento({ ...evGoldman, tipo: "saiu", lado: "venda", qtd: -1000, teorico_antes: 45.5, teorico_depois: 45.5 }).celulas[3].t, "45,50");
+assert.equal(contagem(1000, 1252), "04:12");
+assert.equal(contagem(1300, 1252), "aberto");
+assert.equal(contagem(null, 1252), "—");
+console.log("leilão: ok");

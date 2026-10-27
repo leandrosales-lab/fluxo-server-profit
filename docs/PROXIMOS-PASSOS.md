@@ -38,6 +38,15 @@
     processo filho (`profitdll/processo.py`) e o Reconectar reinicia só o filho.
   - Credenciais: `tools\configurar_profitdll.ps1`; subir: `tools\rodar_dll.ps1 -Asset PETR4`.
   - Histórico: `python -m profitdll.historico` (ainda não confirmado com dados reais).
+- **Tela Leilão (F4, 27/10/2026) — só com dados SIMULADOS por enquanto:** `python main.py --leilao-demo` e abrir
+  `/leilao`. Lista os papéis do leilão de abertura com teórico, seta de pressão (▲/▼, dupla a 3×), sobra de compra e
+  venda na banda de ±2% do teórico, desequilíbrio (2× = desbalanceado), tendência (fechamento contra a média de 20
+  pregões), escora abaixo (compra) e acima (venda) e liquidez. "No perfil" = desbalanceado + tendência a favor + escora
+  do mesmo lado. À direita, o book do papel (sobra na abertura ou livro inteiro) e quem entrou e saiu, com o efeito no
+  teórico. Cálculo em `core/leilao.py`, simulador em `core/leilao_simulado.py`. **Falta:** ligar a ponte da DLL
+  (`SetChangeStateTickerCallback`, `SetTheoreticalPriceCallback` com quantidade Int64, livro de ofertas de todos os
+  papéis no pré-pregão, fechamentos diários para tendência e liquidez) e calibrar banda, razão e escora com leilões
+  gravados.
 - **Telas (design v3):** `http://127.0.0.1:5000/operar` (F1) e `/conexao` (F2), tema escuro/claro (T), Reconectar
   da DLL na Conexão. Testes: `node tools/test_telas.mjs` e `node tools/qa_telas.js` (QA no navegador com Playwright).
 

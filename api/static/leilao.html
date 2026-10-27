@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fluxo Server · Leilão</title>
+<script>/* tema antes da 1ª pintura (sem piscar) */ try { var t = localStorage.getItem("fluxo.tema"); } catch (e) {} document.documentElement.dataset.tema = (t === "claro" || t === "escuro") ? t : (matchMedia("(prefers-color-scheme: light)").matches ? "claro" : "escuro");</script>
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/base.css">
+<link rel="stylesheet" href="/static/css/leilao.css">
+</head>
+<body>
+<div class="tela">
+  <header id="topo"></header>
+  <section class="faixa">
+    <div class="metrica"><span class="rotulo" id="l-fase">Abertura</span><span class="valor mono" id="l-abre">—</span></div>
+    <div class="metrica"><span class="rotulo">Papéis em leilão</span><span class="valor" id="l-em-leilao">—</span></div>
+    <div class="metrica"><span class="rotulo">Desbalanceados na compra</span><span class="valor compra" id="l-desbal-c">—</span></div>
+    <div class="metrica"><span class="rotulo">Desbalanceados na venda</span><span class="valor venda" id="l-desbal-v">—</span></div>
+    <div class="metrica"><span class="rotulo" title="Desbalanceado, tendência a favor e escora do mesmo lado">No perfil</span><span class="valor" id="l-perfil">—</span></div>
+    <div class="metrica opcional"><span class="rotulo">Regra</span><span class="valor mono" id="l-regra">—</span></div>
+    <div class="metrica"><span class="rotulo">Fonte</span><span class="valor" id="l-fonte">—</span></div>
+  </section>
+  <main class="corpo leilao">
+    <section class="secao">
+      <div class="cab"><h2>Papéis</h2><span class="meta" id="lista-meta"></span>
+        <span class="acoes">
+          <span id="filtros"><button class="seletor" data-filtro="" aria-pressed="true">todos</button><button class="seletor" data-filtro="desbalanceados">desbalanceados</button><button class="seletor" data-filtro="perfil" title="Desbalanceado, tendência a favor e escora do mesmo lado">no perfil</button></span>
+          <span id="liquidez" title="Volume financeiro médio por dia"><button class="seletor" data-liq="0" aria-pressed="true">qualquer liquidez</button><button class="seletor" data-liq="100000000">≥ R$ 100 mi</button><button class="seletor" data-liq="300000000">≥ R$ 300 mi</button></span>
+        </span>
+      </div>
+      <table class="lista-leilao"><colgroup><col><col><col><col class="opc"><col><col><col><col><col><col><col><col class="opc"></colgroup>
+        <thead><tr><th>Papel</th><th title="Para onde a sobra do livro empurra o preço na abertura (▲▲/▼▼ = 3× ou mais)">Pressão</th><th class="num">Teórico</th><th class="num opc" title="Teórico contra o fechamento anterior">Var.</th><th class="num" title="Quanto o teórico andou nos últimos 30 s, em ticks">Δ 30 s</th><th class="num" title="Compra que sobra na banda depois do casamento no teórico">Sobra compra</th><th class="num" title="Venda que sobra na banda depois do casamento no teórico">Sobra venda</th><th title="Lado maior ÷ lado menor">Desequilíbrio</th><th title="Último fechamento contra a média de 20 pregões">Tendência</th><th class="num" title="Lote grande de compra que sobra abaixo do teórico">Escora ↓</th><th class="num" title="Lote grande de venda que sobra acima do teórico">Escora ↑</th><th class="num opc" title="Volume financeiro médio por dia">Liquidez</th></tr></thead></table>
+      <div class="rolagem"><table class="lista-leilao"><colgroup><col><col><col><col class="opc"><col><col><col><col><col><col><col><col class="opc"></colgroup><tbody id="lista"></tbody></table></div>
+      <p class="vazio-msg" id="lista-vazio" hidden></p>
+    </section>
+    <section class="secao lado">
+      <div class="bloco-book">
+        <div class="cab"><h2 id="book-titulo">Book</h2>
+          <span id="visoes"><button class="seletor" data-visao="sobra" aria-pressed="true" title="O que fica no livro depois do casamento no teórico">sobra na abertura</button><button class="seletor" data-visao="livro" title="Livro inteiro, cruzado">livro inteiro</button></span>
+          <span class="acoes meta" id="book-meta"></span></div>
+        <div class="book-resumo" id="book-resumo">
+          <span class="seta-grande" id="b-seta">—</span>
+          <span><span class="rotulo">Teórico</span> <b class="mono" id="b-teorico">—</b> <span class="meta mono" id="b-qtd"></span></span>
+          <span><span class="rotulo">Sobra no teórico</span> <b class="mono" id="b-sobra">—</b></span>
+          <span class="opcional"><span class="rotulo">Banda</span> <b class="mono" id="b-banda">—</b></span>
+        </div>
+        <table class="escada escada-cab" aria-hidden="true"><colgroup><col><col><col><col><col></colgroup>
+          <thead><tr><th>Corretora</th><th class="num">Compra</th><th class="num">Preço</th><th class="num">Venda</th><th>Corretora</th></tr></thead></table>
+        <div class="rolagem" id="escada-rolagem"><table class="escada" aria-label="Book do leilão: compra, preço e venda"><colgroup><col><col><col><col><col></colgroup><tbody id="escada"></tbody></table></div>
+      </div>
+      <div class="bloco-eventos">
+        <div class="cab"><h2>Quem entrou e saiu</h2><span class="acoes meta">ordens que mexem no teórico ou são grandes</span></div>
+        <div class="rolagem"><table class="eventos-leilao"><colgroup><col><col><col><col></colgroup><tbody id="eventos"></tbody></table></div>
+      </div>
+    </section>
+  </main>
+  <footer id="rodape"></footer>
+</div>
+<script type="module" src="/static/js/leilao.js"></script>
+</body>
+</html>

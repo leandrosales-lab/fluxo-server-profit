@@ -412,6 +412,8 @@ def parse_args():
                    help="CSV do pregão a reproduzir (modo replay)")
     p.add_argument("--radar",       action="store_true",
                    help="Radar de fluxo: icebergs de todas as ações (dll: config/acoes_b3.txt; replay: --arquivos)")
+    p.add_argument("--leilao-demo", action="store_true",
+                   help="Tela Leilão com um leilão de abertura SIMULADO (a ponte da DLL ainda não manda o leilão)")
     p.add_argument("--arquivos",    nargs="+", default=None,
                    help="Replay com --radar: vários pregões (papel pelo nome, ex.: rent3_2026-10-16.csv)")
     p.add_argument("--velocidade",  default=0.0, type=float,
@@ -517,6 +519,15 @@ def main():
     server = FlowServer(engine, host=args.host, port=args.port, modo=args.modo, fonte=fonte_da_captura(args))
     if radar is not None:
         server.registrar_radar(radar)
+    simulador_leilao = None
+    if args.leilao_demo:
+        from core.leilao import PainelLeilao
+        from core.leilao_simulado import SimuladorLeilao
+        painel_leilao = PainelLeilao(tick=args.tick_size, fonte="simulado")
+        simulador_leilao = SimuladorLeilao(painel_leilao)
+        simulador_leilao.iniciar()
+        server.registrar_leilao(painel_leilao)
+        logger.info("Leilão SIMULADO ligado: http://%s:%d/leilao", args.host, args.port)
     server.start()
 
     # ── Iniciar modo de captura
@@ -573,6 +584,8 @@ def main():
         if data_source:
             data_source.stop()
         server.stop()
+        if simulador_leilao is not None:
+            simulador_leilao.parar()
         if radar is not None:
             radar.salvar()
         if gravador:

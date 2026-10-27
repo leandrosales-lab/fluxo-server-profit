@@ -15,6 +15,8 @@ Endpoints:
   GET  /health          → status do servidor (modo, fonte e tick do ativo)
   GET  / , /operar      → tela Operar (api/static/operar.html; /dashboard também abre)
   GET  /conexao         → tela Conexão (api/static/conexao.html)
+  GET  /leilao          → tela Leilão (api/static/leilao.html)
+  GET  /api/leilao?ativo=X&visao=sobra|livro → papéis do leilão de abertura (desequilíbrio, escora) e o book de X
   GET  /static/[css|js|fonts/]<nome> → arquivos de api/static/
   GET  /trades?limit=N  → Times & Trades: últimos N negócios (padrão 200, máx. 1000)
   GET  /candles?tf=S&since=T → candles de S segundos (15, 60, 300, 900 ou 3600) a partir de T
@@ -77,7 +79,7 @@ _SUBPASTAS = ("css", "js", "fonts")
 
 # Rota → página em STATIC_DIR
 PAGINAS = {"/": "operar.html", "/dashboard": "operar.html", "/operar": "operar.html",
-           "/conexao": "conexao.html", "/radar": "radar.html"}
+           "/conexao": "conexao.html", "/radar": "radar.html", "/leilao": "leilao.html"}
 
 
 def caminho_estatico(nome: str):
@@ -124,6 +126,7 @@ class FlowHandler(BaseHTTPRequestHandler):
     rtd: RTDTradeInferer = None
     dll = None                  # ProfitDLLBridge no modo dll (contadores no /state)
     radar = None                # core.radar.Radar quando o servidor sobe com --radar (GET /api/radar)
+    leilao = None               # core.leilao.PainelLeilao (GET /api/leilao); --leilao-demo liga o simulado
     portao = None               # core.portao_historico.PortaoHistorico (histórico do dia, modo dll)
     encerrar = None             # função sem argumentos que encerra o processo de forma limpa (main.py)
     log: "log_memoria.LogMemoria" = None   # GET /log (tela Conexão)
@@ -252,6 +255,19 @@ class FlowHandler(BaseHTTPRequestHandler):
                     corpo = {"resumo": radar.resumo(), "lista": radar.lista(sit, max(1, limite), janela, ordem),
                              "agora": radar._agora}
                 self._send_json(corpo)
+
+        elif path == "/api/leilao":
+            painel = FlowHandler.leilao
+            if painel is None:
+                self._send_json({"fonte": None, "resumo": None, "lista": [], "book": None})
+                return
+            visao = "livro" if qs.get("visao", [""])[0] == "livro" else "sobra"
+            lista = painel.lista()
+            ativo = (qs.get("ativo", [""])[0] or "").strip().upper() or (lista[0]["ativo"] if lista else "")
+            self._send_json({"fonte": painel.fonte, "agora": painel.agora, "abertura_prevista": painel.abertura_prevista,
+                             "razao_min": painel.cfg.razao_min, "banda": painel.cfg.banda,
+                             "resumo": painel.resumo(lista), "lista": lista,
+                             "book": painel.book(ativo, visao) if ativo else None})
 
         elif path in PAGINAS:
             arquivo = os.path.join(STATIC_DIR, PAGINAS[path])
@@ -480,6 +496,10 @@ class FlowServer:
     def registrar_radar(self, radar):
         """Expõe o radar de fluxo no GET /api/radar (None desliga)."""
         FlowHandler.radar = radar
+
+    def registrar_leilao(self, painel):
+        """Expõe o painel do leilão de abertura no GET /api/leilao (None desliga)."""
+        FlowHandler.leilao = painel
 
     def registrar_encerrar(self, funcao):
         """Função que encerra o processo com a DLL finalizada (POST /encerrar). None desliga a rota."""

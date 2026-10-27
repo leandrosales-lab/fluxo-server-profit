@@ -1,0 +1,57 @@
+/* Tela Leilão: lista de papéis | book do papel escolhido e quem entrou/saiu. */
+.corpo.leilao { grid-template-columns: minmax(0, 1fr) clamp(480px, 34vw, 640px); }
+.cab { white-space: nowrap; overflow: hidden; }
+#filtros, #liquidez, #visoes { display: flex; gap: 14px; }
+#liquidez { margin-left: 10px; padding-left: 14px; border-left: 1px solid var(--rule); }
+#visoes { margin-left: 14px; }
+
+.lista-leilao col:nth-child(1) { width: 78px; }
+.lista-leilao col:nth-child(2) { width: 64px; }
+.lista-leilao col:nth-child(3) { width: 72px; }
+.lista-leilao col:nth-child(4) { width: 66px; }
+.lista-leilao col:nth-child(5) { width: 60px; }
+.lista-leilao col:nth-child(6), .lista-leilao col:nth-child(7) { width: 92px; }
+.lista-leilao col:nth-child(8) { width: auto; }
+.lista-leilao col:nth-child(9) { width: 76px; }
+.lista-leilao col:nth-child(10), .lista-leilao col:nth-child(11) { width: 72px; }
+.lista-leilao col:nth-child(12) { width: 110px; }
+#lista tr { cursor: pointer; }
+#lista tr:hover { background: var(--raise); }
+#lista tr.perfil td { font-weight: 600; }
+#lista tr[aria-selected="true"] { background: var(--raise); }
+#lista tr[aria-selected="true"] td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+td.seta { letter-spacing: -2px; }
+
+/* Lado direito: book em cima, eventos embaixo */
+.secao.lado { display: grid; grid-template-rows: minmax(0, 3fr) minmax(0, 2fr); grid-template-columns: minmax(0, 1fr); min-width: 0; }
+.bloco-book, .bloco-eventos { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.bloco-eventos { border-top: 1px solid var(--rule); }
+.book-resumo { display: flex; align-items: baseline; gap: 18px; height: 34px; padding: 6px 16px 0; flex: 0 0 auto;
+  background: var(--raise); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); white-space: nowrap; overflow: hidden; }
+.book-resumo .rotulo { font-size: 12px; color: var(--muted); }
+.book-resumo b { font-weight: 600; }
+.seta-grande { font: 600 17px/20px "IBM Plex Mono", monospace; letter-spacing: -2px; min-width: 28px; }
+
+.escada { font-size: 12px; line-height: 20px; }
+.escada col:nth-child(2), .escada col:nth-child(4) { width: 92px; }
+.escada col:nth-child(3) { width: 72px; }
+.escada td.corr { font-family: "IBM Plex Sans", sans-serif; color: var(--muted); }
+.escada td.corr.dir { text-align: right; }
+.escada th:last-child { text-align: right; }
+.escada td.preco { text-align: center; font-weight: 500; }
+.escada td.q { background: linear-gradient(var(--dir), var(--cor) var(--w, 0%), transparent var(--w, 0%)); }
+.escada td.q.c { --dir: to left; --cor: color-mix(in srgb, var(--buy) 26%, transparent); }
+.escada td.q.v { --dir: to right; --cor: color-mix(in srgb, var(--sell) 26%, transparent); }
+.escada tr.teorico td { border-top: 1px solid var(--accent); border-bottom: 1px solid var(--accent); }
+.escada tr.teorico td.preco { color: var(--accent); }
+
+.eventos-leilao { font-size: 12px; line-height: 20px; }
+.eventos-leilao col:nth-child(1) { width: 88px; }
+.eventos-leilao col:nth-child(2) { width: 120px; }
+.eventos-leilao col:nth-child(4) { width: 130px; }
+
+@media (max-width: 1450px) {
+  .book-resumo .opcional { display: none; }
+  .lista-leilao .opc { display: none; }
+  .lista-leilao col.opc { visibility: collapse; width: 0; }
+}

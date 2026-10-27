@@ -4749,6 +4749,161 @@ def test_livro_giro_escala():
         err(f"índices: {L2._por} {L2._onde} {L2._chaves}")
 
 
+def test_leilao():
+    print(f"\n{AMARELO}═══ TESTE 54: Leilão de abertura — teórico, sobra, desequilíbrio, escora e perfil ═══{RESET}")
+    from core.leilao import PainelLeilao, ConfigLeilao, preco_teorico, sobra, tendencia, no_perfil
+
+    # Teórico: maior quantidade casada; empate desfeito pela menor sobra
+    t, q = preco_teorico({10.02: 500, 10.00: 300}, {9.99: 400, 10.01: 300})
+    if (t, q) == (10.01, 500):
+        ok("Preço teórico = o que casa mais (10,01 casa 500)")
+    else:
+        err(f"teórico {t} {q}")
+    if preco_teorico({9.90: 100}, {10.00: 100}) == (None, 0):
+        ok("Livro sem cruzamento não tem teórico")
+    else:
+        err("livro sem cruzamento")
+    c, v = sobra({10.02: 500, 10.00: 300}, {9.99: 400, 10.01: 300}, 10.01, 500)
+    if c == {10.00: 300} and v == {10.01: 200}:
+        ok("Sobra: tira o casado das melhores compras e vendas")
+    else:
+        err(f"sobra {c} {v}")
+
+    # Exemplo do VALE3: teórico 45,50, sobram 300 mil na compra (45,00) e 900 mil na venda
+    painel = PainelLeilao(ConfigLeilao(escora_min_liq=0))
+    painel.cadastrar("VALE3", referencia=45.40, tendencia_="baixa", liquidez=1.5e9)
+    painel.ordem("VALE3", 1, "compra", 45.50, 200_000, "XP", 1000.0)
+    painel.ordem("VALE3", 2, "venda", 45.50, 200_000, "BTG", 1001.0)
+    painel.ordem("VALE3", 3, "compra", 45.00, 300_000, "ITAU", 1002.0)
+    for i, (p, qtd) in enumerate([(45.60, 100_000), (45.70, 100_000), (45.80, 100_000), (45.90, 100_000)]):
+        painel.ordem("VALE3", 10 + i, "venda", p, qtd, "UBS", 1003.0 + i)
+    painel.ordem("VALE3", 20, "venda", 45.65, 500_000, "JP MORGAN", 1010.0)
+    r = painel.lista()[0]
+    if r["teorico"] == 45.50 and r["qtd_teorica"] == 200_000:
+        ok("Teórico 45,50 com 200 mil casados")
+    else:
+        err(f"teórico {r['teorico']} {r['qtd_teorica']}")
+    if (r["banda_compra"], r["banda_venda"], r["desbalanceado"], r["pressao"]) == (300_000, 900_000, "venda", -2):
+        ok("300 mil × 900 mil = desbalanceado na venda, seta dupla para baixo (3×)")
+    else:
+        err(f"desequilíbrio {r}")
+    e = r["escora_acima"]
+    if e and e["preco"] == 45.65 and e["corretora"] == "JP MORGAN" and e["dist_ticks"] == 15 and r["escora_abaixo"] is None:
+        ok("Escora de venda acima: 500 mil do JP MORGAN em 45,65, 15 ticks do teórico")
+    else:
+        err(f"escora {r['escora_acima']} / {r['escora_abaixo']}")
+    if r["no_perfil"]:
+        ok("No perfil: desbalanceado na venda, tendência de baixa e escora de venda acima")
+    else:
+        err("deveria estar no perfil")
+    if not no_perfil({**r, "tendencia": "alta"}) and not no_perfil({**r, "escora_acima": None}):
+        ok("Fora do perfil com tendência contra ou sem escora do lado")
+    else:
+        err("perfil sem tendência/escora")
+
+    # Quem entrou e saiu: o evento diz o que fez com o teórico
+    painel.ordem("VALE3", 30, "compra", 45.70, 400_000, "GOLDMAN", 1020.0)
+    ev = painel.book("VALE3")["eventos"][0]
+    if ev["tipo"] == "entrou" and ev["corretora"] == "GOLDMAN" and ev["teorico_antes"] == 45.50 and ev["teorico_depois"] > 45.50:
+        ok(f"GOLDMAN entrou na compra e empurrou o teórico (45,50 → {ev['teorico_depois']})")
+    else:
+        err(f"evento {ev}")
+    painel.cancelar("VALE3", 30, 1021.0)
+    ev = painel.book("VALE3")["eventos"][0]
+    if ev["tipo"] == "saiu" and ev["qtd"] == -400_000 and ev["teorico_depois"] == 45.50:
+        ok("GOLDMAN saiu e o teórico voltou a 45,50")
+    else:
+        err(f"evento de saída {ev}")
+    if painel.lista()[0]["delta_ticks"] == 0 and painel.teorico("VALE3") == (45.50, 200_000):
+        ok("Δ do teórico na janela volta a zero")
+    else:
+        err(f"delta {painel.lista()[0]['delta_ticks']}")
+
+    # Book: sobra (sem o casado) e livro inteiro (cruzado)
+    b = painel.book("VALE3", "sobra")
+    linha = {n["preco"]: n for n in b["niveis"]}
+    if 45.50 in linha and linha[45.50]["teorico"] and linha[45.50]["compra"] == 0 and linha[45.65]["escora"] == "venda":
+        ok("Book da sobra marca o teórico e a escora")
+    else:
+        err(f"book sobra {b['niveis']}")
+    if {n["preco"]: n for n in painel.book("VALE3", "livro")["niveis"]}[45.50]["compra"] == 200_000:
+        ok("Livro inteiro mostra o casado também")
+    else:
+        err("livro inteiro")
+
+    # Teórico da DLL prevalece sobre o calculado
+    painel.definir_teorico("VALE3", 45.48, 150_000, 1030.0)
+    if painel.lista()[0]["teorico"] == 45.48:
+        ok("Teórico da DLL vence o calculado")
+    else:
+        err("teórico da DLL")
+
+    fech = [10 + 0.1 * i for i in range(25)]
+    if tendencia(fech) == "alta" and tendencia(fech[::-1]) == "baixa" and tendencia([10.0] * 25) == "lateral":
+        ok("Tendência: acima da média de 20 subindo = alta; espelho = baixa")
+    else:
+        err("tendência")
+
+
+def test_leilao_simulado_e_api():
+    print(f"\n{AMARELO}═══ TESTE 55: Leilão simulado e GET /api/leilao ═══{RESET}")
+    import json
+    import urllib.request
+    from api.server import FlowServer
+    from core.leilao import PainelLeilao
+    from core.leilao_simulado import SimuladorLeilao, DURACAO, ABERTO_POR
+
+    painel = PainelLeilao(fonte="simulado")
+    sim = SimuladorLeilao(painel, semente=3, inicio=1_792_000_000.0)
+    for _ in range(400):
+        sim.passo(1.0)
+    lista = painel.lista()
+    if len(lista) == 25 and all(r["teorico"] for r in lista) and painel.resumo(lista)["desbal_compra"] > 0 \
+            and painel.resumo(lista)["desbal_venda"] > 0:
+        ok("Simulador: 25 papéis com teórico e desbalanceados dos dois lados")
+    else:
+        err(f"simulador {painel.resumo(lista)}")
+    while sim.t < painel.abertura_prevista + 1:
+        sim.passo(1.0)
+    if all(r["fase"] == "aberto" and r["abertura"] for r in painel.lista()):
+        ok("Às 10:00 todos abrem no último teórico")
+    else:
+        err("abertura simulada")
+    sim.passo(ABERTO_POR)
+    if all(r["fase"] == "pré-abertura" for r in painel.lista()) and sim.t < painel.abertura_prevista:
+        ok("Depois de aberto o ciclo recomeça na pré-abertura")
+    else:
+        err("ciclo do simulador")
+
+    engine = FlowEngine("PETR4", EngineConfig())
+    porta = 15583
+    server = FlowServer(engine, host="127.0.0.1", port=porta)
+    server.start()
+    base = f"http://127.0.0.1:{porta}"
+    try:
+        server.registrar_leilao(None)
+        vazio = json.loads(urllib.request.urlopen(f"{base}/api/leilao").read())
+        if vazio["resumo"] is None and vazio["lista"] == []:
+            ok("GET /api/leilao sem leilão ligado: resumo nulo")
+        else:
+            err(f"leilão desligado {vazio}")
+        server.registrar_leilao(painel)
+        corpo = json.loads(urllib.request.urlopen(f"{base}/api/leilao?ativo=vale3&visao=livro").read())
+        if corpo["fonte"] == "simulado" and len(corpo["lista"]) == 25 and corpo["book"]["ativo"] == "VALE3" \
+                and corpo["book"]["visao"] == "livro" and corpo["resumo"]["papeis"] == 25:
+            ok("GET /api/leilao traz lista, resumo e o book do papel pedido")
+        else:
+            err(f"/api/leilao {corpo.get('resumo')} {corpo.get('book', {}).get('ativo')}")
+        pagina = urllib.request.urlopen(f"{base}/leilao")
+        if "text/html" in pagina.headers.get("Content-Type", ""):
+            ok("GET /leilao serve a tela")
+        else:
+            err("/leilao")
+    finally:
+        server.registrar_leilao(None)
+        server.stop()
+
+
 def main():
     print(f"\n{AZUL}╔══════════════════════════════════════════════╗{RESET}")
     print(f"{AZUL}║   FLUXO SERVER — Suite de Testes Automáticos  ║{RESET}")
@@ -4817,6 +4972,8 @@ def main():
     test_radar_agrupa_papel()
     test_radar_persistencia()
     test_livro_protocolo_e_api()
+    test_leilao()
+    test_leilao_simulado_e_api()
 
     print(f"\n{VERDE}╔══════════════════════════════════════════╗{RESET}")
     print(f"{VERDE}║  ✓  TODOS OS TESTES PASSARAM!             ║{RESET}")

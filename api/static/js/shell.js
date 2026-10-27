@@ -1,10 +1,10 @@
-// Cabeçalho, rodapé, tema e atalhos comuns às telas (Operar, Conexão).
+// Cabeçalho, rodapé, tema e atalhos comuns às telas (Operar, Conexão, Radar, Leilão).
 import { getJSON, segundosSemResposta } from "./api.js";
 import { horaB3 } from "./formato.js";
 
 const CHAVE_TEMA = "fluxo.tema";
 const ABAS = [["operar", "Operar", "/operar"], ["conexao", "Conexão", "/conexao"], ["radar", "Radar", "/radar"],
-              ["replay", "Replay", null], ["calibracao", "Calibração", null]];
+              ["leilao", "Leilão", "/leilao"], ["replay", "Replay", null], ["calibracao", "Calibração", null]];
 
 function temaSalvo() {
   try { const t = localStorage.getItem(CHAVE_TEMA); return t === "claro" || t === "escuro" ? t : null; }
@@ -76,7 +76,7 @@ export function montarShell(telaAtiva) {
   const rodape = document.getElementById("rodape");
   rodape.className = "rodape";
   rodape.innerHTML = `<span id="aviso-exemplo"></span>
-    <span class="atalhos"><span>F1 Operar</span><span>F2 Conexão</span><span>F3 Radar</span><span>T tema</span></span>
+    <span class="atalhos"><span>F1 Operar</span><span>F2 Conexão</span><span>F3 Radar</span><span>F4 Leilão</span><span>T tema</span></span>
     <span>B3 · horário de Brasília</span>`;
 
   topo.querySelectorAll(".tema button").forEach((b) => b.addEventListener("click", () => aplicarTema(b.dataset.tema, true)));
@@ -90,7 +90,7 @@ export function montarShell(telaAtiva) {
     if (ev.key === "F1") { ev.preventDefault(); if (telaAtiva !== "operar") location.href = "/operar"; }
     else if (ev.key === "F2") { ev.preventDefault(); if (telaAtiva !== "conexao") location.href = "/conexao"; }
     else if (ev.key === "F3") { ev.preventDefault(); if (telaAtiva !== "radar") location.href = "/radar"; }
-    else if (ev.key === "F4") ev.preventDefault();   // reservado: Replay
+    else if (ev.key === "F4") { ev.preventDefault(); if (telaAtiva !== "leilao") location.href = "/leilao"; }
     else if (ev.key === "t" || ev.key === "T") aplicarTema(temaAtual() === "escuro" ? "claro" : "escuro", true);
   });
 

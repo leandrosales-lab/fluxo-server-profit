@@ -217,7 +217,7 @@ verificacoes.push(["operar: reset com a tela aberta", async (page) => {
 verificacoes.push(["telas cabem no notebook", async (page) => {
   for (const [w, h] of [[1536, 864], [1280, 720]]) {
     await page.setViewportSize({ width: w, height: h });
-    for (const rota of ["operar", "conexao", "radar"]) {
+    for (const rota of ["operar", "conexao", "radar", "leilao"]) {
       await page.goto(`${BASE}/${rota}`);
       await esperar(2500);
       const m = await page.evaluate(() => {
@@ -247,6 +247,18 @@ verificacoes.push(["radar sem --radar", async (page) => {
   await page.waitForURL("**/radar");
   checar(true, "F3 abre o Radar");
   await page.screenshot({ path: path.join(SAIDA, "radar-desligado.png") });
+}]);
+
+verificacoes.push(["leilão sem --leilao-demo", async (page) => {
+  await page.goto(`${BASE}/leilao`);
+  await page.waitForFunction(() => !document.getElementById("lista-vazio").hidden);
+  checar((await page.textContent("#lista-vazio")).includes("Leilão desligado"), "leilão avisa que está desligado");
+  checar(await page.locator('.aba[aria-current="page"]').textContent() === "Leilão", "aba Leilão marcada");
+  await page.keyboard.press("F1");
+  await page.waitForURL("**/operar");
+  await page.keyboard.press("F4");
+  await page.waitForURL("**/leilao");
+  checar(true, "F4 abre o Leilão");
 }]);
 
 verificacoes.push(["conexão", async (page) => {
